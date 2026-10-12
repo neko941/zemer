@@ -106,6 +106,10 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
 
         let mut blocks: Vec<(AudioSpec, Samples)> = Vec::new();
         let mut channel_info = None;
+        let mut channels = 0_usize;
+        let frames = usize::try_from(header.block_samples).map_err(|_| {
+            AudioError::InvalidData("WavPack block sample count does not fit memory")
+        })?;
         let mut current = header;
         let mut first_block = true;
         loop {
@@ -127,6 +131,23 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
             if !first_block && current.flags & INITIAL_BLOCK != 0 {
                 return Err(AudioError::InvalidData(
                     "WavPack channel block group has an unexpected INITIAL_BLOCK",
+                ));
+            }
+            channels = channels
+                .checked_add(decoded_channels(current.flags))
+                .filter(|&count| count <= MAX_CHANNELS)
+                .ok_or(AudioError::Unsupported(
+                    "WavPack channel count exceeds the supported limit",
+                ))?;
+            let bytes_needed = frames
+                .checked_mul(channels)
+                .and_then(|samples| samples.checked_mul(4))
+                .ok_or(AudioError::InvalidData(
+                    "decoded WavPack block size overflow",
+                ))?;
+            if bytes_needed > MAX_DECODED_BLOCK_BYTES {
+                return Err(AudioError::InvalidData(
+                    "decoded WavPack channel block group exceeds the configured size limit",
                 ));
             }
             let payload = read_payload(&mut self.reader, &current)?;
@@ -198,15 +219,6 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
             }
         }
 
-        let channels = blocks
-            .iter()
-            .map(|(spec, _)| usize::from(spec.channels()))
-            .sum::<usize>();
-        if channels == 0 || channels > MAX_CHANNELS {
-            return Err(AudioError::Unsupported(
-                "WavPack channel count exceeds the supported limit",
-            ));
-        }
         let speaker_mask = match channel_info {
             Some(info) if usize::from(info.channels) == channels => info.speaker_mask,
             Some(_) => {
@@ -222,20 +234,6 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
             None => None,
         };
         let first_spec = blocks[0].0;
-        let frames = usize::try_from(header.block_samples).map_err(|_| {
-            AudioError::InvalidData("WavPack block sample count does not fit memory")
-        })?;
-        let bytes_needed = frames
-            .checked_mul(channels)
-            .and_then(|samples| samples.checked_mul(4))
-            .ok_or(AudioError::InvalidData(
-                "decoded WavPack block size overflow",
-            ))?;
-        if bytes_needed > MAX_DECODED_BLOCK_BYTES {
-            return Err(AudioError::InvalidData(
-                "decoded WavPack channel block group exceeds the configured size limit",
-            ));
-        }
         let samples = interleave_blocks(&blocks, frames, channels, first_spec.sample_format())?;
         let spec = AudioSpec::new_with_speaker_mask(
             first_spec.sample_rate(),
@@ -392,6 +390,16 @@ fn interleave_blocks(
     }
 }
 
+fn decoded_channels(flags: u32) -> usize {
+    if flags & FALSE_STEREO != 0 {
+        2
+    } else if flags & MONO_DATA != 0 {
+        1
+    } else {
+        2
+    }
+}
+
 impl<R: Read, C: Read> AudioDecoder for WavPackDecoder<R, C> {
     fn spec(&self) -> AudioSpec {
         self.spec
@@ -465,11 +473,7 @@ fn decode_lossless_pcm(
         } else {
             2
         };
-        let output_channels = if flags & FALSE_STEREO != 0 {
-            2
-        } else {
-            channels
-        };
+        let output_channels = decoded_channels(flags);
         let mut output = bytes;
         if output_channels != channels {
             let output_len = false_stereo_output_len(output.len())?;
@@ -491,11 +495,7 @@ fn decode_lossless_pcm(
     } else {
         2
     };
-    let output_channels = if flags & FALSE_STEREO != 0 {
-        2
-    } else {
-        channels
-    };
+    let output_channels = decoded_channels(flags);
     let sample_format = if flags & FLOAT_DATA != 0 {
         SampleFormat::Float32
     } else {
@@ -1520,10 +1520,115 @@ fn restore_weight(weight: i8) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::{
-        MAX_DECODED_BLOCK_BYTES, false_stereo_output_len, parse_channel_info, parse_sample_rate,
-        restore_extended_integer,
+        FINAL_BLOCK, INITIAL_BLOCK, MAX_CHANNELS, MAX_DECODED_BLOCK_BYTES, WavPackDecoder,
+        false_stereo_output_len, parse_channel_info, parse_sample_rate, restore_extended_integer,
     };
+    use zemer_core::{AudioSpec, Metadata, SampleFormat};
+
+    fn test_decoder(bytes: Vec<u8>) -> WavPackDecoder<Cursor<Vec<u8>>, std::io::Empty> {
+        WavPackDecoder {
+            reader: Cursor::new(bytes),
+            correction_reader: None,
+            spec: AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap(),
+            metadata: Metadata::default(),
+            pending: None,
+            pending_offset: 0,
+            has_audio_block: false,
+            finished: false,
+            decode_dsd: false,
+        }
+    }
+
+    fn rechecksum_test_block(block: &mut [u8]) {
+        let block_end = u32::from_le_bytes(block[4..8].try_into().unwrap()) as usize + 8;
+        let mut offset = 32;
+        while offset < block_end {
+            let id = block[offset];
+            let large = id & 0x80 != 0;
+            let header_size = if large { 4 } else { 2 };
+            let words = if large {
+                u32::from_le_bytes([block[offset + 1], block[offset + 2], block[offset + 3], 0])
+            } else {
+                u32::from(block[offset + 1])
+            };
+            let padded_size = (words * 2) as usize;
+            if id & 0x3f == 0x2f {
+                let mut checksum = u32::MAX;
+                for word in block[..offset].chunks_exact(2) {
+                    checksum = checksum
+                        .wrapping_mul(3)
+                        .wrapping_add(u32::from(u16::from_le_bytes([word[0], word[1]])));
+                }
+                let data_offset = offset + header_size;
+                if padded_size == 4 {
+                    block[data_offset..data_offset + 4].copy_from_slice(&checksum.to_le_bytes());
+                } else {
+                    let checksum = (checksum ^ (checksum >> 16)) as u16;
+                    block[data_offset..data_offset + 2].copy_from_slice(&checksum.to_le_bytes());
+                }
+                return;
+            }
+            offset += header_size + padded_size;
+        }
+        panic!("test fixture lacks a WavPack v5 block checksum");
+    }
+
+    #[test]
+    fn rejects_oversized_channel_groups_before_reading_the_next_payload() {
+        let fixture = include_bytes!("../tests/fixtures/reference-5.9.0-mono.wv");
+        let block_size = u32::from_le_bytes(fixture[4..8].try_into().unwrap()) as usize + 8;
+        assert_eq!(block_size, fixture.len());
+        let mut block = fixture.to_vec();
+        let flags = u32::from_le_bytes(block[24..28].try_into().unwrap()) & !FINAL_BLOCK;
+        block[24..28].copy_from_slice(&flags.to_le_bytes());
+
+        let mut stream = Vec::with_capacity(block.len() * (MAX_CHANNELS + 1));
+        for index in 0..=MAX_CHANNELS {
+            let mut block = block.clone();
+            let mut flags = u32::from_le_bytes(block[24..28].try_into().unwrap());
+            if index == 0 {
+                flags |= INITIAL_BLOCK;
+            } else {
+                flags &= !INITIAL_BLOCK;
+            }
+            block[24..28].copy_from_slice(&flags.to_le_bytes());
+            rechecksum_test_block(&mut block);
+            stream.extend_from_slice(&block);
+        }
+
+        let mut decoder = test_decoder(stream);
+        let error = decoder.read_next_block().unwrap_err();
+
+        assert!(
+            matches!(error, zemer_core::AudioError::Unsupported(_)),
+            "unexpected error: {error:?}"
+        );
+        assert_eq!(
+            decoder.reader.position(),
+            (MAX_CHANNELS * block_size + 32) as u64
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_sample_groups_before_reading_the_payload() {
+        let mut block = include_bytes!("../tests/fixtures/reference-5.9.0-mono.wv").to_vec();
+        let too_many_frames = (MAX_DECODED_BLOCK_BYTES / 4 + 1) as u32;
+        block[20..24].copy_from_slice(&too_many_frames.to_le_bytes());
+
+        let mut decoder = test_decoder(block);
+        let error = decoder.read_next_block().unwrap_err();
+
+        assert!(matches!(
+            error,
+            zemer_core::AudioError::InvalidData(
+                "decoded WavPack channel block group exceeds the configured size limit"
+            )
+        ));
+        assert_eq!(decoder.reader.position(), 32);
+    }
 
     #[test]
     fn parses_legacy_and_extended_channel_information() {
