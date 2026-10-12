@@ -288,7 +288,9 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
         self.data_remaining -= byte_count as u64;
 
         let samples = decode_samples(self.encoding, bytes)?;
-        PcmBuffer::new(self.spec, samples).map(Some)
+        PcmBuffer::new(self.spec, samples)
+            .map(Some)
+            .map_err(AudioError::from)
     }
 }
 
@@ -689,7 +691,7 @@ mod tests {
         assert!(WavDecoder::new(Cursor::new(b"RIFF\0\0\0\0WAVE".to_vec())).is_err());
         let spec = AudioSpec::new(8_000, 2, SampleFormat::PcmI16).unwrap();
         let invalid = PcmBuffer::new(spec, Samples::I16(vec![1])).unwrap_err();
-        assert!(matches!(invalid, AudioError::InvalidData(_)));
+        assert_eq!(invalid.0, "sample count is not a whole number of frames");
     }
 
     #[test]
