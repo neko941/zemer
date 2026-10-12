@@ -3,6 +3,10 @@ use std::{
     io::{self, Read},
 };
 
+mod write;
+
+pub use write::OggPacketWriter;
+
 pub const DEFAULT_MAX_PACKET_BYTES: usize = 64 * 1024 * 1024;
 pub const PAGE_FLAG_CONTINUED: u8 = 0x01;
 pub const PAGE_FLAG_BOS: u8 = 0x02;
@@ -147,6 +151,7 @@ impl<R: Read> OggPacketReader<R> {
 
         let is_first_page = self.first_page;
         self.first_page = false;
+        let mut packet_starts_page = flags & PAGE_FLAG_CONTINUED == 0;
         let mut cursor = 0;
         for (index, &lace) in lacing.iter().enumerate() {
             let len = usize::from(lace);
@@ -167,9 +172,10 @@ impl<R: Read> OggPacketReader<R> {
                     page_flags: flags,
                     page_segment_count: segment_count,
                     page_is_first: is_first_page,
-                    starts_page: index == 0 && flags & PAGE_FLAG_CONTINUED == 0,
+                    starts_page: packet_starts_page,
                     ends_page: index + 1 == lacing.len(),
                 });
+                packet_starts_page = false;
             }
         }
         if flags & PAGE_FLAG_EOS != 0 {

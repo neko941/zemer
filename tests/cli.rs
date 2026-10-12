@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use flac::FlacDecoder;
+use flac::{FlacDecoder, OggFlacDecoder};
 use wav::{write_wav, write_wav_with_metadata};
 use wavpack::WavPackDecoder;
 use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
@@ -718,6 +718,47 @@ fn convert_encodes_native_flac_with_metadata_and_predictive_frames() {
     assert_eq!(decoder.read_frames(4096).unwrap().unwrap(), audio);
     assert!(decoder.read_frames(1).unwrap().is_none());
     assert!(fs::metadata(&output_path).unwrap().len() < 1024);
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn convert_encodes_ogg_flac_with_metadata_and_eos_granule() {
+    let input_path = temporary_path();
+    let output_path = input_path.with_extension("oga");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(vec![0; 4097]),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("album", "container test");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "ogg_flac", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"format\":\"ogg-flac\""));
+
+    let mut decoder = OggFlacDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata(), &metadata);
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(257).unwrap() {
+        let Samples::I16(values) = block.samples() else {
+            panic!("unexpected decoded sample type");
+        };
+        decoded.extend_from_slice(values);
+    }
+    assert_eq!(decoded, vec![0; 4097]);
+    assert!(decoder.read_frames(1).unwrap().is_none());
     let _ = fs::remove_file(input_path);
     let _ = fs::remove_file(output_path);
 }

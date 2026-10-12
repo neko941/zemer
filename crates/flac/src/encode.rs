@@ -284,7 +284,7 @@ impl<W: Write + Seek> AudioEncoder for FlacEncoder<W> {
     }
 }
 
-fn encode_frame(
+pub(crate) fn encode_frame(
     samples: &[i64],
     channels: usize,
     bits_per_sample: u8,

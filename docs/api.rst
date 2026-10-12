@@ -92,6 +92,8 @@ Rust library crate ``flac`` (Cargo package ``zemer-flac``)
   ``metadata_blocks()``.
 * ``OggFlacDecoder<R>`` — Ogg-FLAC mapping decoder using the same PCM and
   metadata interface.
+* ``OggFlacEncoder<W>`` — streaming Ogg-FLAC writer for integer PCM. It emits
+  one frame packet at a time and writes the final sample count to the EOS page.
 * ``FlacMetadataBlock`` — preserves the original metadata block type and
   payload; ``data()`` borrows the bytes without interpreting type-specific
   structures. ``picture()`` parses type-6 blocks without copying the image

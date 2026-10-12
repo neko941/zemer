@@ -5,6 +5,7 @@ mod frame;
 mod md5;
 mod metadata;
 mod ogg;
+mod ogg_encode;
 mod rewrite;
 
 pub use decode::FlacDecoder;
@@ -14,6 +15,7 @@ pub use metadata::{
     FlacSeekPoint, FlacSeekTable, FlacStreamInfo,
 };
 pub use ogg::OggFlacDecoder;
+pub use ogg_encode::OggFlacEncoder;
 pub use rewrite::rewrite_metadata;
 
 #[cfg(test)]

@@ -63,8 +63,10 @@ and Ogg-FLAC seeking are not implemented. Ogg-FLAC validates page framing and ch
 terminal granule against the decoded sample count, including when STREAMINFO's
 total is unknown, and trims trailing samples from the final decoded block as
 required. The CLI can inspect either
-FLAC mapping and convert them to WAVE or native FLAC. Ogg-FLAC encoding and
-chained logical streams are not implemented.
+FLAC mapping and convert them to WAVE, native FLAC, or Ogg-FLAC. The
+``OggFlacEncoder<W>`` writes one packet per page, with bounded page sizes,
+terminal granules, and an EOS page. Chained logical streams and Ogg-FLAC
+seeking are not implemented.
 Support is partial: valid uncommon streams outside the decoder's current
 capabilities may be rejected. Vorbis comments are exposed as shared text
 metadata. Every block is preserved as its original type and payload. Picture
