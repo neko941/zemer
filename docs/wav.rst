@@ -78,6 +78,31 @@ The reader selects the first ``data`` chunk, skips unknown chunks, and rejects
 partial sample frames. It does not decode ADPCM, GSM, or other unsupported
 codecs stored inside WAV.
 
+Metadata rewriting
+------------------
+
+``wav::rewrite_metadata`` edits supported ``LIST/INFO`` text tags while
+copying audio bytes, unknown RIFF/RF64 chunks, and unrecognized INFO subchunks
+unchanged. It updates RIFF sizes and RF64 ``ds64`` size fields, including a
+size-table entry for a rewritten sentinel-sized INFO chunk. It accepts a
+seekable input and output; callers should write to a new temporary file and
+replace the original only after success. Supported keys are title, artist,
+album, date, genre, and comment.
+
+.. code-block:: rust
+
+   use std::{fs::File, io::BufWriter};
+   use zemer_core::Metadata;
+   use wav::rewrite_metadata;
+
+   let mut tags = Metadata::default();
+   tags.insert("TITLE", "Updated title");
+   rewrite_metadata(
+       File::open("input.wav")?,
+       BufWriter::new(File::create("updated.wav")?),
+       &tags,
+   )?;
+
 Limits
 ------
 

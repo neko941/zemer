@@ -1,5 +1,14 @@
 [workspace]
-members = ["crates/core", "crates/metadata", "crates/pcm", "crates/wav", "crates/cue", "crates/flac", "crates/zemer"]
+members = [
+    "crates/core",
+    "crates/metadata",
+    "crates/pcm",
+    "crates/wav",
+    "crates/cue",
+    "crates/flac",
+    "crates/wavpack",
+    "crates/zemer",
+]
 resolver = "2"
 
 [package]
@@ -33,5 +42,6 @@ zemer-pcm = { path = "crates/pcm", version = "0.4.0" }
 wav = { package = "zemer-wav", path = "crates/wav", version = "0.4.0" }
 cue = { package = "zemer-cue", path = "crates/cue", version = "0.4.0" }
 flac = { package = "zemer-flac", path = "crates/flac", version = "0.4.0" }
+wavpack = { package = "zemer-wavpack", path = "crates/wavpack", version = "0.4.0" }
 cue-rw = "0.3.0"
 encoding_rs = "=0.8.35"

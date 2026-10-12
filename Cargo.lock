@@ -191,3 +191,10 @@ version = "0.4.0"
 dependencies = [
  "zemer-core",
 ]
+
+[[package]]
+name = "zemer-wavpack"
+version = "0.4.0"
+dependencies = [
+ "zemer-core",
+]

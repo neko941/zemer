@@ -1,7 +1,9 @@
 use std::io::Cursor;
 
 use wav::{WavDecoder, WavWriter, write_wav_with_metadata};
-use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples, transcode};
+use zemer_core::{
+    AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples, transcode,
+};
 
 #[test]
 fn metadata_survives_wav_write_and_streaming_transcode() {
@@ -21,6 +23,7 @@ fn metadata_survives_wav_write_and_streaming_transcode() {
     let mut decoder = WavDecoder::new(Cursor::new(input)).unwrap();
     let mut encoder = WavWriter::new(Cursor::new(Vec::new()), audio.spec()).unwrap();
     assert_eq!(transcode(&mut decoder, &mut encoder, 2).unwrap(), 3);
+    assert!(encoder.write_block(&audio).is_err());
     let output = encoder.finish().unwrap().into_inner();
 
     let decoder = WavDecoder::new(Cursor::new(output)).unwrap();

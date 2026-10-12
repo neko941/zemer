@@ -71,11 +71,11 @@ support for every file with that extension.
 
 | Format | Intended read/decode work | Intended write/encode work | Priority |
 |---|---|---|---|
-| RIFF/WAVE and RF64 | Inspect, stream PCM/float/G.711, read metadata | Write PCM/float/G.711, metadata, large RF64 files | Foundation |
-| FLAC | Native FLAC streaming decode and Vorbis comments | FLAC encode and comment editing | Decoder and CLI inspect/WAVE conversion implemented; Ogg-FLAC is separate |
+| RIFF/WAVE and RF64 | Inspect, stream PCM/float/G.711, read metadata | Write PCM/float/G.711; edit RIFF INFO while preserving audio, unknown chunks, and RF64 sizes | Foundation |
+| FLAC | Partial native FLAC streaming decode with frame CRC and STREAMINFO MD5 verification; Vorbis comments, raw metadata-block preservation, and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION reads | Metadata rewrite and CLI tag edits implemented; FLAC audio encoding remains planned | CLI inspect/WAVE conversion implemented; Ogg-FLAC and seeking remain open |
 | AIFF / AIFF-C | Parse chunks, decode supported PCM/float and declared codecs | Write supported PCM/float, metadata | Lossless |
 | AU / CAF / raw PCM | Decode supported encodings; raw PCM requires caller-supplied parameters | Encode supported encodings and raw PCM | Lossless / utility |
-| WavPack (`.wv`) | Inspect/decode lossless, lossy, and hybrid files; use a matching `.wvc` correction file when present | Encode lossless and explicitly selected lossy or hybrid modes; read/write APEv2 tags | Evaluate after FLAC |
+| WavPack (`.wv`) | Started: block and metadata sub-block header inspection. Next: lossless integer PCM decode. Later: float PCM, hybrid/lossy modes, and DSD; hybrid lossless requires its matching `.wvc` correction file | Planned after decode: lossless integer PCM. Later: float, lossy/hybrid, DSD, and APEv2 tags | Clean-room specification path confirmed; implementation uses Rust `std` and Zemer crates only |
 | MP3, AAC | Inspect, decode, metadata, and seek where supported | Encode with explicit profile/quality options | Licensing and build review first |
 | DTS Coherent Acoustics (`.dts`) | Inspect and decode DTS core; evaluate DTS-HD and embedded/container streams separately | Evaluate clean-room encoding scope and licensing before promising a writer | Spec-based feasibility review ([ETSI TS 102 114](https://www.etsi.org/deliver/etsi_ts/102100_102199/102114/01.06.01_60/ts_102114v010601p.pdf)) |
 | Ogg with Vorbis / Opus | Parse streams and decode each supported codec | Encode each codec and write stream metadata | Separate codec support |

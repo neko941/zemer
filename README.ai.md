@@ -4,14 +4,15 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 
 ## Workspace crates
 
-- [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
-- [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata and PCM types for convenience.
-- [`zemer-flac`](crates/flac/): native FLAC streaming decoder.
-- [`wav`](crates/wav/): RIFF/WAVE library crate (`zemer-wav` Cargo package).
-- [`cue`](crates/cue/): CUE sheet types and checked sector/sample-frame conversion.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, and CUE/WAV workflows.
-- `tests/`: workspace-level integration tests; codec parser unit tests stay with their format crate.
+- [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
+- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming decoder with frame CRC and STREAMINFO MD5 verification after full consumption, and a Vorbis-comment rewriter with preserved raw metadata blocks and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
+- [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
+- [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
+- [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
+- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded WavPack block and streaming metadata sub-block inspection; audio decoding is not implemented yet.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, WAVE/FLAC metadata editing, and CUE/WAV workflows.
+- [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 ## Other repository paths
 
@@ -21,8 +22,8 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - `docs-internal/REFERENCES.md`: local-only research links and regression notes; ignored by Git.
 - `docs`: user-facing Sphinx documentation built on Read the Docs, with `conf.py` at the source root.
 
-`README.md` lists only implemented and tested formats and workflows; planned formats belong in `ROADMAP.md`. Native FLAC is available through `zemer-flac`; the CLI can inspect it and convert it to WAVE.
+`README.md` lists only implemented and tested formats and workflows; planned formats belong in `ROADMAP.md`. The CLI can edit WAVE RIFF INFO and native FLAC Vorbis comments with `zemer metadata edit`; both rewrite metadata without decoding or re-encoding audio. `FlacDecoder::metadata_blocks()` retains raw payloads, and FLAC metadata-block accessors expose typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION data.
 
-Keep each new format in a separate crate depending on `zemer-core`. Keep format parsing and metadata mappings inside that format crate, with the common tag model in `zemer-metadata`. Shared sample types and sample-format conversion belong in `zemer-pcm`; decoder/encoder interfaces belong in `zemer-core`. Whole-format conversion should decode to `PcmBuffer` and encode through the target format crate; avoid global registries until callers need them.
+Keep each new format in a separate crate depending on `zemer-core`. Keep format parsing and metadata mappings inside that format crate, with the common tag model in `zemer-metadata`. Shared sample types and sample-format conversion belong in `zemer-pcm`; decoder/encoder interfaces belong in `zemer-core`. Whole-format conversion should decode to `PcmBuffer` and encode through the target format crate; `transcode` finalizes the encoder after successful copying. Avoid global registries until callers need them.
 
 Before adding a dependency, record its license and platform/build requirements. Run tests on Linux through `server5`; keep Windows and Linux CI jobs in sync. See `README.md` for current support and public usage.

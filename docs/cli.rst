@@ -60,6 +60,25 @@ PCM before companding. Its JSON report includes ``output_encoding``. With
 ``--json``, failures are JSON objects on stderr with a stable ``kind`` field
 and the process exits with status 2.
 
+Metadata editing
+----------------
+
+Update RIFF INFO tags in WAVE or Vorbis comments in native FLAC while
+preserving tags that are not named. Repeated ``--set`` options for one key
+replace its existing values with the provided repeated values. ``--remove``
+removes all values for a key. The output file must not already exist; encoded
+audio bytes are copied without decoding or re-encoding.
+
+.. code-block:: console
+
+   zemer metadata edit --set "TITLE=New title" --set "ARTIST=Artist" --remove COMMENT input.flac updated.flac --json
+   zemer metadata edit --set "TITLE=New title" input.wav updated.wav --json
+
+FLAC keys may use printable ASCII other than ``=``; WAVE supports TITLE,
+ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO. Values are UTF-8.
+WAVE edits preserve unrecognized chunks and INFO subchunks. If editing fails,
+the partial output file created by the command is removed.
+
 CUE/WAV workflows
 -----------------
 

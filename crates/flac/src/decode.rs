@@ -1,26 +1,33 @@
-use std::{collections::VecDeque, io::Read};
+use std::{
+    collections::VecDeque,
+    io::{BufReader, Read},
+};
 
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::{
     bit_reader::BitReader,
     frame::read_frame,
-    metadata::{FlacStreamInfo, read_metadata},
+    md5::Md5,
+    metadata::{FlacMetadataBlock, FlacStreamInfo, read_metadata},
 };
 
 pub struct FlacDecoder<R> {
-    reader: BitReader<R>,
+    reader: BitReader<BufReader<R>>,
     info: FlacStreamInfo,
     spec: AudioSpec,
     metadata: Metadata,
+    metadata_blocks: Vec<FlacMetadataBlock>,
     pending: VecDeque<i64>,
+    audio_md5: Md5,
     ended: bool,
     decoded_frames: u64,
 }
 
 impl<R: Read> FlacDecoder<R> {
-    pub fn new(mut reader: R) -> Result<Self, AudioError> {
-        let (info, metadata) = read_metadata(&mut reader)?;
+    pub fn new(reader: R) -> Result<Self, AudioError> {
+        let mut reader = BufReader::new(reader);
+        let (info, metadata, metadata_blocks) = read_metadata(&mut reader)?;
         let format = output_format(info.bits_per_sample());
         let spec = AudioSpec::new(info.sample_rate(), u16::from(info.channels()), format)?;
         Ok(Self {
@@ -32,7 +39,9 @@ impl<R: Read> FlacDecoder<R> {
             info,
             spec,
             metadata,
+            metadata_blocks,
             pending: VecDeque::new(),
+            audio_md5: Md5::new(),
             ended: false,
             decoded_frames: 0,
         })
@@ -40,6 +49,10 @@ impl<R: Read> FlacDecoder<R> {
 
     pub fn stream_info(&self) -> &FlacStreamInfo {
         &self.info
+    }
+
+    pub fn metadata_blocks(&self) -> &[FlacMetadataBlock] {
+        &self.metadata_blocks
     }
 
     fn fill_pending(&mut self) -> Result<bool, AudioError> {
@@ -54,6 +67,12 @@ impl<R: Read> FlacDecoder<R> {
             {
                 return Err(AudioError::InvalidData(
                     "FLAC decoded sample count differs from STREAMINFO",
+                ));
+            }
+            let expected_md5 = self.info.md5();
+            if expected_md5 != [0; 16] && self.audio_md5.clone().finalize() != expected_md5 {
+                return Err(AudioError::InvalidData(
+                    "FLAC decoded audio MD5 differs from STREAMINFO",
                 ));
             }
             self.ended = true;
@@ -80,6 +99,19 @@ impl<R: Read> FlacDecoder<R> {
                 "FLAC decoded frame has invalid sample count",
             ));
         }
+        let bytes_per_sample = usize::from(self.info.bits_per_sample().div_ceil(8));
+        let mut audio_bytes = [0_u8; 4096];
+        let mut audio_bytes_used = 0;
+        for sample in &samples {
+            audio_bytes[audio_bytes_used..audio_bytes_used + bytes_per_sample]
+                .copy_from_slice(&sample.to_le_bytes()[..bytes_per_sample]);
+            audio_bytes_used += bytes_per_sample;
+            if audio_bytes_used == audio_bytes.len() {
+                self.audio_md5.update(&audio_bytes);
+                audio_bytes_used = 0;
+            }
+        }
+        self.audio_md5.update(&audio_bytes[..audio_bytes_used]);
         let shift = sample_container_bits(self.spec.sample_format()) - self.info.bits_per_sample();
         for sample in samples {
             let sample = sample

@@ -19,6 +19,10 @@ impl Metadata {
             .map_or(&[], Vec::as_slice)
     }
 
+    pub fn remove(&mut self, key: &str) -> bool {
+        self.tags.remove(&key.trim().to_ascii_uppercase()).is_some()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&str, &[String])> {
         self.tags
             .iter()
@@ -36,5 +40,15 @@ mod tests {
         metadata.insert("artist", "One");
         metadata.insert("ARTIST", "Two");
         assert_eq!(metadata.values("Artist"), ["One", "Two"]);
+    }
+
+    #[test]
+    fn removes_all_values_for_a_case_insensitive_key() {
+        let mut metadata = Metadata::default();
+        metadata.insert("artist", "One");
+        metadata.insert("ARTIST", "Two");
+        assert!(metadata.remove(" Artist "));
+        assert!(metadata.values("artist").is_empty());
+        assert!(!metadata.remove("artist"));
     }
 }

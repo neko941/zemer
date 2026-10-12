@@ -36,6 +36,7 @@ pub struct WavWriter<W> {
     g711: Option<G711Encoding>,
     container: WavContainer,
     poisoned: bool,
+    finished: bool,
 }
 
 impl<W: Write + Seek> WavWriter<W> {
@@ -218,6 +219,7 @@ impl<W: Write + Seek> WavWriter<W> {
             g711,
             container,
             poisoned: false,
+            finished: false,
         })
     }
 
@@ -240,11 +242,29 @@ impl<W: Write + Seek> WavWriter<W> {
     }
 
     pub fn finish(mut self) -> Result<W, AudioError> {
+        self.finalize()?;
+        Ok(self.writer)
+    }
+
+    fn finalize(&mut self) -> Result<(), AudioError> {
+        if self.finished {
+            return Ok(());
+        }
         if self.poisoned {
             return Err(AudioError::InvalidData(
                 "WAVE writer failed while writing sample data",
             ));
         }
+        let result = self.finalize_output();
+        if result.is_err() {
+            self.poisoned = true;
+        } else {
+            self.finished = true;
+        }
+        result
+    }
+
+    fn finalize_output(&mut self) -> Result<(), AudioError> {
         if self.data_bytes & 1 != 0 {
             self.writer.write_all(&[0])?;
         }
@@ -285,7 +305,7 @@ impl<W: Write + Seek> WavWriter<W> {
             }
         }
         self.writer.seek(SeekFrom::End(0))?;
-        Ok(self.writer)
+        Ok(())
     }
 }
 
@@ -295,10 +315,20 @@ impl<W: Write + Seek> AudioEncoder for WavWriter<W> {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
+        if self.finished {
+            return Err(AudioError::InvalidData("WAVE writer is already finalized"));
+        }
         self.replace_metadata(metadata)
     }
 
+    fn finish(&mut self) -> Result<(), AudioError> {
+        self.finalize()
+    }
+
     fn write_block(&mut self, block: &PcmBuffer) -> Result<(), AudioError> {
+        if self.finished {
+            return Err(AudioError::InvalidData("WAVE writer is already finalized"));
+        }
         if self.poisoned {
             return Err(AudioError::InvalidData(
                 "WAVE writer is unusable after an earlier I/O failure",
@@ -374,7 +404,7 @@ pub fn write_wav_with_metadata<W: Write + Seek>(
     encoder.finish()
 }
 
-fn metadata_chunk_size(metadata: &Metadata) -> Result<u64, AudioError> {
+pub(super) fn metadata_chunk_size(metadata: &Metadata) -> Result<u64, AudioError> {
     let mut list_size = 4_u64;
     let mut values = 0_u64;
     for (key, entries) in metadata.iter() {
@@ -421,11 +451,25 @@ fn info_id(key: &str) -> Option<[u8; 4]> {
     }
 }
 
-fn write_info_chunk<W: Write>(writer: &mut W, metadata: &Metadata) -> Result<(), AudioError> {
+pub(super) fn write_info_chunk<W: Write>(
+    writer: &mut W,
+    metadata: &Metadata,
+) -> Result<(), AudioError> {
     let chunk_size = metadata_chunk_size(metadata)? - 8;
     writer.write_all(b"LIST")?;
     writer.write_all(&(chunk_size as u32).to_le_bytes())?;
     writer.write_all(b"INFO")?;
+    write_info_subchunks(writer, metadata)?;
+    if chunk_size & 1 != 0 {
+        writer.write_all(&[0])?;
+    }
+    Ok(())
+}
+
+pub(super) fn write_info_subchunks<W: Write>(
+    writer: &mut W,
+    metadata: &Metadata,
+) -> Result<(), AudioError> {
     for (key, entries) in metadata.iter() {
         let id = info_id(key).ok_or(AudioError::Unsupported(
             "WAVE INFO cannot store this metadata key",
@@ -442,10 +486,14 @@ fn write_info_chunk<W: Write>(writer: &mut W, metadata: &Metadata) -> Result<(),
             }
         }
     }
-    if chunk_size & 1 != 0 {
-        writer.write_all(&[0])?;
-    }
     Ok(())
+}
+
+pub(super) fn is_managed_info_id(id: &[u8; 4]) -> bool {
+    matches!(
+        id,
+        b"INAM" | b"IART" | b"IPRD" | b"ICRD" | b"IGNR" | b"ICMT"
+    )
 }
 
 fn write_sample_data<W: Write>(writer: &mut W, samples: &Samples) -> Result<(), AudioError> {

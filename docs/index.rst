@@ -8,6 +8,9 @@ crates, so applications can use only the pieces they need.
 The project implements RIFF/WAVE PCM, IEEE float, and G.711 reading and
 writing, plus CUE sheets for WAVE tracks. A native FLAC streaming decoder is
 available through its Rust crate.
+The ``zemer-wavpack`` crate currently inspects bounded WavPack block headers
+and streams metadata sub-block payloads to callers; audio decoding is not
+implemented yet.
 
 .. toctree::
    :maxdepth: 2

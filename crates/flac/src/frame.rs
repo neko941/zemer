@@ -261,7 +261,8 @@ fn read_predictive<R: std::io::Read>(
     let mut samples = read_warmup(reader, order, bits)?;
     samples.extend(read_residual(reader, block_size - order, order)?);
     for index in order..block_size {
-        let prediction = fixed_prediction(&samples, index, order);
+        let prediction = fixed_prediction(&samples, index, order)
+            .ok_or(AudioError::InvalidData("FLAC fixed predictor overflow"))?;
         samples[index] = prediction
             .checked_add(samples[index])
             .ok_or(AudioError::InvalidData("FLAC predictor overflow"))?;
@@ -269,16 +270,22 @@ fn read_predictive<R: std::io::Read>(
     Ok(samples)
 }
 
-fn fixed_prediction(samples: &[i64], index: usize, order: usize) -> i64 {
+fn fixed_prediction(samples: &[i64], index: usize, order: usize) -> Option<i64> {
     match order {
-        0 => 0,
-        1 => samples[index - 1],
-        2 => 2 * samples[index - 1] - samples[index - 2],
-        3 => 3 * samples[index - 1] - 3 * samples[index - 2] + samples[index - 3],
-        4 => {
-            4 * samples[index - 1] - 6 * samples[index - 2] + 4 * samples[index - 3]
-                - samples[index - 4]
-        }
+        0 => Some(0),
+        1 => Some(samples[index - 1]),
+        2 => samples[index - 1]
+            .checked_mul(2)?
+            .checked_sub(samples[index - 2]),
+        3 => samples[index - 1]
+            .checked_mul(3)?
+            .checked_sub(samples[index - 2].checked_mul(3)?)?
+            .checked_add(samples[index - 3]),
+        4 => samples[index - 1]
+            .checked_mul(4)?
+            .checked_sub(samples[index - 2].checked_mul(6)?)?
+            .checked_add(samples[index - 3].checked_mul(4)?)?
+            .checked_sub(samples[index - 4]),
         _ => unreachable!(),
     }
 }
@@ -388,4 +395,15 @@ fn restore_stereo(subframes: &mut [Vec<i64>], assignment: u8) -> Result<(), Audi
         ))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixed_prediction;
+
+    #[test]
+    fn fixed_predictor_reports_overflow_instead_of_panicking() {
+        assert_eq!(fixed_prediction(&[0, i64::MAX, 0], 2, 2), None);
+        assert_eq!(fixed_prediction(&[0, 4, 3, 2, 1], 4, 4), Some(6));
+    }
 }

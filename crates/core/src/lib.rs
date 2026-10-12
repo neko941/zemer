@@ -13,6 +13,10 @@ pub trait AudioEncoder {
     fn spec(&self) -> AudioSpec;
     fn write_block(&mut self, block: &PcmBuffer) -> Result<(), AudioError>;
 
+    fn finish(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
         if metadata.iter().next().is_some() {
             return Err(AudioError::Unsupported(
@@ -46,6 +50,7 @@ pub fn transcode<D: AudioDecoder, E: AudioEncoder>(
             .checked_add(block.frames() as u64)
             .ok_or(AudioError::InvalidData("transcoded frame count overflow"))?;
     }
+    encoder.finish()?;
     Ok(frames)
 }
 

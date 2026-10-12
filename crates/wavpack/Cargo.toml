@@ -1,0 +1,13 @@
+[package]
+name = "zemer-wavpack"
+description = "Clean-room WavPack block inspection for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "wavpack"
+
+[dependencies]
+zemer-core.workspace = true
