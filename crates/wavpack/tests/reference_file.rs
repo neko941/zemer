@@ -378,13 +378,46 @@ fn decodes_noise_shaped_hybrid_lossy_pcm_against_official_wvunpack_output() {
 }
 
 #[test]
-fn rejects_noise_shaped_hybrid_correction_until_feedback_is_supported() {
+fn restores_noise_shaped_hybrid_lossless_pcm_against_official_wvunpack_output() {
+    let mut decoder = WavPackDecoder::new_with_correction(
+        Cursor::new(include_bytes!("fixtures/hybrid-shaped-lossless.wv").as_slice()),
+        Cursor::new(include_bytes!("fixtures/hybrid-shaped-lossless.wvc").as_slice()),
+    )
+    .unwrap();
+    assert_eq!(decoder.spec().channels(), 2);
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
+
+    let reference = include_bytes!("fixtures/hybrid-shaped-lossless.expected.pcm");
+    let expected = reference
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect::<Vec<_>>();
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(257).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("noise-shaped WavPack correction returned a non-16-bit sample buffer");
+        };
+        decoded.extend_from_slice(samples);
+    }
+    assert_eq!(decoded.len(), expected.len());
+    for (index, (decoded, expected)) in decoded.iter().zip(&expected).enumerate() {
+        assert_eq!(decoded, expected, "shaped hybrid sample differs at {index}");
+    }
+}
+
+#[test]
+fn rejects_hybrid_correction_with_cross_channel_decorrelation() {
+    let mut audio = include_bytes!("fixtures/hybrid-shaped-lossless.wv").to_vec();
+    let mut correction = include_bytes!("fixtures/hybrid-shaped-lossless.wvc").to_vec();
+    for block in [&mut audio, &mut correction] {
+        let flags = u32::from_le_bytes(block[24..28].try_into().unwrap()) | (1 << 5);
+        block[24..28].copy_from_slice(&flags.to_le_bytes());
+    }
     assert!(matches!(
-        WavPackDecoder::new_with_correction(
-            Cursor::new(include_bytes!("fixtures/hybrid-shaped-lossless.wv").as_slice()),
-            Cursor::new(include_bytes!("fixtures/hybrid-shaped-lossless.wvc").as_slice()),
-        ),
-        Err(zemer_core::AudioError::Unsupported(_))
+        WavPackDecoder::new_with_correction(Cursor::new(audio), Cursor::new(correction)),
+        Err(zemer_core::AudioError::Unsupported(
+            "WavPack correction with cross-channel decorrelation is not supported yet"
+        ))
     ));
 }
 

@@ -3,14 +3,19 @@ use std::io::{Cursor, Read};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::{
-    WavPackBlockHeader, bitstream::BitReader, entropy::EntropyDecoder, float::FloatInfo,
-    hybrid::HybridState, metadata::visit_metadata_sub_blocks,
+    WavPackBlockHeader,
+    bitstream::BitReader,
+    entropy::EntropyDecoder,
+    float::FloatInfo,
+    hybrid::{HybridState, ShapingState},
+    metadata::visit_metadata_sub_blocks,
 };
 
 const MAX_BLOCK_SIZE: u64 = 64 * 1024 * 1024;
 const MONO_DATA: u32 = 1 << 2;
 const HYBRID_FLAG: u32 = 1 << 3;
 const JOINT_STEREO: u32 = 1 << 4;
+const CROSS_DECORR: u32 = 1 << 5;
 const HYBRID_SHAPE: u32 = 1 << 6;
 const FLOAT_DATA: u32 = 1 << 7;
 const INT32_DATA: u32 = 1 << 8;
@@ -397,9 +402,9 @@ fn decode_lossless_pcm(
         ));
     }
     let hybrid_mode = flags & HYBRID_FLAG != 0;
-    if hybrid_mode && flags & HYBRID_SHAPE != 0 && correction_payload.is_some() {
+    if correction_payload.is_some() && flags & CROSS_DECORR != 0 {
         return Err(AudioError::Unsupported(
-            "noise-shaped WavPack correction restoration is not supported yet",
+            "WavPack correction with cross-channel decorrelation is not supported yet",
         ));
     }
     if hybrid_mode && flags & FLOAT_DATA != 0 {
@@ -512,27 +517,46 @@ fn decode_lossless_pcm(
         .bitstream
         .as_deref()
         .ok_or(AudioError::InvalidData("missing WavPack audio bitstream"))?;
-    let correction_bitstream = if let Some(payload) = correction_payload {
+    let (correction_bitstream, mut shaping) = if let Some(payload) = correction_payload {
         let mut correction = None;
+        let mut shaping_weights = None;
         let mut input = Cursor::new(payload);
         visit_metadata_sub_blocks(&mut input, payload.len() as u64, |sub_block, data| {
-            if sub_block.id == 0x0b {
-                if correction.is_some() {
-                    return Err(AudioError::InvalidData(
-                        "duplicate WavPack correction bitstream",
-                    ));
-                }
-                let mut bytes = Vec::new();
-                data.read_to_end(&mut bytes)?;
-                correction = Some(bytes);
+            let slot = match sub_block.id {
+                0x07 => &mut shaping_weights,
+                0x0b => &mut correction,
+                _ => return Ok(()),
+            };
+            if slot.is_some() {
+                return Err(AudioError::InvalidData(match sub_block.id {
+                    0x07 => "duplicate WavPack shaping weights",
+                    _ => "duplicate WavPack correction bitstream",
+                }));
             }
+            let mut bytes = Vec::new();
+            data.read_to_end(&mut bytes)?;
+            *slot = Some(bytes);
             Ok(())
         })?;
-        Some(correction.ok_or(AudioError::InvalidData(
-            "missing WavPack correction bitstream",
-        ))?)
+        let shaping = if hybrid_mode && flags & HYBRID_SHAPE != 0 {
+            Some(ShapingState::parse(
+                shaping_weights
+                    .as_deref()
+                    .ok_or(AudioError::InvalidData("missing WavPack shaping weights"))?,
+                channels,
+                flags,
+            )?)
+        } else {
+            None
+        };
+        (
+            Some(correction.ok_or(AudioError::InvalidData(
+                "missing WavPack correction bitstream",
+            ))?),
+            shaping,
+        )
     } else {
-        None
+        (None, None)
     };
     let hybrid = if hybrid_mode {
         Some(HybridState::parse(
@@ -604,13 +628,24 @@ fn decode_lossless_pcm(
     } else {
         apply_stereo_decorrelation(&mut decoded, &mut passes)?;
     }
+    let shaped_joint_stereo = shaping.is_some() && channels == 2 && flags & JOINT_STEREO != 0;
     if let Some(offsets) = correction_offsets {
-        for (sample, correction) in decoded.iter_mut().zip(offsets) {
-            *sample = i32::try_from(i64::from(*sample) + i64::from(correction))
-                .map_err(|_| AudioError::InvalidData("WavPack corrected sample overflow"))?;
+        if let Some(shaping) = shaping.as_mut() {
+            restore_shaped_correction(
+                &mut decoded,
+                &offsets,
+                shaping,
+                channels,
+                flags & JOINT_STEREO != 0,
+            )?;
+        } else {
+            for (sample, correction) in decoded.iter_mut().zip(offsets) {
+                *sample = i32::try_from(i64::from(*sample) + i64::from(correction))
+                    .map_err(|_| AudioError::InvalidData("WavPack corrected sample overflow"))?;
+            }
         }
     }
-    if channels == 2 && flags & JOINT_STEREO != 0 {
+    if channels == 2 && flags & JOINT_STEREO != 0 && !shaped_joint_stereo {
         apply_inverse_joint_stereo(&mut decoded)?;
     }
     let samples = if flags & FLOAT_DATA != 0 {
@@ -1134,6 +1169,69 @@ fn apply_stereo_decorrelation(
         ring = (ring + 1) & 7;
     }
     Ok(())
+}
+
+fn restore_shaped_correction(
+    samples: &mut [i32],
+    corrections: &[i32],
+    shaping: &mut ShapingState,
+    channels: usize,
+    joint_stereo: bool,
+) -> Result<(), AudioError> {
+    if !(channels == 1 || channels == 2)
+        || samples.len() != corrections.len()
+        || samples.len() % channels != 0
+    {
+        return Err(AudioError::InvalidData(
+            "WavPack correction sample count does not match audio",
+        ));
+    }
+    if channels == 1 {
+        for (sample, correction) in samples.iter_mut().zip(corrections) {
+            let corrected = i32::try_from(i64::from(*sample) + i64::from(*correction))
+                .map_err(|_| AudioError::InvalidData("WavPack corrected sample overflow"))?;
+            *sample = shaping.restore_sample(corrected, *correction, 0)?;
+        }
+        return Ok(());
+    }
+
+    for (pair, correction) in samples.chunks_exact_mut(2).zip(corrections.chunks_exact(2)) {
+        let baseline = [pair[0], pair[1]];
+        let corrected = [
+            i32::try_from(i64::from(pair[0]) + i64::from(correction[0]))
+                .map_err(|_| AudioError::InvalidData("WavPack corrected sample overflow"))?,
+            i32::try_from(i64::from(pair[1]) + i64::from(correction[1]))
+                .map_err(|_| AudioError::InvalidData("WavPack corrected sample overflow"))?,
+        ];
+        let baseline = if joint_stereo {
+            inverse_joint_pair(baseline)?
+        } else {
+            baseline
+        };
+        let corrected = if joint_stereo {
+            inverse_joint_pair(corrected)?
+        } else {
+            corrected
+        };
+        for channel in 0..2 {
+            let correction =
+                i32::try_from(i64::from(corrected[channel]) - i64::from(baseline[channel]))
+                    .map_err(|_| AudioError::InvalidData("WavPack shaping correction overflow"))?;
+            pair[channel] = shaping.restore_sample(corrected[channel], correction, channel)?;
+        }
+    }
+    Ok(())
+}
+
+fn inverse_joint_pair(pair: [i32; 2]) -> Result<[i32; 2], AudioError> {
+    let mid = i64::from(pair[0]);
+    let side = i64::from(pair[1]) - (mid >> 1);
+    Ok([
+        i32::try_from(mid + side)
+            .map_err(|_| AudioError::InvalidData("WavPack joint stereo overflow"))?,
+        i32::try_from(side)
+            .map_err(|_| AudioError::InvalidData("WavPack joint stereo overflow"))?,
+    ])
 }
 
 fn apply_inverse_joint_stereo(samples: &mut [i32]) -> Result<(), AudioError> {

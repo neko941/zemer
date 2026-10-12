@@ -15,6 +15,96 @@ pub(crate) struct HybridState {
     balance: bool,
 }
 
+pub(crate) struct ShapingState {
+    accumulator: [i32; 2],
+    delta: [i32; 2],
+    error: [i32; 2],
+    channels: usize,
+    iir: bool,
+}
+
+impl ShapingState {
+    pub(crate) fn parse(bytes: &[u8], channels: usize, flags: u32) -> Result<Self, AudioError> {
+        if !(channels == 1 || channels == 2)
+            || (bytes.len() != channels * 4 && bytes.len() != channels * 6)
+        {
+            return Err(AudioError::InvalidData(
+                "invalid WavPack shaping weights size",
+            ));
+        }
+        let mut accumulator = [0; 2];
+        let mut delta = [0; 2];
+        let mut error = [0; 2];
+        for channel in 0..channels {
+            let offset = channel * 4;
+            error[channel] = i32::try_from(exp2s(i32::from(i16::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+            ])))?)
+            .map_err(|_| AudioError::InvalidData("WavPack shaping error is out of range"))?;
+            accumulator[channel] = i32::try_from(exp2s(i32::from(i16::from_le_bytes([
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])))?)
+            .map_err(|_| AudioError::InvalidData("WavPack shaping accumulator is out of range"))?;
+        }
+        if bytes.len() == channels * 6 {
+            for (channel, value) in delta.iter_mut().enumerate().take(channels) {
+                let offset = channels * 4 + channel * 2;
+                *value = i32::try_from(exp2s(i32::from(i16::from_le_bytes([
+                    bytes[offset],
+                    bytes[offset + 1],
+                ])))?)
+                .map_err(|_| AudioError::InvalidData("WavPack shaping delta is out of range"))?;
+            }
+        }
+        Ok(Self {
+            accumulator,
+            delta,
+            error,
+            channels,
+            iir: flags & (1 << 29) != 0,
+        })
+    }
+
+    pub(crate) fn restore_sample(
+        &mut self,
+        sample: i32,
+        correction: i32,
+        channel: usize,
+    ) -> Result<i32, AudioError> {
+        if channel >= self.channels {
+            return Err(AudioError::InvalidData("invalid WavPack shaping channel"));
+        }
+        self.accumulator[channel] = self.accumulator[channel].wrapping_add(self.delta[channel]);
+        let weight = self.accumulator[channel] >> 16;
+        let product = i64::from(weight) * i64::from(self.error[channel]);
+        let filtered = i32::try_from((product + 512) >> 10)
+            .map_err(|_| AudioError::InvalidData("WavPack shaping filter overflow"))?;
+        let filtered = filtered
+            .checked_neg()
+            .ok_or(AudioError::InvalidData("WavPack shaping filter overflow"))?;
+        if self.iir && weight < 0 && filtered != 0 {
+            let filtered = if filtered == self.error[channel] {
+                filtered
+                    .checked_add(if filtered < 0 { 1 } else { -1 })
+                    .ok_or(AudioError::InvalidData("WavPack shaping filter overflow"))?
+            } else {
+                filtered
+            };
+            self.error[channel] = filtered
+                .checked_sub(correction)
+                .ok_or(AudioError::InvalidData("WavPack shaping error overflow"))?;
+        } else {
+            self.error[channel] = correction
+                .checked_neg()
+                .ok_or(AudioError::InvalidData("WavPack shaping error overflow"))?;
+        }
+        i32::try_from(i64::from(sample) - i64::from(filtered))
+            .map_err(|_| AudioError::InvalidData("WavPack shaped sample overflow"))
+    }
+}
+
 impl HybridState {
     pub(crate) fn parse(bytes: &[u8], channels: usize, flags: u32) -> Result<Self, AudioError> {
         let bitrate_mode = flags & (1 << 9) != 0;
@@ -155,6 +245,14 @@ mod tests {
     fn rejects_truncated_or_extra_hybrid_profile_data() {
         assert!(HybridState::parse(&[0; 7], 2, 1 << 9).is_err());
         assert!(HybridState::parse(&[0; 10], 2, 1 << 9).is_err());
+    }
+
+    #[test]
+    fn validates_shaping_weight_metadata_lengths() {
+        assert!(ShapingState::parse(&[0; 8], 2, 0).is_ok());
+        assert!(ShapingState::parse(&[0; 12], 2, 0).is_ok());
+        assert!(ShapingState::parse(&[0; 7], 2, 0).is_err());
+        assert!(ShapingState::parse(&[0; 6], 2, 0).is_err());
     }
 
     #[test]
