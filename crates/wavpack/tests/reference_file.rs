@@ -563,20 +563,36 @@ fn restores_noise_shaped_hybrid_lossless_pcm_against_official_wvunpack_output() 
 }
 
 #[test]
-fn rejects_hybrid_correction_with_cross_channel_decorrelation() {
-    let mut audio = include_bytes!("fixtures/hybrid-shaped-lossless.wv").to_vec();
-    let mut correction = include_bytes!("fixtures/hybrid-shaped-lossless.wvc").to_vec();
-    for block in [&mut audio, &mut correction] {
-        let flags = u32::from_le_bytes(block[24..28].try_into().unwrap()) | (1 << 5);
-        block[24..28].copy_from_slice(&flags.to_le_bytes());
-        rechecksum_blocks(block);
+fn restores_cross_channel_shaped_hybrid_lossless_pcm() {
+    let audio = include_bytes!("fixtures/hybrid-cross-channel-lossless.wv");
+    let correction = include_bytes!("fixtures/hybrid-cross-channel-lossless.wvc");
+    let flags = u32::from_le_bytes(audio[24..28].try_into().unwrap());
+    assert_ne!(
+        flags & (1 << 5),
+        0,
+        "fixture must use cross-channel decorrelation"
+    );
+    assert_ne!(flags & (1 << 6), 0, "fixture must use noise shaping");
+
+    let mut decoder = WavPackDecoder::new_with_correction(
+        Cursor::new(audio.as_slice()),
+        Cursor::new(correction.as_slice()),
+    )
+    .unwrap();
+    assert_eq!(decoder.spec().channels(), 2);
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(257).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("cross-channel WavPack decoder returned the wrong sample type");
+        };
+        decoded.extend_from_slice(samples);
     }
-    assert!(matches!(
-        WavPackDecoder::new_with_correction(Cursor::new(audio), Cursor::new(correction)),
-        Err(zemer_core::AudioError::Unsupported(
-            "WavPack correction with cross-channel decorrelation is not supported yet"
-        ))
-    ));
+    let expected = include_bytes!("fixtures/hybrid-cross-channel-lossless.expected.pcm")
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect::<Vec<_>>();
+    assert_eq!(decoded, expected);
 }
 
 #[test]

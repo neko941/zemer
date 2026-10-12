@@ -417,11 +417,6 @@ fn decode_lossless_pcm(
         ));
     }
     let hybrid_mode = flags & HYBRID_FLAG != 0;
-    if correction_payload.is_some() && flags & CROSS_DECORR != 0 {
-        return Err(AudioError::Unsupported(
-            "WavPack correction with cross-channel decorrelation is not supported yet",
-        ));
-    }
     if hybrid_mode && flags & FLOAT_DATA != 0 {
         return Err(AudioError::Unsupported(
             "hybrid WavPack float decoding is not supported yet",
@@ -641,7 +636,12 @@ fn decode_lossless_pcm(
     if channels == 1 {
         apply_mono_decorrelation(&mut decoded, &mut passes)?;
     } else {
-        apply_stereo_decorrelation(&mut decoded, &mut passes)?;
+        let corrections = if flags & CROSS_DECORR != 0 {
+            correction_offsets.as_deref_mut()
+        } else {
+            None
+        };
+        apply_stereo_decorrelation(&mut decoded, corrections, &mut passes)?;
     }
     let shaped_joint_stereo = shaping.is_some() && channels == 2 && flags & JOINT_STEREO != 0;
     if let Some(offsets) = correction_offsets {
@@ -1073,6 +1073,7 @@ fn apply_mono_decorrelation(
 
 fn apply_stereo_decorrelation(
     samples: &mut [i32],
+    corrections: Option<&mut [i32]>,
     passes: &mut [DecorrPass],
 ) -> Result<(), AudioError> {
     if samples.len() % 2 != 0 {
@@ -1080,8 +1081,40 @@ fn apply_stereo_decorrelation(
             "stereo WavPack block has an incomplete sample pair",
         ));
     }
+    if corrections
+        .as_ref()
+        .is_some_and(|corrections| corrections.len() != samples.len())
+    {
+        return Err(AudioError::InvalidData(
+            "WavPack correction sample count does not match audio",
+        ));
+    }
     let mut ring = 0_usize;
+    let mut correction_pairs = corrections.map(|corrections| corrections.chunks_exact_mut(2));
     for pair in samples.chunks_exact_mut(2) {
+        let correction = correction_pairs
+            .as_mut()
+            .map(|correction_pairs| correction_pairs.next().unwrap());
+        let corrected = if let Some(correction) = correction.as_deref() {
+            let mut corrected = [
+                checked_add(
+                    pair[0],
+                    correction[0],
+                    "WavPack corrected residual overflow",
+                )?,
+                checked_add(
+                    pair[1],
+                    correction[1],
+                    "WavPack corrected residual overflow",
+                )?,
+            ];
+            for pass in passes.iter() {
+                apply_stereo_pass_without_state(&mut corrected, pass, ring)?;
+            }
+            Some(corrected)
+        } else {
+            None
+        };
         for pass in passes.iter_mut() {
             let residual_a = i64::from(pair[0]);
             let residual_b = i64::from(pair[1]);
@@ -1188,9 +1221,86 @@ fn apply_stereo_decorrelation(
                 _ => return Err(AudioError::Unsupported("unsupported stereo WavPack term")),
             }
         }
+        if let (Some(corrected), Some(correction)) = (corrected, correction) {
+            // Compare after normal decorrelation has produced this lossy sample.
+            correction[0] = corrected[0].wrapping_sub(pair[0]);
+            correction[1] = corrected[1].wrapping_sub(pair[1]);
+        }
         ring = (ring + 1) & 7;
     }
     Ok(())
+}
+
+fn apply_stereo_pass_without_state(
+    pair: &mut [i32; 2],
+    pass: &DecorrPass,
+    ring: usize,
+) -> Result<(), AudioError> {
+    let residual_a = i64::from(pair[0]);
+    let residual_b = i64::from(pair[1]);
+    let decoded = match pass.term {
+        term if term > 0 => {
+            let source = |history: &[i32; 8]| {
+                if term > 8 {
+                    if term & 1 != 0 {
+                        2 * i64::from(history[0]) - i64::from(history[1])
+                    } else {
+                        (3 * i64::from(history[0]) - i64::from(history[1])) >> 1
+                    }
+                } else {
+                    i64::from(history[ring])
+                }
+            };
+            let prediction_a = (i64::from(pass.weight) * source(&pass.samples) + 512) >> 10;
+            let prediction_b = (i64::from(pass.weight_b) * source(&pass.samples_b) + 512) >> 10;
+            [
+                (residual_a + prediction_a) as i32,
+                (residual_b + prediction_b) as i32,
+            ]
+        }
+        -1 => {
+            let left = i32::try_from(
+                residual_a + ((i64::from(pass.weight) * i64::from(pass.samples[0]) + 512) >> 10),
+            )
+            .map_err(|_| AudioError::InvalidData("WavPack decorrelation overflow"))?;
+            let right = i32::try_from(
+                residual_b + ((i64::from(pass.weight_b) * i64::from(left) + 512) >> 10),
+            )
+            .map_err(|_| AudioError::InvalidData("WavPack decorrelation overflow"))?;
+            [left, right]
+        }
+        -2 => {
+            let right = i32::try_from(
+                residual_b
+                    + ((i64::from(pass.weight_b) * i64::from(pass.samples_b[0]) + 512) >> 10),
+            )
+            .map_err(|_| AudioError::InvalidData("WavPack decorrelation overflow"))?;
+            let left = i32::try_from(
+                residual_a + ((i64::from(pass.weight) * i64::from(right) + 512) >> 10),
+            )
+            .map_err(|_| AudioError::InvalidData("WavPack decorrelation overflow"))?;
+            [left, right]
+        }
+        -3 => [
+            i32::try_from(
+                residual_a + ((i64::from(pass.weight) * i64::from(pass.samples[0]) + 512) >> 10),
+            )
+            .map_err(|_| AudioError::InvalidData("WavPack decorrelation overflow"))?,
+            i32::try_from(
+                residual_b
+                    + ((i64::from(pass.weight_b) * i64::from(pass.samples_b[0]) + 512) >> 10),
+            )
+            .map_err(|_| AudioError::InvalidData("WavPack decorrelation overflow"))?,
+        ],
+        _ => return Err(AudioError::Unsupported("unsupported stereo WavPack term")),
+    };
+    *pair = decoded;
+    Ok(())
+}
+
+fn checked_add(sample: i32, correction: i32, message: &'static str) -> Result<i32, AudioError> {
+    i32::try_from(i64::from(sample) + i64::from(correction))
+        .map_err(|_| AudioError::InvalidData(message))
 }
 
 fn restore_shaped_correction(

@@ -12,8 +12,9 @@ The ``zemer-wavpack`` crate decodes mono and stereo lossless integer PCM at 8,
 16, 24, and 32 bits, stereo lossless IEEE float32, 5.1 and 7.1 lossless PCM16,
 and mono and stereo unshaped hybrid-lossy PCM16. Stereo noise-shaped hybrid-lossy
 PCM16 and stereo PCM16 hybrid-lossless restoration with a paired ``.wvc`` file
-are tested for flat and shaped profiles. Cross-channel correction, other
-multichannel layouts, and DSD remain incomplete.
+are tested for flat and shaped profiles, including shaped hybrid-lossless
+restoration with cross-channel decorrelation. Other multichannel layouts and
+DSD remain incomplete.
 
 .. toctree::
    :maxdepth: 2
