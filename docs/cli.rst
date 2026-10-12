@@ -9,7 +9,7 @@ installed):
 
 .. code-block:: console
 
-   cargo install --git https://github.com/neko941/zemer.git --branch main --package zemer-cli --locked
+   cargo install --git https://github.com/neko941/zemer.git --branch main --locked zemer-cli
 
 This installs ``zemer`` in Cargo's binary directory, usually ``~/.cargo/bin``.
 Alternatively, run it from a source checkout with ``cargo run -p zemer-cli --``.

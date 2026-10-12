@@ -62,7 +62,7 @@ while let Some(block) = decoder.read_frames(4096)? {
 Install the latest version from the `main` branch with Cargo (Rust must be installed):
 
 ```sh
-cargo install --git https://github.com/neko941/zemer.git --branch main --package zemer-cli --locked
+cargo install --git https://github.com/neko941/zemer.git --branch main --locked zemer-cli
 ```
 
 This installs the `zemer` command in Cargo's binary directory, usually `~/.cargo/bin`.
