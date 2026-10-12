@@ -14,9 +14,7 @@ impl PcmBuffer {
             ));
         }
         if samples.len() % usize::from(spec.channels()) != 0 {
-            return Err(PcmError(
-                "sample count is not a whole number of frames",
-            ));
+            return Err(PcmError("sample count is not a whole number of frames"));
         }
         if !samples.valid() {
             return Err(PcmError(
@@ -37,4 +35,3 @@ impl PcmBuffer {
         &self.samples
     }
 }
-

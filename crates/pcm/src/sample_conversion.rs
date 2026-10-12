@@ -1,4 +1,4 @@
-use crate::{f32, f64, i16, i24, i32, u8, AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples};
+use crate::{AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, f32, f64, i16, i24, i32, u8};
 
 /// Converts sample values without changing the sample rate or channel count.
 ///
@@ -84,16 +84,21 @@ mod tests {
                 SampleFormat::PcmI32,
                 Samples::I32(vec![i32::MIN, 0, i32::MAX]),
             ),
-            (SampleFormat::Float32, Samples::F32(vec![-1.0, 0.0, 0.25, 1.0])),
-            (SampleFormat::Float64, Samples::F64(vec![-1.0, 0.0, 0.25, 1.0])),
+            (
+                SampleFormat::Float32,
+                Samples::F32(vec![-1.0, 0.0, 0.25, 1.0]),
+            ),
+            (
+                SampleFormat::Float64,
+                Samples::F64(vec![-1.0, 0.0, 0.25, 1.0]),
+            ),
         ];
 
         for (format, samples) in cases {
-            let audio = PcmBuffer::new(AudioSpec::new(48_000, 1, format).unwrap(), samples)
-                .unwrap();
+            let audio =
+                PcmBuffer::new(AudioSpec::new(48_000, 1, format).unwrap(), samples).unwrap();
             let float = convert_sample_format(&audio, SampleFormat::Float64).unwrap();
             assert_eq!(convert_sample_format(&float, format).unwrap(), audio);
         }
     }
 }
-

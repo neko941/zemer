@@ -1,7 +1,11 @@
-use crate::{sample_conversion::quantize, PcmError};
+use crate::{PcmError, sample_conversion::quantize};
 
 pub(super) fn normalize(values: &[i32], output: &mut Vec<f64>) {
-    output.extend(values.iter().map(|&value| f64::from(value) / 2_147_483_648.0));
+    output.extend(
+        values
+            .iter()
+            .map(|&value| f64::from(value) / 2_147_483_648.0),
+    );
 }
 
 pub(super) fn encode(values: &[f64]) -> Result<Vec<i32>, PcmError> {

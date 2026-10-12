@@ -22,9 +22,7 @@ impl AudioSpec {
         speaker_mask: Option<u32>,
     ) -> Result<Self, PcmError> {
         if sample_rate == 0 || channels == 0 {
-            return Err(PcmError(
-                "sample rate and channel count must be non-zero",
-            ));
+            return Err(PcmError("sample rate and channel count must be non-zero"));
         }
         Ok(Self {
             sample_rate,
@@ -47,4 +45,3 @@ impl AudioSpec {
         self.speaker_mask
     }
 }
-

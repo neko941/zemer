@@ -1,8 +1,6 @@
 use std::{collections::BTreeMap, error::Error, fmt, io};
 
-pub use zemer_pcm::{
-    AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, convert_sample_format,
-};
+pub use zemer_pcm::{AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, convert_sample_format};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Metadata {

@@ -7,4 +7,3 @@ pub enum SampleFormat {
     Float32,
     Float64,
 }
-
