@@ -9,11 +9,11 @@ mod rewrite;
 
 pub use decode::FlacDecoder;
 pub use encode::FlacEncoder;
-pub use ogg::OggFlacDecoder;
 pub use metadata::{
     FlacApplication, FlacCueIndex, FlacCueSheet, FlacCueTrack, FlacMetadataBlock, FlacPicture,
     FlacSeekPoint, FlacSeekTable, FlacStreamInfo,
 };
+pub use ogg::OggFlacDecoder;
 pub use rewrite::rewrite_metadata;
 
 #[cfg(test)]
