@@ -57,8 +57,7 @@ impl ApeTag {
         } else {
             0
         };
-        if declared_size < FOOTER_SIZE
-            || declared_size > MAX_TAG_SIZE
+        if !(FOOTER_SIZE..=MAX_TAG_SIZE).contains(&declared_size)
             || declared_size.checked_add(header_size) != Some(bytes.len())
         {
             return Err(ApeTagError("invalid APEv2 tag size"));
