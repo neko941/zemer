@@ -5,6 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use flac::FlacDecoder;
 use wav::{write_wav, write_wav_with_metadata};
 use wavpack::WavPackDecoder;
 use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
@@ -682,6 +683,41 @@ fn convert_encodes_wavpack_pcm_and_metadata() {
     assert_eq!(decoder.metadata(), &metadata);
     assert_eq!(decoder.read_frames(16).unwrap().unwrap(), audio);
     assert!(decoder.read_frames(16).unwrap().is_none());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn convert_encodes_native_flac_with_metadata_and_predictive_frames() {
+    let input_path = temporary_path();
+    let output_path = input_path.with_extension("flac");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(vec![0; 4096]),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("title", "quiet test");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "flac", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"format\":\"flac\""));
+
+    let mut decoder = FlacDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata(), &metadata);
+    assert_eq!(decoder.read_frames(4096).unwrap().unwrap(), audio);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+    assert!(fs::metadata(&output_path).unwrap().len() < 1024);
     let _ = fs::remove_file(input_path);
     let _ = fs::remove_file(output_path);
 }

@@ -20,7 +20,7 @@ The workspace separates format-independent audio types from each format implemen
 | RIFF/WAVE G.711 A-law and μ-law | Supported | Read and write; RIFF INFO metadata read/write. Decodes to signed 16-bit PCM; writing requires explicit G.711 selection. |
 | RF64/WAVE | Supported | Read and write; RIFF INFO metadata read/write. Supports 64-bit file and data sizes; select explicitly for output. |
 | CUE sheets for WAVE/AUDIO tracks | Supported | Read and write; track title and performer fields. Split referenced WAV audio into track WAVs and create CUE sheets for WAV tracks. |
-| Native FLAC | Partial | Streaming integer PCM encode (8/16/24/32-bit, verbatim frames) and decode with frame CRC and STREAMINFO MD5 verification; sample seeking for seekable readers (SEEKTABLE accelerated, forward-scan fallback); Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE, and comment editing are available; encoding and seeking are library APIs. |
+| Native FLAC | Partial | Streaming integer PCM encode (8/16/24/32-bit, verbatim or fixed-predictor Rice-coded frames) and decode with frame CRC and STREAMINFO MD5 verification; sample seeking for seekable readers (SEEKTABLE accelerated, forward-scan fallback); Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE/FLAC, and comment editing are available. |
 | Ogg-FLAC | Partial | Streaming decode through the reusable `zemer-ogg` page/packet reader; validates the terminal granule against decoded sample count, including unknown STREAMINFO totals, and trims final-frame samples as indicated; CLI inspection and conversion to WAVE. Single logical stream only. |
 | WavPack | Supported | Streaming decode covers lossless PCM, IEEE float32, hybrid `.wvc` restoration, and native DSD profiles. Lossless integer PCM encoding supports 1–32 channels at 8/16/24/32 bits; float32 is bit-exact but stored uncompressed in WVX; raw native DSD encoding supports 1–32 channels. Custom rates, APEv2 text tags, CLI inspect, PCM conversion, and metadata editing are supported. Encoding is lossless only; hybrid `.wvc` writing and the full official stress corpus are not covered. |
 
@@ -90,6 +90,7 @@ cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
 cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
 cargo run -p zemer -- convert --format g711_alaw input.wav voice-alaw.wav
 cargo run -p zemer -- convert --format g711_mulaw input.wav voice-mulaw.wav
+cargo run -p zemer -- convert --format flac input.wav output.flac
 ```
 
 Edit RIFF INFO tags in WAVE or Vorbis comments in native FLAC while keeping

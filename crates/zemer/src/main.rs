@@ -8,7 +8,7 @@ use std::{
     process::ExitCode,
 };
 
-use flac::{FlacDecoder, OggFlacDecoder};
+use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder};
 use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
 use wavpack::{WavPackDecoder, WavPackEncoder};
 use zemer_core::{
@@ -38,6 +38,7 @@ struct AudioInput {
 enum OutputFormat {
     Samples(SampleFormat),
     G711(G711Encoding),
+    Flac,
     WavPack,
 }
 
@@ -46,6 +47,7 @@ impl OutputFormat {
         match self {
             Self::Samples(format) => Some(format),
             Self::G711(_) => Some(SampleFormat::PcmI16),
+            Self::Flac => None,
             Self::WavPack => None,
         }
     }
@@ -55,6 +57,7 @@ impl OutputFormat {
             Self::Samples(format) => sample_format_name(format),
             Self::G711(G711Encoding::ALaw) => "g711_alaw",
             Self::G711(G711Encoding::MuLaw) => "g711_mulaw",
+            Self::Flac => "flac",
             Self::WavPack => "wavpack",
         }
     }
@@ -371,7 +374,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliErr
     let input = paths.remove(0);
     let output = paths.remove(0);
     let format = format.ok_or_else(usage_error)?;
-    if matches!(format, OutputFormat::WavPack) && container.is_some() {
+    if matches!(format, OutputFormat::Flac | OutputFormat::WavPack) && container.is_some() {
         return Err(usage_error());
     }
     convert_wav(
@@ -401,6 +404,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "float64" => Some(OutputFormat::Samples(SampleFormat::Float64)),
         "g711_alaw" => Some(OutputFormat::G711(G711Encoding::ALaw)),
         "g711_mulaw" => Some(OutputFormat::G711(G711Encoding::MuLaw)),
+        "flac" => Some(OutputFormat::Flac),
         "wavpack" => Some(OutputFormat::WavPack),
         _ => None,
     }
@@ -455,6 +459,14 @@ fn convert_wav(
                 )
                 .map_err(|error| cli_audio_error(error, &output))?,
             ),
+            OutputFormat::Flac => {
+                let mut encoder = FlacEncoder::new(output_file, spec)
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                encoder
+                    .set_metadata(decoder.metadata())
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                Box::new(encoder)
+            }
             OutputFormat::WavPack => {
                 let mut encoder = WavPackEncoder::new(output_file, spec)
                     .map_err(|error| cli_audio_error(error, &output))?;
@@ -488,16 +500,17 @@ fn convert_wav(
             .finish()
             .map_err(|error| cli_audio_error(error, &output))?;
         Ok(Report {
-            format: if matches!(format, OutputFormat::WavPack) {
-                "wavpack"
-            } else {
-                "wav"
+            format: match format {
+                OutputFormat::Flac => "flac",
+                OutputFormat::WavPack => "wavpack",
+                _ => "wav",
             },
             spec,
             frames,
             metadata: decoder.metadata().clone(),
             output_encoding: matches!(format, OutputFormat::G711(_)).then(|| format.name()),
-            container: (!matches!(format, OutputFormat::WavPack)).then_some(container),
+            container: (!matches!(format, OutputFormat::Flac | OutputFormat::WavPack))
+                .then_some(container),
         })
     })();
 
@@ -612,7 +625,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|wavpack> [--container <riff|rf64>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> <output.wav|output.wv> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|flac|wavpack> [--container <riff|rf64>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> <output.wav|output.flac|output.wv> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 

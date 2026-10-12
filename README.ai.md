@@ -7,13 +7,13 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-core`](crates/core/): shared PCM/DSD decoder and encoder interfaces; re-exports metadata and audio buffer types.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
-- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming integer-PCM encoder and native/Ogg-FLAC decoders; native seekable decoding uses SEEKTABLE points when present and otherwise scans forward; Vorbis-comment rewriting and preserved raw metadata blocks with typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
+- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming integer-PCM encoder with verbatim/fixed-predictor Rice subframes, native/Ogg-FLAC decoders, native seekable decoding, Vorbis-comment rewriting, and preserved typed metadata blocks. CLI can encode native FLAC; Ogg-FLAC writing and chained-stream decoding remain open.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page and packet reader reused by Ogg-FLAC.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/float32, hybrid `.wvc`, and native DSD decoding; lossless integer PCM encoding for 1–32 channels at 8/16/24/32 bits; bit-exact float32 encoding through uncompressed WVX; raw native DSD encoding for 1–32 channels; APEv2 UTF-8 text tags preserve non-text items. Hybrid `.wvc` encoding and broader profile conformance remain open.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, WAVE/FLAC metadata editing, and CUE/WAV workflows.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, WAVE/FLAC/WavPack conversion, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 Ogg-FLAC decoding handles one logical stream and verifies the terminal granule

@@ -4,6 +4,7 @@ use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, Sampl
 
 use crate::{
     bitstream::{crc8_update, crc16_update},
+    frame::fixed_prediction,
     md5::Md5,
     rewrite::{DEFAULT_VENDOR, encode_comments, write_block},
 };
@@ -311,17 +312,98 @@ fn encode_frame(
 
     let mut payload = BitWriter::default();
     for channel in 0..channels {
-        payload.write_bits(0, 1)?;
-        payload.write_bits(1, 6)?;
-        payload.write_bits(0, 1)?;
-        for frame in 0..frames {
-            payload.write_bits(samples[frame * channels + channel] as u64, bits_per_sample)?;
-        }
+        let channel_samples = (0..frames)
+            .map(|frame| samples[frame * channels + channel])
+            .collect::<Vec<_>>();
+        encode_subframe(&mut payload, &channel_samples, bits_per_sample)?;
     }
     bytes.extend_from_slice(&payload.finish());
     let crc16 = bytes.iter().fold(0, |crc, &byte| crc16_update(crc, byte));
     bytes.extend_from_slice(&crc16.to_be_bytes());
     Ok(bytes)
+}
+
+fn encode_subframe(
+    writer: &mut BitWriter,
+    samples: &[i64],
+    bits_per_sample: u8,
+) -> Result<(), AudioError> {
+    let verbatim_bits = 8_u64 + samples.len() as u64 * u64::from(bits_per_sample);
+    let mut best = None;
+    for order in 0..=samples.len().min(4) {
+        let mut residuals = Vec::with_capacity(samples.len() - order);
+        let mut valid = true;
+        for index in order..samples.len() {
+            let Some(prediction) = fixed_prediction(samples, index, order) else {
+                valid = false;
+                break;
+            };
+            let Some(residual) = samples[index].checked_sub(prediction) else {
+                valid = false;
+                break;
+            };
+            residuals.push(residual);
+        }
+        if !valid {
+            continue;
+        }
+        let warmup_bits = order as u64 * u64::from(bits_per_sample);
+        for rice_parameter in 0..15_u8 {
+            let residual_bits = residuals.iter().fold(0_u64, |bits, residual| {
+                let folded = ((*residual as u64) << 1) ^ ((*residual >> 63) as u64);
+                bits.saturating_add((folded >> rice_parameter) + 1 + u64::from(rice_parameter))
+            });
+            let cost = 18_u64
+                .saturating_add(warmup_bits)
+                .saturating_add(residual_bits);
+            if cost < verbatim_bits
+                && best
+                    .as_ref()
+                    .is_none_or(|(best_cost, _, _)| cost < *best_cost)
+            {
+                best = Some((cost, order, rice_parameter));
+            }
+        }
+    }
+
+    let Some((_, order, rice_parameter)) = best else {
+        writer.write_bits(0, 1)?;
+        writer.write_bits(1, 6)?;
+        writer.write_bits(0, 1)?;
+        for &sample in samples {
+            writer.write_bits(sample as u64, bits_per_sample)?;
+        }
+        return Ok(());
+    };
+    let residuals = (order..samples.len())
+        .map(|index| {
+            let prediction = fixed_prediction(samples, index, order)
+                .ok_or(AudioError::InvalidData("FLAC fixed predictor overflow"))?;
+            samples[index]
+                .checked_sub(prediction)
+                .ok_or(AudioError::InvalidData("FLAC residual overflow"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    writer.write_bits(0, 1)?;
+    writer.write_bits(8 + order as u64, 6)?;
+    writer.write_bits(0, 1)?;
+    for &sample in &samples[..order] {
+        writer.write_bits(sample as u64, bits_per_sample)?;
+    }
+    writer.write_bits(0, 2)?;
+    writer.write_bits(0, 4)?;
+    writer.write_bits(u64::from(rice_parameter), 4)?;
+    for residual in residuals {
+        let folded = ((residual as u64) << 1) ^ ((residual >> 63) as u64);
+        let quotient = folded >> rice_parameter;
+        for _ in 0..quotient {
+            writer.write_bits(0, 1)?;
+        }
+        writer.write_bits(1, 1)?;
+        writer.write_bits(folded & ((1_u64 << rice_parameter) - 1), rice_parameter)?;
+    }
+    Ok(())
 }
 
 fn encode_utf8_number(value: u64) -> Result<Vec<u8>, AudioError> {
@@ -453,6 +535,32 @@ mod tests {
                 _ => unreachable!(),
             }
         );
+    }
+
+    #[test]
+    fn uses_fixed_predictors_and_rice_coding_for_redundant_audio() {
+        for samples in [
+            vec![0_i16; 4096],
+            (0..4096).map(|index| index as i16).collect(),
+        ] {
+            let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
+            let input = PcmBuffer::new(spec, Samples::I16(samples.clone())).unwrap();
+            let mut encoder = FlacEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+            encoder.write_block(&input).unwrap();
+            encoder.finish().unwrap();
+            let bytes = encoder.writer.into_inner();
+            assert!(bytes.len() < 1024, "predictive frame was not selected");
+
+            let mut decoder = FlacDecoder::new(Cursor::new(bytes)).unwrap();
+            let mut decoded = Vec::new();
+            while let Some(block) = decoder.read_frames(4096).unwrap() {
+                let Samples::I16(values) = block.samples() else {
+                    panic!("unexpected decoded sample type");
+                };
+                decoded.extend_from_slice(values);
+            }
+            assert_eq!(decoded, samples);
+        }
     }
 
     #[test]

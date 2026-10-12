@@ -277,7 +277,7 @@ fn read_predictive<R: std::io::Read>(
     Ok(samples)
 }
 
-fn fixed_prediction(samples: &[i64], index: usize, order: usize) -> Option<i64> {
+pub(crate) fn fixed_prediction(samples: &[i64], index: usize, order: usize) -> Option<i64> {
     match order {
         0 => Some(0),
         1 => Some(samples[index - 1]),

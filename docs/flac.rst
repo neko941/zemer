@@ -9,9 +9,9 @@ applications can use it without the Zemer CLI.
 The current format reference is `RFC 9639 <https://datatracker.ietf.org/doc/html/rfc9639>`_.
 The supplied `draft-ietf-cellar-flac-08 <https://www.ietf.org/archive/id/draft-ietf-cellar-flac-08.pdf>`_
 is an expired 2023 draft and is useful as a detailed companion, not as the
-current normative text. The encoder currently writes integer PCM using
-verbatim subframes; it does not search for predictors or claim the FLAC
-streamable subset.
+current normative text. The encoder writes integer PCM using verbatim or
+fixed-predictor subframes with Rice-coded residuals. It picks a predictor only
+when the encoded frame is smaller than the verbatim form.
 
 .. code-block:: rust
 
@@ -50,8 +50,8 @@ verified. The regular
 ``Read``.
 
 The ``FlacEncoder<W>`` accepts integer PCM at 8, 16, 24, and 32 bits, streams
-4096-sample verbatim frames, writes Vorbis comments, and patches STREAMINFO
-sample totals and MD5 when ``finish()`` succeeds. It requires a seekable output
+4096-sample verbatim or fixed-predictor/Rice frames, writes Vorbis comments,
+and patches STREAMINFO sample totals and MD5 when ``finish()`` succeeds. It requires a seekable output
 and has no floating-point path. Optional channel masks are written as the
 RFC-defined hexadecimal Vorbis comment. The decoder reads STREAMINFO and
 Vorbis comments, retains each metadata block's
@@ -63,8 +63,8 @@ and Ogg-FLAC seeking are not implemented. Ogg-FLAC validates page framing and ch
 terminal granule against the decoded sample count, including when STREAMINFO's
 total is unknown, and trims trailing samples from the final decoded block as
 required. The CLI can inspect either
-FLAC mapping and convert them to WAVE; encoding is currently exposed by the Rust
-library only.
+FLAC mapping and convert them to WAVE or native FLAC. Ogg-FLAC encoding and
+chained logical streams are not implemented.
 Support is partial: valid uncommon streams outside the decoder's current
 capabilities may be rejected. Vorbis comments are exposed as shared text
 metadata. Every block is preserved as its original type and payload. Picture

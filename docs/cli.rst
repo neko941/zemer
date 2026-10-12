@@ -40,8 +40,8 @@ frame-count/sample-rate fraction, and supported metadata. It streams audio in
 bounded blocks to validate and count frames. ``speaker_mask`` is a numeric WAVE
 mask or JSON ``null`` when no speaker mask was supplied.
 
-Convert WAVE, native FLAC, Ogg-FLAC, or WavPack input to a supported WAVE sample format. Output
-defaults to classic RIFF; choose RF64 explicitly when needed:
+Convert WAVE, native FLAC, Ogg-FLAC, or WavPack input to a supported WAVE
+sample format, or encode integer PCM to native FLAC:
 
 .. code-block:: console
 
@@ -49,7 +49,10 @@ defaults to classic RIFF; choose RF64 explicitly when needed:
    cargo run -p zemer -- convert --format pcm_i16 input.flac output.wav
    cargo run -p zemer -- convert --format pcm_i16 input.wv output.wav
    cargo run -p zemer -- convert --format wavpack input.wav output.wv
+   cargo run -p zemer -- convert --format flac input.wav output.flac
    cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
+
+WAVE output defaults to classic RIFF; choose RF64 explicitly when needed.
 
 The same command can explicitly select G.711 output:
 

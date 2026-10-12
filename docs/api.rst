@@ -84,8 +84,9 @@ Rust library crate ``flac`` (Cargo package ``zemer-flac``)
 ----------------------------------------------------------
 
 * ``FlacEncoder<W>`` — seekable streaming encoder for integer PCM 8/16/24/32;
-  emits lossless verbatim subframes and patches STREAMINFO totals and MD5 at
-  ``finish()``. Floating-point PCM is not supported by this encoder.
+  emits lossless verbatim or fixed-predictor/Rice subframes and patches
+  STREAMINFO totals and MD5 at ``finish()``. Floating-point PCM is not
+  supported by this encoder.
 * ``FlacDecoder<R>`` — streaming decoder for native FLAC streams; reads
   Vorbis comments into shared ``Metadata`` and exposes retained raw blocks via
   ``metadata_blocks()``.
