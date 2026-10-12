@@ -1,11 +1,13 @@
 mod bitstream;
 mod decode;
+mod encode;
 mod frame;
 mod md5;
 mod metadata;
 mod rewrite;
 
 pub use decode::FlacDecoder;
+pub use encode::FlacEncoder;
 pub use metadata::{
     FlacApplication, FlacCueIndex, FlacCueSheet, FlacCueTrack, FlacMetadataBlock, FlacPicture,
     FlacSeekPoint, FlacSeekTable, FlacStreamInfo,

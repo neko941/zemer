@@ -29,7 +29,16 @@ impl<R: Read> FlacDecoder<R> {
         let mut reader = BufReader::new(reader);
         let (info, metadata, metadata_blocks) = read_metadata(&mut reader)?;
         let format = output_format(info.bits_per_sample());
-        let spec = AudioSpec::new(info.sample_rate(), u16::from(info.channels()), format)?;
+        let speaker_mask = metadata
+            .values("WAVEFORMATEXTENSIBLE_CHANNEL_MASK")
+            .first()
+            .and_then(|value| parse_channel_mask(value));
+        let spec = AudioSpec::new_with_speaker_mask(
+            info.sample_rate(),
+            u16::from(info.channels()),
+            format,
+            speaker_mask,
+        )?;
         Ok(Self {
             // shortcut: unknown-size frames are capped at 16 MiB, upgrade when supporting unusually large valid frames.
             reader: BitReader::new(
@@ -212,6 +221,13 @@ fn output_format(bits_per_sample: u8) -> SampleFormat {
     }
 }
 
+fn parse_channel_mask(value: &str) -> Option<u32> {
+    let digits = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))?;
+    u32::from_str_radix(digits, 16).ok()
+}
+
 fn sample_container_bits(format: SampleFormat) -> u8 {
     match format {
         SampleFormat::PcmU8 => 8,
@@ -219,5 +235,18 @@ fn sample_container_bits(format: SampleFormat) -> u8 {
         SampleFormat::PcmI24 => 24,
         SampleFormat::PcmI32 => 32,
         SampleFormat::Float32 | SampleFormat::Float64 => unreachable!(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_channel_mask;
+
+    #[test]
+    fn parses_flac_channel_masks_as_case_insensitive_hex() {
+        assert_eq!(parse_channel_mask("0x5003"), Some(0x5003));
+        assert_eq!(parse_channel_mask("0X0008"), Some(0x8));
+        assert_eq!(parse_channel_mask("8"), None);
+        assert_eq!(parse_channel_mask("0x100000000"), None);
     }
 }

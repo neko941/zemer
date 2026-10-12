@@ -1,15 +1,17 @@
 Native FLAC
 ===========
 
-The ``zemer-flac`` crate provides a streaming decoder for native FLAC files.
-It implements ``zemer_core::AudioDecoder`` and yields the shared interleaved
-PCM blocks, so applications can use it without the Zemer CLI.
+The ``zemer-flac`` crate provides streaming encoding and decoding for native
+FLAC files. It implements ``zemer_core::AudioDecoder`` and
+``zemer_core::AudioEncoder`` using shared interleaved PCM blocks, so
+applications can use it without the Zemer CLI.
 
 The current format reference is `RFC 9639 <https://datatracker.ietf.org/doc/html/rfc9639>`_.
 The supplied `draft-ietf-cellar-flac-08 <https://www.ietf.org/archive/id/draft-ietf-cellar-flac-08.pdf>`_
 is an expired 2023 draft and is useful as a detailed companion, not as the
-current normative text. It describes the streamable subset for compatible
-encoding; Zemer does not yet encode FLAC or validate that subset.
+current normative text. The encoder currently writes integer PCM using
+verbatim subframes; it does not search for predictors or claim the FLAC
+streamable subset.
 
 .. code-block:: rust
 
@@ -24,12 +26,18 @@ encoding; Zemer does not yet encode FLAC or validate that subset.
    }
    # Ok::<(), zemer_core::AudioError>(())
 
-The decoder reads STREAMINFO and Vorbis comments, retains each metadata block's
+The ``FlacEncoder<W>`` accepts integer PCM at 8, 16, 24, and 32 bits, streams
+4096-sample verbatim frames, writes Vorbis comments, and patches STREAMINFO
+sample totals and MD5 when ``finish()`` succeeds. It requires a seekable output
+and has no floating-point path. Optional channel masks are written as the
+RFC-defined hexadecimal Vorbis comment. The decoder reads STREAMINFO and
+Vorbis comments, retains each metadata block's
 raw type and payload through ``metadata_blocks()``, handles constant, verbatim,
 fixed-predictor, and linear-predictor subframes, Rice residuals, wasted bits,
 and stereo decorrelation. It verifies frame header and frame CRCs. It currently
-supports native FLAC streams only; Ogg-FLAC, encoding, and seeking are not
-implemented. The CLI can inspect native FLAC streams and convert them to WAVE.
+supports native FLAC streams only; Ogg-FLAC and seeking are not implemented.
+The CLI can inspect native FLAC streams and convert them to WAVE; encoding is
+currently exposed by the Rust library only.
 Support is partial: valid uncommon streams outside the decoder's current
 capabilities may be rejected. Vorbis comments are exposed as shared text
 metadata. Every block is preserved as its original type and payload. Picture
@@ -45,7 +53,7 @@ rules. ``rewrite_metadata()`` replaces or adds the Vorbis comment block while
 preserving all other metadata block payloads and copying the encoded audio
 bytes unchanged. It writes a new stream; callers should use a temporary output
 file before replacing a source file. Retained metadata is limited to 64 MiB
-per stream. FLAC audio encoding is not implemented.
+per stream.
 It rejects streams that change sample rate, channel count,
 or bit depth between frames because the shared decoder interface has one fixed
 ``AudioSpec`` per stream. After the caller reads through end-of-stream, the
