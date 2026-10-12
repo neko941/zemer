@@ -8,8 +8,8 @@ use std::{
     process::ExitCode,
 };
 
-use dsf::{DsfDecoder, DsfEncoder};
 use dsdiff::{DsdiffDecoder, DsdiffEncoder};
+use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
 use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
 use wavpack::{
@@ -447,14 +447,17 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         });
     }
     if let Some((decoder, _)) = dsd_input {
-        if !matches!(format, OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::WavPack)
-            || container.is_some()
+        if !matches!(
+            format,
+            OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::WavPack
+        ) || container.is_some()
             || bitrate.is_some()
         {
             return Err(CliError {
                 kind: "unsupported",
-                message: "native DSD conversion supports DSF, DSDIFF, and lossless WavPack outputs only"
-                    .to_owned(),
+                message:
+                    "native DSD conversion supports DSF, DSDIFF, and lossless WavPack outputs only"
+                        .to_owned(),
             });
         }
         return convert_dsd(input, output, format, decoder)

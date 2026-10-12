@@ -5,8 +5,8 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use dsf::{DsfDecoder, DsfEncoder};
 use dsdiff::DsdiffDecoder;
+use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, OggFlacDecoder};
 use wav::{write_wav, write_wav_with_metadata};
 use wavpack::{WavPackDecoder, WavPackDsdDecoder};
@@ -1037,9 +1037,11 @@ fn dsd_cli_inspects_and_transcodes_wavpack_and_dsf_without_pcm() {
         "{}",
         String::from_utf8_lossy(&inspected.stderr)
     );
-    assert!(String::from_utf8(inspected.stdout)
-        .unwrap()
-        .contains("\"format\":\"dsdiff\""));
+    assert!(
+        String::from_utf8(inspected.stdout)
+            .unwrap()
+            .contains("\"format\":\"dsdiff\"")
+    );
 
     let mut dsf_decoder = DsfDecoder::new(File::open(&dsf_path).unwrap()).unwrap();
     assert_eq!(dsd_bytes(&mut dsf_decoder), expected);
