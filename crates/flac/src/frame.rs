@@ -11,7 +11,9 @@ pub(crate) fn read_frame<R: std::io::Read>(
         return Ok(None);
     };
     if sync >> 2 != 0x3ffe || sync & 2 != 0 {
-        return Err(AudioError::InvalidData("invalid FLAC frame sync or reserved bit"));
+        return Err(AudioError::InvalidData(
+            "invalid FLAC frame sync or reserved bit",
+        ));
     }
     let _variable_blocking = sync & 1 != 0;
     let block_code = reader.read_bits(4)? as u8;
@@ -32,7 +34,9 @@ pub(crate) fn read_frame<R: std::io::Read>(
         _ => unreachable!(),
     };
     if block_size == 0 || block_size > usize::from(stream.max_block_size()) {
-        return Err(AudioError::InvalidData("FLAC frame block size exceeds STREAMINFO"));
+        return Err(AudioError::InvalidData(
+            "FLAC frame block size exceeds STREAMINFO",
+        ));
     }
     let sample_rate = match rate_code {
         0 => stream.sample_rate(),
@@ -47,12 +51,11 @@ pub(crate) fn read_frame<R: std::io::Read>(
         9 => 44_100,
         10 => 48_000,
         11 => 96_000,
-        12 => (reader.read_bits(8)? as u32).checked_mul(1_000),
-        13 => Some(reader.read_bits(16)? as u32),
-        14 => (reader.read_bits(16)? as u32).checked_mul(10),
+        12 => reader.read_bits(8)? as u32 * 1_000,
+        13 => reader.read_bits(16)? as u32,
+        14 => reader.read_bits(16)? as u32 * 10,
         _ => return Err(AudioError::InvalidData("reserved FLAC sample-rate code")),
-    }
-    .ok_or(AudioError::InvalidData("FLAC sample rate overflow"))?;
+    };
     let channels = match channel_assignment {
         0..=7 => channel_assignment + 1,
         8..=10 => 2,
@@ -62,10 +65,10 @@ pub(crate) fn read_frame<R: std::io::Read>(
         0 => stream.bits_per_sample(),
         1 => 8,
         2 => 12,
-        3 => 16,
-        4 => 20,
-        5 => 24,
-        6 => return Err(AudioError::InvalidData("reserved FLAC sample-size code")),
+        3 => return Err(AudioError::InvalidData("reserved FLAC sample-size code")),
+        4 => 16,
+        5 => 20,
+        6 => 24,
         7 => 32,
         _ => unreachable!(),
     };
@@ -102,7 +105,9 @@ pub(crate) fn read_frame<R: std::io::Read>(
         .max_frame_size()
         .is_some_and(|maximum| reader.frame_bytes().saturating_add(2) > maximum as usize)
     {
-        return Err(AudioError::InvalidData("FLAC frame exceeds STREAMINFO maximum"));
+        return Err(AudioError::InvalidData(
+            "FLAC frame exceeds STREAMINFO maximum",
+        ));
     }
 
     if channel_assignment >= 8 {
@@ -119,7 +124,9 @@ pub(crate) fn read_frame<R: std::io::Read>(
             let minimum = -(1_i64 << (bits_per_sample - 1));
             let maximum = (1_i64 << (bits_per_sample - 1)) - 1;
             if !(minimum..=maximum).contains(&value) {
-                return Err(AudioError::InvalidData("FLAC sample exceeds STREAMINFO bit depth"));
+                return Err(AudioError::InvalidData(
+                    "FLAC sample exceeds STREAMINFO bit depth",
+                ));
             }
             interleaved.push(value);
         }
@@ -140,7 +147,9 @@ fn read_utf8_number<R: std::io::Read>(reader: &mut BitReader<R>) -> Result<u64, 
     for _ in 1..leading_ones {
         let byte = reader.read_bits(8)? as u8;
         if byte & 0xc0 != 0x80 {
-            return Err(AudioError::InvalidData("invalid FLAC UTF-8 continuation byte"));
+            return Err(AudioError::InvalidData(
+                "invalid FLAC UTF-8 continuation byte",
+            ));
         }
         value = (value << 6) | u64::from(byte & 0x3f);
     }
@@ -153,7 +162,9 @@ fn read_subframe<R: std::io::Read>(
     bits_per_sample: u8,
 ) -> Result<Vec<i64>, AudioError> {
     if reader.read_bits(1)? != 0 {
-        return Err(AudioError::InvalidData("non-zero FLAC subframe padding bit"));
+        return Err(AudioError::InvalidData(
+            "non-zero FLAC subframe padding bit",
+        ));
     }
     let kind = reader.read_bits(6)? as u8;
     let wasted = if reader.read_bits(1)? != 0 {
@@ -170,7 +181,7 @@ fn read_subframe<R: std::io::Read>(
         1 => read_verbatim(reader, block_size, coded_bits)?,
         8..=12 => {
             let order = usize::from(kind - 8);
-            read_predictive(reader, block_size, coded_bits, order, None)?
+            read_predictive(reader, block_size, coded_bits, order)?
         }
         32..=63 => {
             let order = usize::from(kind - 31);
@@ -241,27 +252,16 @@ fn read_predictive<R: std::io::Read>(
     block_size: usize,
     bits: u8,
     order: usize,
-    coefficients: Option<&[i64]>,
 ) -> Result<Vec<i64>, AudioError> {
     if order > block_size {
-        return Err(AudioError::InvalidData("FLAC predictor order exceeds block size"));
+        return Err(AudioError::InvalidData(
+            "FLAC predictor order exceeds block size",
+        ));
     }
     let mut samples = read_warmup(reader, order, bits)?;
     samples.extend(read_residual(reader, block_size - order, order)?);
     for index in order..block_size {
-        let prediction = if let Some(coefficients) = coefficients {
-            coefficients
-                .iter()
-                .enumerate()
-                .try_fold(0_i64, |sum, (coefficient_index, coefficient)| {
-                    sum.checked_add(
-                        coefficient.checked_mul(samples[index - coefficient_index - 1])?,
-                    )
-                })
-                .ok_or(AudioError::InvalidData("FLAC LPC prediction overflow"))?
-        } else {
-            fixed_prediction(&samples, index, order)
-        };
+        let prediction = fixed_prediction(&samples, index, order);
         samples[index] = prediction
             .checked_add(samples[index])
             .ok_or(AudioError::InvalidData("FLAC predictor overflow"))?;
@@ -275,8 +275,10 @@ fn fixed_prediction(samples: &[i64], index: usize, order: usize) -> i64 {
         1 => samples[index - 1],
         2 => 2 * samples[index - 1] - samples[index - 2],
         3 => 3 * samples[index - 1] - 3 * samples[index - 2] + samples[index - 3],
-        4 => 4 * samples[index - 1] - 6 * samples[index - 2] + 4 * samples[index - 3]
-            - samples[index - 4],
+        4 => {
+            4 * samples[index - 1] - 6 * samples[index - 2] + 4 * samples[index - 3]
+                - samples[index - 4]
+        }
         _ => unreachable!(),
     }
 }
@@ -290,7 +292,11 @@ fn read_residual<R: std::io::Read>(
     let parameter_bits = match method {
         0 => 4,
         1 => 5,
-        _ => return Err(AudioError::InvalidData("reserved FLAC residual coding method")),
+        _ => {
+            return Err(AudioError::InvalidData(
+                "reserved FLAC residual coding method",
+            ));
+        }
     };
     let partition_order = reader.read_bits(4)? as u8;
     let partitions = 1_usize << partition_order;
@@ -298,11 +304,15 @@ fn read_residual<R: std::io::Read>(
         .checked_add(predictor_order)
         .ok_or(AudioError::InvalidData("FLAC residual count overflow"))?;
     if partitioned_count % partitions != 0 {
-        return Err(AudioError::InvalidData("invalid FLAC residual partition size"));
+        return Err(AudioError::InvalidData(
+            "invalid FLAC residual partition size",
+        ));
     }
     let partition_size = partitioned_count / partitions;
     if partition_size < predictor_order {
-        return Err(AudioError::InvalidData("FLAC residual partition smaller than predictor"));
+        return Err(AudioError::InvalidData(
+            "FLAC residual partition smaller than predictor",
+        ));
     }
     let mut residual = Vec::with_capacity(count);
     for partition in 0..partitions {
@@ -349,23 +359,33 @@ fn read_residual<R: std::io::Read>(
 
 fn restore_stereo(subframes: &mut [Vec<i64>], assignment: u8) -> Result<(), AudioError> {
     if subframes.len() != 2 || subframes[0].len() != subframes[1].len() {
-        return Err(AudioError::InvalidData("invalid FLAC stereo subframe shape"));
+        return Err(AudioError::InvalidData(
+            "invalid FLAC stereo subframe shape",
+        ));
     }
-    for (left, right) in subframes[0].iter_mut().zip(&mut subframes[1]) {
+    let (left_channel, right_channel) = subframes.split_at_mut(1);
+    for (left, right) in left_channel[0].iter_mut().zip(&mut right_channel[0]) {
         let (restored_left, restored_right) = match assignment {
-            8 => (*left, left.checked_sub(*right)),
-            9 => (left.checked_add(*right), *right),
+            8 => (Some(*left), left.checked_sub(*right)),
+            9 => (left.checked_add(*right), Some(*right)),
             10 => {
                 let mid = left
                     .checked_mul(2)
                     .and_then(|value| value.checked_add(*right & 1))
                     .ok_or(AudioError::InvalidData("FLAC mid-side overflow"))?;
-                (mid.checked_add(*right).map(|value| value >> 1), mid.checked_sub(*right).map(|value| value >> 1))
+                (
+                    mid.checked_add(*right).map(|value| value >> 1),
+                    mid.checked_sub(*right).map(|value| value >> 1),
+                )
             }
             _ => unreachable!(),
         };
-        *left = restored_left.ok_or(AudioError::InvalidData("FLAC stereo reconstruction overflow"))?;
-        *right = restored_right.ok_or(AudioError::InvalidData("FLAC stereo reconstruction overflow"))?;
+        *left = restored_left.ok_or(AudioError::InvalidData(
+            "FLAC stereo reconstruction overflow",
+        ))?;
+        *right = restored_right.ok_or(AudioError::InvalidData(
+            "FLAC stereo reconstruction overflow",
+        ))?;
     }
     Ok(())
 }

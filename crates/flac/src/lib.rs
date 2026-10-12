@@ -10,7 +10,7 @@ pub use metadata::FlacStreamInfo;
 mod tests {
     use std::io::Cursor;
 
-    use zemer_core::{AudioDecoder, SampleFormat, Samples};
+    use zemer_core::{AudioDecoder, AudioError, SampleFormat, Samples};
 
     use crate::FlacDecoder;
 
@@ -30,5 +30,23 @@ mod tests {
         let block = decoder.read_frames(1).unwrap().unwrap();
         assert_eq!(block.samples(), &Samples::I16(vec![25_588, 10_416]));
         assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_a_corrupted_frame_crc() {
+        let mut bytes = [
+            0x66, 0x4c, 0x61, 0x43, 0x80, 0x00, 0x00, 0x22, 0x10, 0x00, 0x10, 0x00, 0x00,
+            0x00, 0x0f, 0x00, 0x00, 0x0f, 0x0a, 0xc4, 0x42, 0xf0, 0x00, 0x00, 0x00, 0x01, 0x3e,
+            0x84, 0xb4, 0x18, 0x07, 0xdc, 0x69, 0x03, 0x07, 0x58, 0x6a, 0x3d, 0xad, 0x1a, 0x2e,
+            0x0f, 0xff, 0xf8, 0x69, 0x18, 0x00, 0x00, 0xbf, 0x03, 0x58, 0xfd, 0x03, 0x12, 0x8b,
+            0xaa, 0x9a,
+        ];
+        let last = bytes.len() - 1;
+        bytes[last] ^= 1;
+        let mut decoder = FlacDecoder::new(Cursor::new(bytes)).unwrap();
+        assert!(matches!(
+            decoder.read_frames(1),
+            Err(AudioError::InvalidData("FLAC frame CRC-16 mismatch"))
+        ));
     }
 }

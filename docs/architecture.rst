@@ -10,6 +10,8 @@ writers:
 * ``zemer-core`` defines streaming decoder/encoder traits and re-exports the
   metadata and PCM types for convenience.
 * ``wav`` implements RIFF/WAVE on top of those shared interfaces.
+* ``flac`` decodes native FLAC frames into the same shared PCM and metadata
+  types; Ogg-FLAC remains a separate mapping.
 * ``cue`` parses and writes CUE sheet models without depending on a codec or
   audio container implementation.
 

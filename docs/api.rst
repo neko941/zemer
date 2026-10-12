@@ -54,6 +54,12 @@ Rust library crate ``wav`` (Cargo package ``zemer-wav``)
   16-bit PCM blocks as G.711 A-law or μ-law WAVE.
 * ``WavContainer`` — explicitly choose classic RIFF or RF64 output.
 
+Rust library crate ``flac`` (Cargo package ``zemer-flac``)
+---------------------------------------------------------
+
+* ``FlacDecoder<R>`` — streaming decoder for native FLAC streams; reads
+  Vorbis comments into the shared ``Metadata`` type.
+
 Generate complete local Rust API documentation from the repository root:
 
 .. code-block:: console

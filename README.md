@@ -20,6 +20,7 @@ The workspace separates format-independent audio types from each format implemen
 | RIFF/WAVE G.711 A-law and μ-law | Yes | Yes | RIFF INFO read/write | Decodes to signed 16-bit PCM; writing requires explicit G.711 selection |
 | RF64/WAVE | Yes | Yes | RIFF INFO read/write | 64-bit file and data sizes; select explicitly for output |
 | CUE sheets for WAVE/AUDIO tracks | Yes | Yes | Track title and performer | Split referenced WAV audio into track WAVs; create CUE sheets for WAV tracks |
+| Native FLAC | Yes (library) | No | Vorbis comments read | Streaming decoder in [`zemer-flac`](crates/flac/); CLI integration and writing remain planned |
 
 ## Roadmap
 
@@ -32,6 +33,7 @@ The WAV reader handles the first `data` chunk and skips unknown RIFF/RF64 chunks
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata and PCM types for convenience.
+- [`zemer-flac`](crates/flac/): native FLAC streaming decoder.
 - [`wav`](crates/wav/): RIFF/WAVE library crate (`zemer-wav` Cargo package).
 - [`cue`](crates/cue/): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, and CUE/WAV workflows.

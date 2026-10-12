@@ -47,6 +47,8 @@ identified from file contents.
 ## 2. Shared audio, conversion, and metadata
 
 - Keep streaming decoder and encoder APIs independent of format-specific crates.
+- [x] Extract the format-independent tag collection into the standalone
+  ``zemer-metadata`` crate; ``zemer-core`` re-exports it for convenience.
 - Establish common metadata fields and map them to each format's native tags;
   retain format-specific fields when they do not fit the shared model.
 - Support metadata inspection and editing, including artwork and chapters when
@@ -70,7 +72,7 @@ support for every file with that extension.
 | Format | Intended read/decode work | Intended write/encode work | Priority |
 |---|---|---|---|
 | RIFF/WAVE and RF64 | Inspect, stream PCM/float/G.711, read metadata | Write PCM/float/G.711, metadata, large RF64 files | Foundation |
-| FLAC | Native and Ogg-FLAC inspection/decode, Vorbis comments | FLAC encode and comment editing | First codec after WAV |
+| FLAC | Native FLAC streaming decode and Vorbis comments | FLAC encode and comment editing | Native decoder started; Ogg-FLAC is separate |
 | AIFF / AIFF-C | Parse chunks, decode supported PCM/float and declared codecs | Write supported PCM/float, metadata | Lossless |
 | AU / CAF / raw PCM | Decode supported encodings; raw PCM requires caller-supplied parameters | Encode supported encodings and raw PCM | Lossless / utility |
 | WavPack (`.wv`) | Inspect/decode lossless, lossy, and hybrid files; use a matching `.wvc` correction file when present | Encode lossless and explicitly selected lossy or hybrid modes; read/write APEv2 tags | Evaluate after FLAC |
