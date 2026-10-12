@@ -236,7 +236,7 @@ fn convert_wav(
         decoder.spec().channels(),
         format.input_sample_format(),
     )
-    .map_err(|error| cli_audio_error(error, &input))?;
+    .map_err(|error| cli_audio_error(error.into(), &input))?;
     let output_file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -269,7 +269,7 @@ fn convert_wav(
             .map_err(|error| cli_audio_error(error, &input))?
         {
             let converted = convert_sample_format(&block, format.input_sample_format())
-                .map_err(|error| cli_audio_error(error, &input))?;
+                .map_err(|error| cli_audio_error(error.into(), &input))?;
             encoder
                 .write_block(&converted)
                 .map_err(|error| cli_audio_error(error, &output))?;
