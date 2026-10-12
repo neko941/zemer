@@ -421,7 +421,11 @@ fn expands_false_stereo_mono_payloads_to_two_output_channels() {
         .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
         .collect::<Vec<_>>();
     assert_eq!(decoded, expected);
-    assert!(decoded.chunks_exact(2).all(|channels| channels[0] == channels[1]));
+    assert!(
+        decoded
+            .chunks_exact(2)
+            .all(|channels| channels[0] == channels[1])
+    );
 }
 
 #[test]
