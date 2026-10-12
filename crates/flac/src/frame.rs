@@ -5,7 +5,7 @@ use crate::{bitstream::BitReader, metadata::FlacStreamInfo};
 pub(crate) fn read_frame<R: std::io::Read>(
     reader: &mut BitReader<R>,
     stream: &FlacStreamInfo,
-) -> Result<Option<(Vec<i64>, usize)>, AudioError> {
+) -> Result<Option<(Vec<i64>, usize, u64)>, AudioError> {
     reader.begin_frame()?;
     let Some(sync) = reader.read_bits_or_eof(16)? else {
         return Ok(None);
@@ -15,7 +15,7 @@ pub(crate) fn read_frame<R: std::io::Read>(
             "invalid FLAC frame sync or reserved bit",
         ));
     }
-    let _variable_blocking = sync & 1 != 0;
+    let variable_blocking = sync & 1 != 0;
     let block_code = reader.read_bits(4)? as u8;
     let rate_code = reader.read_bits(4)? as u8;
     let channel_assignment = reader.read_bits(4)? as u8;
@@ -23,7 +23,14 @@ pub(crate) fn read_frame<R: std::io::Read>(
     if reader.read_bits(1)? != 0 {
         return Err(AudioError::InvalidData("non-zero FLAC frame reserved bit"));
     }
-    let _coded_number = read_utf8_number(reader)?;
+    let coded_number = read_utf8_number(reader)?;
+    let frame_start = if variable_blocking {
+        coded_number
+    } else {
+        coded_number
+            .checked_mul(u64::from(stream.max_block_size()))
+            .ok_or(AudioError::InvalidData("FLAC frame sample number overflow"))?
+    };
     let block_size = match block_code {
         0 => return Err(AudioError::InvalidData("reserved FLAC block-size code")),
         1 => 192,
@@ -131,7 +138,7 @@ pub(crate) fn read_frame<R: std::io::Read>(
             interleaved.push(value);
         }
     }
-    Ok(Some((interleaved, block_size)))
+    Ok(Some((interleaved, block_size, frame_start)))
 }
 
 fn read_utf8_number<R: std::io::Read>(reader: &mut BitReader<R>) -> Result<u64, AudioError> {
