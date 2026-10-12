@@ -75,7 +75,7 @@ fn locate_tag<R: Read + Seek>(reader: &mut R) -> Result<Option<(u64, u64, ApeTag
         };
         let total_size = size
             .checked_add(header_size)
-            .filter(|&size| size <= (MAX_APEV2_TAG_SIZE + APE_FOOTER_SIZE) as u64)
+            .filter(|&size| size <= MAX_APEV2_TAG_SIZE as u64 + APE_FOOTER_SIZE)
             .ok_or(AudioError::InvalidData(
                 "invalid or oversized WavPack APEv2 tag",
             ))?;
