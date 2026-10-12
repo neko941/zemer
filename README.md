@@ -23,6 +23,7 @@ The workspace separates format-independent audio types from each format implemen
 | Native FLAC | Supported | Streaming integer PCM encode (8/16/24/32-bit, verbatim or fixed-predictor Rice-coded frames) and decode with frame CRC and STREAMINFO MD5 verification; sample seeking for seekable readers (SEEKTABLE accelerated, forward-scan fallback); Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE/FLAC, and comment editing are available. |
 | Ogg-FLAC | Supported | Streaming decode and encode through the reusable `zemer-ogg` page/packet reader/writer; validates terminal granules, trims final-frame samples, and supports CLI inspection and conversion to WAVE/Ogg-FLAC. One logical stream per file; Ogg seeking and chained logical streams are not included. |
 | WavPack | Supported | Streaming decode covers lossless PCM, IEEE float32, hybrid `.wvc` restoration, and native DSD profiles. Lossless integer PCM encoding supports 1–32 channels at 8/16/24/32 bits; float32 is bit-exact but stored uncompressed in WVX; raw native DSD encoding supports 1–32 channels. Custom rates, APEv2 text tags, CLI inspect, PCM conversion, and metadata editing are supported. Encoding is lossless only; hybrid `.wvc` writing and the full official stress corpus are not covered. |
+| DSF | Partial | `zemer-dsf` decodes Sony DSF 1.01 raw one-bit DSD (2.8224/5.6448 MHz, 1–6 channels) as packed octets; ID3 metadata mapping, writing, and CLI workflows are not implemented. |
 
 ## Roadmap
 

@@ -6,6 +6,7 @@ members = [
     "crates/pcm",
     "crates/wav",
     "crates/cue",
+    "crates/dsf",
     "crates/flac",
     "crates/ogg",
     "crates/wavpack",
@@ -45,6 +46,7 @@ zemer-metadata = { path = "crates/metadata", version = "0.7.0" }
 zemer-pcm = { path = "crates/pcm", version = "0.7.0" }
 wav = { package = "zemer-wav", path = "crates/wav", version = "0.7.0" }
 cue = { package = "zemer-cue", path = "crates/cue", version = "0.7.0" }
+dsf = { package = "zemer-dsf", path = "crates/dsf", version = "0.7.0" }
 flac = { package = "zemer-flac", path = "crates/flac", version = "0.7.0" }
 ogg = { package = "zemer-ogg", path = "crates/ogg", version = "0.7.0" }
 wavpack = { package = "zemer-wavpack", path = "crates/wavpack", version = "0.7.0" }

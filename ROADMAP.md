@@ -81,7 +81,8 @@ support for every file with that extension.
 | DTS Coherent Acoustics (`.dts`) | Inspect and decode DTS core; evaluate DTS-HD and embedded/container streams separately | Evaluate clean-room encoding scope and licensing before promising a writer | Spec-based feasibility review ([ETSI TS 102 114](https://www.etsi.org/deliver/etsi_ts/102100_102199/102114/01.06.01_60/ts_102114v010601p.pdf)) |
 | Ogg with Vorbis / Opus | Reusable bounded Ogg page/packet reader is implemented; parse streams and decode each codec | Encode each codec and write stream metadata | Separate codec support |
 | WMA and other legacy formats | Evaluate supported variants and dependencies | Encode only where clean-room scope and licensing permit | Evaluate separately |
-| DSF / DSDIFF | Inspect, decode DSD, read format metadata | Write DSD and metadata where specified | DSD |
+| DSF (`.dsf`) | DSF 1.01 raw one-bit DSD decode for 1–6 channels at 2.8224/5.6448 MHz | Write DSD and ID3 metadata | DSF read coverage is partial; ID3 parsing, writing, and CLI integration remain open |
+| DSDIFF (`.dff`) | Inspect, decode supported uncompressed DSD, read format metadata | Write DSD and metadata where specified | Separate feasibility and conformance work |
 | SACD DSD ISO | Evaluate TOC/area inspection and extraction of readable DSD tracks from user-supplied images | Image creation only if specification-based workflows and tests are practical | Deferred pending a lawful normative source, usable test-image rights, and an explicit image/sector model; no DRM circumvention, DST is a separate codec |
 
 Read and write are separate capabilities: a format may be readable before an

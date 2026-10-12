@@ -1,0 +1,13 @@
+[package]
+name = "zemer-dsf"
+description = "DSF container reader for native DSD audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "dsf"
+
+[dependencies]
+zemer-core.workspace = true
