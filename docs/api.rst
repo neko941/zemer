@@ -89,8 +89,8 @@ Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
   payload without buffering it; the visitor sees unpadded data, and unread
   bytes are drained before parsing the next header.
 * ``WavPackDecoder`` — implements ``AudioDecoder`` for mono and stereo lossless
-  integer PCM at 8, 16, 24, and 32 bits, stereo lossless IEEE float32, and 5.1
-  lossless PCM16, plus mono and stereo unshaped hybrid-lossy PCM16, tested
+  integer PCM at 8, 16, 24, and 32 bits, stereo lossless IEEE float32, and
+  5.1/7.1 lossless PCM16, plus mono and stereo unshaped hybrid-lossy PCM16, tested
   stereo noise-shaped hybrid-lossy PCM16, and tested stereo PCM16
   hybrid-lossless streams with paired ``.wvc`` correction files in flat and
   shaped modes through ``WavPackDecoder::new_with_correction``.

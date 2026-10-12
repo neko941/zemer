@@ -266,6 +266,30 @@ fn decodes_six_channel_lossless_pcm_with_speaker_mask() {
 }
 
 #[test]
+fn decodes_eight_channel_lossless_pcm_with_speaker_mask() {
+    let mut decoder = WavPackDecoder::new(Cursor::new(
+        include_bytes!("fixtures/surround71.wv").as_slice(),
+    ))
+    .unwrap();
+    assert_eq!(decoder.spec().channels(), 8);
+    assert_eq!(decoder.spec().speaker_mask(), Some(0x63f));
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
+
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(997).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("WavPack decoder returned a non-16-bit sample buffer");
+        };
+        decoded.extend_from_slice(samples);
+    }
+    let expected = include_bytes!("fixtures/surround71.expected.pcm")
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect::<Vec<_>>();
+    assert_eq!(decoded, expected);
+}
+
+#[test]
 fn decodes_stereo_float32_losslessly_by_bit_pattern() {
     let file = include_bytes!("fixtures/float32.wv");
     let mut decoder = WavPackDecoder::new(Cursor::new(file.as_slice())).unwrap();

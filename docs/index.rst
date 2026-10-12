@@ -9,12 +9,11 @@ The project implements RIFF/WAVE PCM, IEEE float, and G.711 reading and
 writing, plus CUE sheets for WAVE tracks. A native FLAC streaming decoder is
 available through its Rust crate.
 The ``zemer-wavpack`` crate decodes mono and stereo lossless integer PCM at 8,
-16, 24, and 32 bits, stereo lossless IEEE float32, 5.1 lossless PCM16, and mono
-and stereo unshaped hybrid-lossy PCM16. Stereo PCM16 hybrid-lossless restoration
-and stereo noise-shaped hybrid-lossy PCM16 are tested. Stereo PCM16
-hybrid-lossless restoration with a paired ``.wvc`` file is tested for both flat
-and shaped profiles. Cross-channel correction, broader multichannel layouts,
-and DSD remain incomplete.
+16, 24, and 32 bits, stereo lossless IEEE float32, 5.1 and 7.1 lossless PCM16,
+and mono and stereo unshaped hybrid-lossy PCM16. Stereo noise-shaped hybrid-lossy
+PCM16 and stereo PCM16 hybrid-lossless restoration with a paired ``.wvc`` file
+are tested for flat and shaped profiles. Cross-channel correction, other
+multichannel layouts, and DSD remain incomplete.
 
 .. toctree::
    :maxdepth: 2

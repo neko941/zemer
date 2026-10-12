@@ -10,7 +10,7 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
-- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded block inspection, mono/stereo lossless integer PCM (8/16/24/32-bit), stereo lossless IEEE float32, 5.1 lossless PCM16 block groups, mono/stereo unshaped hybrid-lossy PCM16, tested stereo noise-shaped hybrid-lossy PCM16, and tested stereo PCM16 hybrid-lossless restoration with `.wvc` in flat and shaped modes; cross-channel `.wvc` correction, broader multichannel layouts, and DSD remain incomplete.
+- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded block inspection, mono/stereo lossless integer PCM (8/16/24/32-bit), stereo lossless IEEE float32, 5.1 and 7.1 lossless PCM16 block groups, mono/stereo unshaped hybrid-lossy PCM16, tested stereo noise-shaped hybrid-lossy PCM16, and tested stereo PCM16 hybrid-lossless restoration with `.wvc` in flat and shaped modes; cross-channel `.wvc` correction, other multichannel layouts, and DSD remain incomplete.
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, WAVE/FLAC metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
