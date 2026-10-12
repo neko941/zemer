@@ -142,6 +142,7 @@ dependencies = [
  "zemer-cue",
  "zemer-flac",
  "zemer-wav",
+ "zemer-wavpack",
 ]
 
 [[package]]
@@ -193,6 +194,7 @@ dependencies = [
  "zemer-cue",
  "zemer-flac",
  "zemer-wav",
+ "zemer-wavpack",
 ]
 
 [[package]]
@@ -207,4 +209,5 @@ name = "zemer-wavpack"
 version = "0.7.0"
 dependencies = [
  "zemer-core",
+ "zemer-metadata",
 ]
