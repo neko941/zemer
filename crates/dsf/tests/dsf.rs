@@ -74,13 +74,9 @@ fn reads_channel_blocks_in_order_across_dsf_block_boundaries() {
     right.push(0x01);
     let bytes = dsf(2, 2, 4096 * 8 + 1, &[left, right]);
     let mut decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
-    loop {
-        let block = decoder.read_dsd_octets(1024).unwrap().unwrap();
-        if block.frames() == 1 {
-            assert_eq!(block.bytes(), [0x80, 0x01]);
-            break;
-        }
-    }
+    let first = decoder.read_dsd_octets(4096).unwrap().unwrap();
+    assert_eq!(first.frames(), 4096);
+    assert_eq!(&first.bytes()[first.bytes().len() - 2..], [0x80, 0x01]);
     assert_eq!(
         decoder.read_dsd_octets(1).unwrap().unwrap().bytes(),
         [0x80, 0x80]
