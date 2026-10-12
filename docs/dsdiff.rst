@@ -12,8 +12,12 @@ channel count and sound-data alignment before exposing bounded reads. Unknown
 chunks are skipped as required by the format. DST-compressed files are
 reported as unsupported.
 
-The supported metadata mapping is limited to one ASCII title, one ASCII
-artist, and the ordered four-byte channel IDs. The writer creates raw DSDIFF
+The supported metadata mapping includes one ASCII title, one ASCII artist,
+repeated general comments, and the ordered four-byte channel IDs. The
+``DsdiffDecoder.comments()`` accessor and ``DsdiffEncoder.set_comments()`` API
+also preserve typed ``COMT`` record timestamps, types, references, and text;
+only general comments map to the shared ``COMMENT`` field. Comment text is
+bounded and restricted to printable ASCII. The writer creates raw DSDIFF
 with ``FVER``, ``PROP``, ``FS``, ``CHNL``, ``CMPR`` and ``DSD`` chunks, then
 patches the chunk sizes when ``finish()`` is called. DSDIFF stores complete
 octets, so it cannot retain a partial final DSD octet; conversion from such a

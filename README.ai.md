@@ -7,7 +7,7 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-core`](crates/core/): shared PCM/DSD decoder and encoder interfaces; re-exports metadata and audio buffer types.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
-- [`zemer-dsdiff`](crates/dsdiff/) (Rust crate `dsdiff`): streaming raw DSDIFF `.dff` decode/encode for uncompressed DSD, with title, artist, and channel-ID support; DST is unsupported.
+- [`zemer-dsdiff`](crates/dsdiff/) (Rust crate `dsdiff`): streaming raw DSDIFF `.dff` decode/encode for uncompressed DSD, with title, artist, general/typed COMT comments, and channel-ID support; DST is unsupported.
 - [`zemer-dsf`](crates/dsf/): DSF 1.01 raw one-bit DSD decoder/encoder; reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags. The CLI inspects DSF/native DSD WavPack and transcodes between the two without a PCM path. Artwork/raw-frame preservation remains open.
 - [`zemer-flac`](crates/flac/) (Rust crate `flac`): native and Ogg-FLAC integer-PCM encoders, native/Ogg-FLAC decoders, native seekable decoding, Ogg-FLAC restart-and-scan seeking, Vorbis-comment rewriting, and preserved typed metadata blocks. The CLI can encode both mappings. Chained Ogg-FLAC links require matching audio specifications.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.

@@ -2,8 +2,12 @@ use std::io::{Seek, SeekFrom, Write};
 
 use zemer_core::{AudioError, DsdBuffer, DsdEncoder, DsdSpec, Metadata};
 
+use crate::DsdiffComment;
+
 const MAX_CHANNELS: usize = 32;
 const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+const MAX_COMMENTS: usize = u16::MAX as usize;
+const MAX_UNTIMED_COMMENTS: usize = 2_000;
 
 /// Writes uncompressed, raw DSDIFF audio.
 pub struct DsdiffEncoder<W> {
@@ -12,6 +16,7 @@ pub struct DsdiffEncoder<W> {
     channel_ids: Vec<[u8; 4]>,
     channel_ids_offset: u64,
     metadata: Metadata,
+    comments: Vec<DsdiffComment>,
     data_size_offset: u64,
     data_start: u64,
     sample_count: u64,
@@ -63,6 +68,7 @@ impl<W: Write + Seek> DsdiffEncoder<W> {
             channel_ids,
             channel_ids_offset,
             metadata: Metadata::default(),
+            comments: Vec::new(),
             data_size_offset,
             data_start,
             sample_count: 0,
@@ -73,6 +79,23 @@ impl<W: Write + Seek> DsdiffEncoder<W> {
 
     pub fn into_inner(self) -> W {
         self.writer
+    }
+
+    /// Replaces the format-specific DSDIFF comment records.
+    pub fn set_comments(&mut self, comments: &[DsdiffComment]) -> Result<(), AudioError> {
+        if self.finished || self.poisoned {
+            return Err(AudioError::InvalidData(
+                "DSDIFF encoder is finished or unusable",
+            ));
+        }
+        validate_comments(comments, usize::from(self.spec.channels()))?;
+        let mut copied = Vec::new();
+        copied
+            .try_reserve_exact(comments.len())
+            .map_err(|_| AudioError::InvalidData("DSDIFF comments are too large"))?;
+        copied.extend_from_slice(comments);
+        self.comments = copied;
+        Ok(())
     }
 
     fn finish_inner(&mut self) -> Result<(), AudioError> {
@@ -87,6 +110,27 @@ impl<W: Write + Seek> DsdiffEncoder<W> {
             .ok_or(AudioError::InvalidData("DSDIFF data size underflow"))?;
         if data_bytes & 1 != 0 {
             self.writer.write_all(&[0])?;
+        }
+        if !self.comments.is_empty() {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&(self.comments.len() as u16).to_be_bytes());
+            for comment in &self.comments {
+                payload.extend_from_slice(&comment.year.to_be_bytes());
+                payload.extend_from_slice(&[
+                    comment.month,
+                    comment.day,
+                    comment.hour,
+                    comment.minute,
+                ]);
+                payload.extend_from_slice(&comment.kind.to_be_bytes());
+                payload.extend_from_slice(&comment.reference.to_be_bytes());
+                payload.extend_from_slice(&(comment.text.len() as u32).to_be_bytes());
+                payload.extend_from_slice(comment.text.as_bytes());
+                if comment.text.len() & 1 != 0 {
+                    payload.push(0);
+                }
+            }
+            write_chunk(&mut self.writer, *b"COMT", &payload)?;
         }
         let mut edited_master = Vec::new();
         for (key, id) in [("ARTIST", *b"DIAR"), ("TITLE", *b"DITI")] {
@@ -175,9 +219,9 @@ impl<W: Write + Seek> DsdEncoder for DsdiffEncoder<W> {
             ));
         }
         for (key, values) in metadata.iter() {
-            if !matches!(key, "TITLE" | "ARTIST" | "DSDIFF_CHANNEL_ID") {
+            if !matches!(key, "TITLE" | "ARTIST" | "COMMENT" | "DSDIFF_CHANNEL_ID") {
                 return Err(AudioError::Unsupported(
-                    "DSDIFF writer supports title, artist, and channel IDs only",
+                    "DSDIFF writer supports title, artist, comments, and channel IDs only",
                 ));
             }
             if values.iter().any(|value| {
@@ -194,6 +238,32 @@ impl<W: Write + Seek> DsdEncoder for DsdiffEncoder<W> {
                 "DSDIFF DIIN stores at most one title and artist",
             ));
         }
+        let comment_values = metadata.values("COMMENT");
+        if comment_values.len() > MAX_UNTIMED_COMMENTS {
+            return Err(AudioError::InvalidData(
+                "too many DSDIFF comments without timestamps",
+            ));
+        }
+        let mut comments = Vec::new();
+        comments
+            .try_reserve_exact(comment_values.len())
+            .map_err(|_| AudioError::InvalidData("DSDIFF comments are too large"))?;
+        comments.extend(
+            comment_values
+                .iter()
+                .enumerate()
+                .map(|(index, text)| DsdiffComment {
+                    year: index as u16,
+                    month: 0,
+                    day: 0,
+                    hour: 0,
+                    minute: 0,
+                    kind: 0,
+                    reference: 0,
+                    text: text.clone(),
+                }),
+        );
+        validate_comments(&comments, usize::from(self.spec.channels()))?;
         let channel_ids = metadata.values("DSDIFF_CHANNEL_ID");
         let ids = if !channel_ids.is_empty() {
             if channel_ids.len() != self.channel_ids.len()
@@ -231,8 +301,43 @@ impl<W: Write + Seek> DsdEncoder for DsdiffEncoder<W> {
         }
         self.channel_ids = ids;
         self.metadata = metadata.clone();
+        self.comments = comments;
         Ok(())
     }
+}
+
+fn validate_comments(comments: &[DsdiffComment], channels: usize) -> Result<(), AudioError> {
+    if comments.len() > MAX_COMMENTS {
+        return Err(AudioError::InvalidData("too many DSDIFF comments"));
+    }
+    let mut total_text = 0_usize;
+    for comment in comments {
+        if comment.text.len() > u32::MAX as usize
+            || !comment
+                .text
+                .bytes()
+                .all(|byte| (0x20..=0x7e).contains(&byte))
+        {
+            return Err(AudioError::InvalidData(
+                "DSDIFF comments must be printable ASCII",
+            ));
+        }
+        if comment.month > 12 || comment.day > 31 || comment.hour > 23 || comment.minute > 59 {
+            return Err(AudioError::InvalidData("invalid DSDIFF comment timestamp"));
+        }
+        if (comment.kind == 0 && comment.reference != 0)
+            || (comment.kind == 1 && usize::from(comment.reference) > channels)
+        {
+            return Err(AudioError::InvalidData("invalid DSDIFF comment reference"));
+        }
+        total_text = total_text
+            .checked_add(comment.text.len())
+            .filter(|&total| total <= MAX_TEXT_BYTES)
+            .ok_or(AudioError::InvalidData(
+                "DSDIFF comment text exceeds its limit",
+            ))?;
+    }
+    Ok(())
 }
 
 fn default_channel_ids(spec: DsdSpec) -> Result<Vec<[u8; 4]>, AudioError> {

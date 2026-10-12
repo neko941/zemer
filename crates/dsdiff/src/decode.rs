@@ -2,6 +2,8 @@ use std::io::{Read, Seek, SeekFrom};
 
 use zemer_core::{AudioError, DsdBuffer, DsdDecoder, DsdSpec, Metadata};
 
+use crate::DsdiffComment;
+
 const MAX_CHANNELS: u16 = 32;
 const MAX_TEXT_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -10,6 +12,7 @@ pub struct DsdiffDecoder<R> {
     reader: R,
     spec: DsdSpec,
     metadata: Metadata,
+    comments: Vec<DsdiffComment>,
     data_start: u64,
     data_bytes: u64,
     read_bytes: u64,
@@ -48,7 +51,9 @@ impl<R: Read + Seek> DsdiffDecoder<R> {
         let mut properties = None;
         let mut data = None;
         let mut saw_di_in = false;
+        let mut saw_comments = false;
         let mut metadata = Metadata::default();
+        let mut comments = Vec::new();
         while reader.stream_position()? < form_end {
             let chunk = read_chunk_header(&mut reader, form_end)?;
             match &chunk.id {
@@ -110,6 +115,13 @@ impl<R: Read + Seek> DsdiffDecoder<R> {
                     read_di_in(&mut reader, chunk, &mut metadata)?;
                     saw_di_in = true;
                 }
+                b"COMT" => {
+                    if saw_comments {
+                        return Err(AudioError::InvalidFormat("duplicate DSDIFF COMT chunk"));
+                    }
+                    comments = read_comments(&mut reader, chunk)?;
+                    saw_comments = true;
+                }
                 _ => {}
             }
             first_chunk = false;
@@ -121,6 +133,18 @@ impl<R: Read + Seek> DsdiffDecoder<R> {
         let properties = properties.ok_or(AudioError::InvalidFormat(
             "DSDIFF is missing its sound properties",
         ))?;
+        for comment in &comments {
+            if (comment.kind == 0 && comment.reference != 0)
+                || (comment.kind == 1 && usize::from(comment.reference) > properties.channels.len())
+            {
+                return Err(AudioError::InvalidFormat(
+                    "invalid DSDIFF comment reference",
+                ));
+            }
+            if comment.kind == 0 {
+                metadata.insert("COMMENT", comment.text.clone());
+            }
+        }
         let (data_start, data_bytes) = data.ok_or(AudioError::InvalidFormat(
             "DSDIFF is missing its DSD sound data",
         ))?;
@@ -141,10 +165,16 @@ impl<R: Read + Seek> DsdiffDecoder<R> {
             reader,
             spec,
             metadata,
+            comments,
             data_start,
             data_bytes,
             read_bytes: 0,
         })
+    }
+
+    /// Returns all typed DSDIFF comment records, including non-general comments.
+    pub fn comments(&self) -> &[DsdiffComment] {
+        &self.comments
     }
 }
 
@@ -404,6 +434,89 @@ fn read_di_in<R: Read + Seek>(
         return Err(AudioError::InvalidFormat("truncated DSDIFF DIIN chunk"));
     }
     Ok(())
+}
+
+fn read_comments<R: Read + Seek>(
+    reader: &mut R,
+    chunk: Chunk,
+) -> Result<Vec<DsdiffComment>, AudioError> {
+    if chunk.size < 2 {
+        return Err(AudioError::InvalidFormat("truncated DSDIFF COMT count"));
+    }
+    let mut count_bytes = [0; 2];
+    reader.read_exact(&mut count_bytes)?;
+    let count = usize::from(u16::from_be_bytes(count_bytes));
+    let mut comments = Vec::new();
+    comments
+        .try_reserve_exact(count)
+        .map_err(|_| AudioError::InvalidData("DSDIFF comments are too large"))?;
+    let mut total_text = 0_u64;
+    for _ in 0..count {
+        let position = reader.stream_position()?;
+        if chunk.end.saturating_sub(position) < 14 {
+            return Err(AudioError::InvalidFormat("truncated DSDIFF comment record"));
+        }
+        let mut header = [0; 14];
+        reader.read_exact(&mut header)?;
+        let length = u64::from(u32::from_be_bytes(header[10..14].try_into().unwrap()));
+        total_text = total_text
+            .checked_add(length)
+            .filter(|&total| total <= MAX_TEXT_BYTES)
+            .ok_or(AudioError::InvalidData(
+                "DSDIFF comment text exceeds its limit",
+            ))?;
+        let end = reader
+            .stream_position()?
+            .checked_add(length)
+            .filter(|&end| end <= chunk.end)
+            .ok_or(AudioError::InvalidFormat("DSDIFF comment exceeds COMT"))?;
+        let padded_end = end
+            .checked_add(length & 1)
+            .filter(|&end| end <= chunk.end)
+            .ok_or(AudioError::InvalidFormat(
+                "DSDIFF comment padding exceeds COMT",
+            ))?;
+        let length = usize::try_from(length)
+            .map_err(|_| AudioError::InvalidData("DSDIFF comment is too large"))?;
+        let mut text = Vec::new();
+        text.try_reserve_exact(length)
+            .map_err(|_| AudioError::InvalidData("DSDIFF comment is too large"))?;
+        text.resize(length, 0);
+        reader.read_exact(&mut text)?;
+        if !text.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+            return Err(AudioError::InvalidFormat("non-ASCII DSDIFF comment"));
+        }
+        if end != padded_end {
+            let mut padding = [0];
+            reader.read_exact(&mut padding)?;
+            if padding[0] != 0 {
+                return Err(AudioError::InvalidFormat("invalid DSDIFF comment padding"));
+            }
+        }
+        let kind = u16::from_be_bytes(header[6..8].try_into().unwrap());
+        let reference = u16::from_be_bytes(header[8..10].try_into().unwrap());
+        if header[2] > 12 || header[3] > 31 || header[4] > 23 || header[5] > 59 {
+            return Err(AudioError::InvalidFormat(
+                "invalid DSDIFF comment timestamp",
+            ));
+        }
+        comments.push(DsdiffComment {
+            year: u16::from_be_bytes(header[..2].try_into().unwrap()),
+            month: header[2],
+            day: header[3],
+            hour: header[4],
+            minute: header[5],
+            kind,
+            reference,
+            text: String::from_utf8(text).unwrap(),
+        });
+    }
+    if reader.stream_position()? != chunk.end {
+        return Err(AudioError::InvalidFormat(
+            "invalid DSDIFF COMT record count",
+        ));
+    }
+    Ok(comments)
 }
 
 fn speaker_mask(channels: &[[u8; 4]]) -> Option<u32> {

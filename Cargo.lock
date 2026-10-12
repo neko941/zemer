@@ -140,6 +140,8 @@ version = "0.7.0"
 dependencies = [
  "zemer-core",
  "zemer-cue",
+ "zemer-dsdiff",
+ "zemer-dsf",
  "zemer-flac",
  "zemer-wav",
  "zemer-wavpack",
@@ -165,6 +167,13 @@ dependencies = [
 [[package]]
 name = "zemer-dsd"
 version = "0.7.0"
+
+[[package]]
+name = "zemer-dsdiff"
+version = "0.7.0"
+dependencies = [
+ "zemer-core",
+]
 
 [[package]]
 name = "zemer-dsf"
@@ -199,6 +208,8 @@ version = "0.7.0"
 dependencies = [
  "zemer-core",
  "zemer-cue",
+ "zemer-dsdiff",
+ "zemer-dsf",
  "zemer-flac",
  "zemer-wav",
  "zemer-wavpack",

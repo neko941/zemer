@@ -1,8 +1,10 @@
 //! DSDIFF container support for uncompressed, raw one-bit DSD.
 
+mod comment;
 mod decode;
 mod encode;
 
+pub use comment::DsdiffComment;
 pub use decode::DsdiffDecoder;
 pub use encode::DsdiffEncoder;
 
@@ -12,7 +14,7 @@ mod tests {
 
     use zemer_core::{DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata};
 
-    use crate::{DsdiffDecoder, DsdiffEncoder};
+    use crate::{DsdiffComment, DsdiffDecoder, DsdiffEncoder};
 
     #[test]
     fn raw_dsd_round_trip_preserves_channels_and_text_metadata() {
@@ -120,5 +122,130 @@ mod tests {
         let form_size = u64::from_be_bytes(duplicate[4..12].try_into().unwrap());
         duplicate[4..12].copy_from_slice(&(form_size + title_chunk_size).to_be_bytes());
         assert!(DsdiffDecoder::new(Cursor::new(duplicate)).is_err());
+    }
+
+    #[test]
+    fn round_trips_general_and_typed_comments() {
+        let spec = DsdSpec::new(2_822_400, 2).unwrap();
+        let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder
+            .set_comments(&[
+                DsdiffComment {
+                    year: 2024,
+                    month: 5,
+                    day: 6,
+                    hour: 7,
+                    minute: 8,
+                    kind: 0,
+                    reference: 0,
+                    text: "Odd".into(),
+                },
+                DsdiffComment {
+                    year: 2025,
+                    month: 1,
+                    day: 2,
+                    hour: 3,
+                    minute: 4,
+                    kind: 1,
+                    reference: 1,
+                    text: "Even!".into(),
+                },
+            ])
+            .unwrap();
+        encoder
+            .write_dsd_octets(&DsdBuffer::new(spec, vec![0x55, 0xaa]).unwrap())
+            .unwrap();
+        encoder.finish().unwrap();
+
+        let decoder = DsdiffDecoder::new(Cursor::new(encoder.into_inner().into_inner())).unwrap();
+        assert_eq!(decoder.comments().len(), 2);
+        assert_eq!(decoder.comments()[0].text, "Odd");
+        assert_eq!(decoder.comments()[1].kind, 1);
+        assert_eq!(decoder.comments()[1].reference, 1);
+        assert_eq!(decoder.metadata().values("COMMENT"), ["Odd"]);
+    }
+
+    #[test]
+    fn shared_comment_metadata_encodes_as_general_comments() {
+        let spec = DsdSpec::new(2_822_400, 1).unwrap();
+        let mut metadata = Metadata::default();
+        metadata.insert("COMMENT", "First");
+        metadata.insert("COMMENT", "Second");
+        let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.set_metadata(&metadata).unwrap();
+        encoder
+            .write_dsd_octets(&DsdBuffer::new(spec, vec![0x55]).unwrap())
+            .unwrap();
+        encoder.finish().unwrap();
+        let mut bytes = encoder.into_inner().into_inner();
+        let comt = bytes
+            .windows(4)
+            .position(|window| window == b"COMT")
+            .unwrap();
+        let size = u64::from_be_bytes(bytes[comt + 4..comt + 12].try_into().unwrap());
+        let end = comt + 12 + size as usize + (size as usize & 1);
+        let comt_chunk: Vec<_> = bytes.drain(comt..end).collect();
+        bytes.splice(32..32, comt_chunk);
+        let decoder = DsdiffDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.metadata().values("COMMENT"), ["First", "Second"]);
+    }
+
+    #[test]
+    fn rejects_invalid_comment_references_and_record_padding() {
+        let spec = DsdSpec::new(2_822_400, 1).unwrap();
+        let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        assert!(
+            encoder
+                .set_comments(&[DsdiffComment {
+                    year: 2024,
+                    month: 1,
+                    day: 1,
+                    hour: 0,
+                    minute: 0,
+                    kind: 0,
+                    reference: 1,
+                    text: "bad".into(),
+                }])
+                .is_err()
+        );
+        assert!(
+            encoder
+                .set_comments(&[DsdiffComment {
+                    year: 2024,
+                    month: 13,
+                    day: 1,
+                    hour: 0,
+                    minute: 0,
+                    kind: 0,
+                    reference: 0,
+                    text: "bad".into(),
+                }])
+                .is_err()
+        );
+
+        encoder
+            .set_comments(&[DsdiffComment {
+                year: 2024,
+                month: 1,
+                day: 1,
+                hour: 0,
+                minute: 0,
+                kind: 0,
+                reference: 0,
+                text: "Odd".into(),
+            }])
+            .unwrap();
+        encoder
+            .write_dsd_octets(&DsdBuffer::new(spec, vec![0x55]).unwrap())
+            .unwrap();
+        encoder.finish().unwrap();
+        let mut bytes = encoder.into_inner().into_inner();
+        let comt = bytes
+            .windows(4)
+            .position(|window| window == b"COMT")
+            .unwrap();
+        let comment_end = comt + 12 + 2 + 14 + 3;
+        bytes[comment_end] = 1;
+        assert!(DsdiffDecoder::new(Cursor::new(bytes)).is_err());
     }
 }

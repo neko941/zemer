@@ -77,8 +77,9 @@ Rust library crate ``dsdiff`` (Cargo package ``zemer-dsdiff``)
   uncompressed DSD profile without converting through PCM.
 * The shared DSD buffers use interleaved channel octets, MSB-first. DSDIFF
   octet frames map directly to this representation.
-* Supported metadata fields are title, artist, and channel IDs. DST and other
-  DSDIFF metadata chunks are not decoded or written.
+* Supported metadata fields are title, artist, comments, and channel IDs. The
+  format API retains typed ``COMT`` records; DST and other DSDIFF metadata
+  chunks are not decoded or written.
 
 Rust library crate ``cue`` (Cargo package ``zemer-cue``)
 --------------------------------------------------------
