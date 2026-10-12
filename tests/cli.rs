@@ -67,6 +67,63 @@ fn flac_with_comments() -> Vec<u8> {
     data
 }
 
+fn ogg_crc(bytes: &[u8]) -> u32 {
+    let mut crc = 0_u32;
+    for &byte in bytes {
+        crc ^= u32::from(byte) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04c1_1db7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+fn ogg_page(packet: &[u8], flags: u8, sequence: u32, granule: u64) -> Vec<u8> {
+    let mut lacing = Vec::new();
+    let mut remaining = packet.len();
+    while remaining >= 255 {
+        lacing.push(255);
+        remaining -= 255;
+    }
+    lacing.push(remaining as u8);
+    let mut page = vec![0; 27];
+    page[..4].copy_from_slice(b"OggS");
+    page[5] = flags;
+    page[6..14].copy_from_slice(&granule.to_le_bytes());
+    page[14..18].copy_from_slice(&7_u32.to_le_bytes());
+    page[18..22].copy_from_slice(&sequence.to_le_bytes());
+    page[26] = lacing.len() as u8;
+    page.extend_from_slice(&lacing);
+    page.extend_from_slice(packet);
+    let crc = ogg_crc(&page);
+    page[22..26].copy_from_slice(&crc.to_le_bytes());
+    page
+}
+
+fn ogg_flac_with_rfc_frame() -> Vec<u8> {
+    let native = [
+        0x66, 0x4c, 0x61, 0x43, 0x80, 0x00, 0x00, 0x22, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x0f,
+        0x00, 0x00, 0x0f, 0x0a, 0xc4, 0x42, 0xf0, 0x00, 0x00, 0x00, 0x01, 0x3e, 0x84, 0xb4, 0x18,
+        0x07, 0xdc, 0x69, 0x03, 0x07, 0x58, 0x6a, 0x3d, 0xad, 0x1a, 0x2e, 0x0f, 0xff, 0xf8, 0x69,
+        0x18, 0x00, 0x00, 0xbf, 0x03, 0x58, 0xfd, 0x03, 0x12, 0x8b, 0xaa, 0x9a,
+    ];
+    let mut mapping = Vec::from(&b"\x7fFLAC\x01\x00\x00\x01fLaC"[..]);
+    let mut streaminfo_header = native[4..8].to_vec();
+    streaminfo_header[0] &= 0x7f;
+    mapping.extend_from_slice(&streaminfo_header);
+    mapping.extend_from_slice(&native[8..42]);
+    let mut stream = ogg_page(&mapping, 2, 0, 0);
+    let mut comment = vec![4, 0, 0, 8];
+    comment.extend_from_slice(&[0; 8]);
+    stream.extend(ogg_page(&comment, 0, 1, 0));
+    stream.extend(ogg_page(&native[42..], 4, 2, 1));
+    stream
+}
+
 fn temporary_directory() -> PathBuf {
     std::env::temp_dir().join(format!(
         "zemer-cli-dir-{}-{}",
@@ -148,6 +205,45 @@ fn inspect_and_convert_native_flac_by_stream_marker() {
     );
     let _ = fs::remove_file(input_path);
     let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn inspect_ogg_flac_by_container_signature() {
+    let input_path = temporary_path();
+    let output_path = temporary_path();
+    fs::write(&input_path, ogg_flac_with_rfc_frame()).unwrap();
+    let output = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&input_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        r#"{"format":"ogg-flac","container":null,"sample_rate":44100,"channels":2,"speaker_mask":null,"sample_format":"pcm_i16","frames":1,"duration_frames":{"numerator":1,"denominator":44100},"metadata":{}}"#
+    );
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "pcm_i16", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(
+        decoder.read_frames(1).unwrap().unwrap().samples(),
+        &Samples::I16(vec![25_588, 10_416])
+    );
+    let _ = fs::remove_file(&input_path);
+    let _ = fs::remove_file(&output_path);
 }
 
 #[test]

@@ -9,9 +9,11 @@ writers:
 * ``zemer-metadata`` defines format-independent tags shared by format crates.
 * ``zemer-core`` defines streaming decoder/encoder traits and re-exports the
   metadata and PCM types for convenience.
+* ``ogg`` validates Ogg page framing/CRC and exposes bounded packets; codec
+  mapping rules remain in their own crates.
 * ``wav`` implements RIFF/WAVE on top of those shared interfaces.
-* ``flac`` decodes native FLAC frames into the same shared PCM and metadata
-  types; Ogg-FLAC remains a separate mapping.
+* ``flac`` decodes native FLAC frames and uses ``ogg`` for the Ogg-FLAC
+  mapping, producing the same shared PCM and metadata types.
 * ``cue`` parses and writes CUE sheet models without depending on a codec or
   audio container implementation.
 

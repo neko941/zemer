@@ -8,7 +8,7 @@ use std::{
     process::ExitCode,
 };
 
-use flac::FlacDecoder;
+use flac::{FlacDecoder, OggFlacDecoder};
 use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioError, AudioSpec, Metadata, SampleFormat,
@@ -480,7 +480,11 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
     })?;
     let mut file = file;
     let is_flac =
-        has_flac_signature(&mut file).map_err(|error| cli_audio_error(error.into(), path))?;
+        has_signature(&mut file, b"fLaC").map_err(|error| cli_audio_error(error.into(), path))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| cli_audio_error(error.into(), path))?;
+    let is_ogg =
+        has_signature(&mut file, b"OggS").map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| cli_audio_error(error.into(), path))?;
     if is_flac {
@@ -488,6 +492,13 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
         Ok(AudioInput {
             decoder: Box::new(decoder),
             format: "flac",
+            container: None,
+        })
+    } else if is_ogg {
+        let decoder = OggFlacDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
+        Ok(AudioInput {
+            decoder: Box::new(decoder),
+            format: "ogg-flac",
             container: None,
         })
     } else {
@@ -501,10 +512,10 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
     }
 }
 
-fn has_flac_signature(reader: &mut impl Read) -> io::Result<bool> {
-    let mut signature = [0; 4];
-    match reader.read_exact(&mut signature) {
-        Ok(()) => Ok(signature == *b"fLaC"),
+fn has_signature(reader: &mut impl Read, expected: &[u8; 4]) -> io::Result<bool> {
+    let mut found = [0; 4];
+    match reader.read_exact(&mut found) {
+        Ok(()) => Ok(found == *expected),
         Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
         Err(error) => Err(error),
     }
@@ -555,7 +566,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.flac> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw> [--container <riff|rf64>] [--json] <input.wav|input.flac> <output.wav> | zemer metadata edit [--json] <input.flac> <new-output.flac> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw> [--container <riff|rf64>] [--json] <input.wav|input.flac|input.ogg|input.oga> <output.wav> | zemer metadata edit [--json] <input.wav|input.flac> <new-output.wav|new-output.flac> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 
@@ -681,7 +692,7 @@ fn json_string(value: &str) -> String {
 mod tests {
     use std::io::{self, Cursor, Read};
 
-    use super::{has_flac_signature, json_string};
+    use super::{has_signature, json_string};
 
     struct OneByteAtATime<R>(R);
 
@@ -701,14 +712,14 @@ mod tests {
     }
 
     #[test]
-    fn reads_flac_signature_across_short_reads() {
+    fn reads_signature_across_short_reads() {
         let mut reader = OneByteAtATime(Cursor::new(b"fLaC audio"));
-        assert!(has_flac_signature(&mut reader).unwrap());
+        assert!(has_signature(&mut reader, b"fLaC").unwrap());
     }
 
     #[test]
-    fn treats_truncated_signature_as_non_flac() {
+    fn treats_truncated_signature_as_non_match() {
         let mut reader = OneByteAtATime(Cursor::new(b"fLa"));
-        assert!(!has_flac_signature(&mut reader).unwrap());
+        assert!(!has_signature(&mut reader, b"fLaC").unwrap());
     }
 }

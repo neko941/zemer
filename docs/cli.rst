@@ -14,7 +14,7 @@ installed):
 This installs ``zemer`` in Cargo's binary directory, usually ``~/.cargo/bin``.
 Alternatively, run it from a source checkout with ``cargo run -p zemer --``.
 
-Inspect a WAVE or native FLAC file:
+Inspect a WAVE, native FLAC, or Ogg-FLAC file:
 
 .. code-block:: console
 
@@ -35,7 +35,7 @@ frame-count/sample-rate fraction, and supported metadata. It streams audio in
 bounded blocks to validate and count frames. ``speaker_mask`` is a numeric WAVE
 mask or JSON ``null`` when no speaker mask was supplied.
 
-Convert WAVE or native FLAC input to a supported WAVE sample format. Output
+Convert WAVE, native FLAC, or Ogg-FLAC input to a supported WAVE sample format. Output
 defaults to classic RIFF; choose RF64 explicitly when needed:
 
 .. code-block:: console

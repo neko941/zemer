@@ -7,7 +7,7 @@ crates, so applications can use only the pieces they need.
 
 The project implements RIFF/WAVE PCM, IEEE float, and G.711 reading and
 writing, plus CUE sheets for WAVE tracks. Its FLAC crate streams integer PCM
-to and from native FLAC files.
+to and from native FLAC files and decodes Ogg-FLAC.
 The ``zemer-wavpack`` crate decodes mono and stereo lossless integer PCM at 8,
 16, 24, and 32 bits, stereo lossless IEEE float32, custom sample rates, and
 lossless PCM16 channel groups with 3–8 channels. Hybrid-lossy PCM16 and float32
@@ -25,6 +25,7 @@ DSD octets.
    getting-started
    wav
    flac
+   ogg
    cue
    cli
    architecture

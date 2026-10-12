@@ -19,6 +19,14 @@ Crate ``zemer-metadata``
 * ``Metadata`` — format-independent, case-insensitive text tags with repeated
   values; ``remove()`` removes all values for a key.
 
+Crate ``zemer-ogg``
+-------------------
+
+* ``OggPacketReader<R>`` — validates Ogg pages and yields bounded packets from
+  one logical stream.
+* ``OggPacket`` — packet bytes plus page sequence, granule position, named BOS,
+  EOS, and continuation flags, and packet/page boundary information.
+
 Crate ``zemer-core``
 --------------------
 
@@ -79,6 +87,8 @@ Rust library crate ``flac`` (Cargo package ``zemer-flac``)
 * ``FlacDecoder<R>`` — streaming decoder for native FLAC streams; reads
   Vorbis comments into shared ``Metadata`` and exposes retained raw blocks via
   ``metadata_blocks()``.
+* ``OggFlacDecoder<R>`` — Ogg-FLAC mapping decoder using the same PCM and
+  metadata interface.
 * ``FlacMetadataBlock`` — preserves the original metadata block type and
   payload; ``data()`` borrows the bytes without interpreting type-specific
   structures. ``picture()`` parses type-6 blocks without copying the image

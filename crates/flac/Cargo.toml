@@ -1,6 +1,6 @@
 [package]
 name = "zemer-flac"
-description = "Native FLAC encoder and decoder for Zemer"
+description = "Native FLAC encoder and native/Ogg FLAC decoder for Zemer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,3 +11,4 @@ name = "flac"
 
 [dependencies]
 zemer-core.workspace = true
+ogg.workspace = true
