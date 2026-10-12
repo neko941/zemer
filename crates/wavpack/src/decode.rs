@@ -27,8 +27,9 @@ const SAMPLE_RATES: [u32; 15] = [
     88_200, 96_000, 192_000,
 ];
 
-pub struct WavPackDecoder<R> {
+pub struct WavPackDecoder<R, C = std::io::Empty> {
     reader: R,
+    correction_reader: Option<C>,
     spec: AudioSpec,
     metadata: Metadata,
     pending: Option<Samples>,
@@ -37,10 +38,21 @@ pub struct WavPackDecoder<R> {
     finished: bool,
 }
 
-impl<R: Read> WavPackDecoder<R> {
+impl<R: Read> WavPackDecoder<R, std::io::Empty> {
     pub fn new(reader: R) -> Result<Self, AudioError> {
+        Self::new_inner(reader, None)
+    }
+}
+
+impl<R: Read, C: Read> WavPackDecoder<R, C> {
+    pub fn new_with_correction(reader: R, correction_reader: C) -> Result<Self, AudioError> {
+        Self::new_inner(reader, Some(correction_reader))
+    }
+
+    fn new_inner(reader: R, correction_reader: Option<C>) -> Result<Self, AudioError> {
         let mut decoder = Self {
             reader,
+            correction_reader,
             spec: AudioSpec::new(44_100, 1, SampleFormat::PcmI16)?,
             metadata: Metadata::default(),
             pending: None,
@@ -95,7 +107,25 @@ impl<R: Read> WavPackDecoder<R> {
                 ));
             }
             let payload = read_payload(&mut self.reader, &current)?;
-            let (block_spec, samples, info) = decode_lossless_pcm(&current, &payload)?;
+            let correction_payload = if let Some(reader) = self.correction_reader.as_mut() {
+                let correction_header = WavPackBlockHeader::read_from(reader)?.ok_or(
+                    AudioError::InvalidData("WavPack correction stream ended before audio stream"),
+                )?;
+                validate_header(&correction_header)?;
+                if correction_header.block_samples != current.block_samples
+                    || correction_header.block_index() != current.block_index()
+                    || correction_header.flags & MONO_DATA != current.flags & MONO_DATA
+                {
+                    return Err(AudioError::InvalidData(
+                        "WavPack correction block does not match audio block",
+                    ));
+                }
+                Some(read_payload(reader, &correction_header)?)
+            } else {
+                None
+            };
+            let (block_spec, samples, info) =
+                decode_lossless_pcm(&current, &payload, correction_payload.as_deref())?;
             if self.has_audio_block
                 && (block_spec.sample_rate() != self.spec.sample_rate()
                     || block_spec.sample_format() != self.spec.sample_format())
@@ -316,7 +346,7 @@ fn interleave_blocks(
     }
 }
 
-impl<R: Read> AudioDecoder for WavPackDecoder<R> {
+impl<R: Read, C: Read> AudioDecoder for WavPackDecoder<R, C> {
     fn spec(&self) -> AudioSpec {
         self.spec
     }
@@ -358,6 +388,7 @@ impl<R: Read> AudioDecoder for WavPackDecoder<R> {
 fn decode_lossless_pcm(
     header: &WavPackBlockHeader,
     payload: &[u8],
+    correction_payload: Option<&[u8]>,
 ) -> Result<(AudioSpec, Samples, Option<ChannelInfo>), AudioError> {
     let flags = header.flags;
     if flags & DSD_DATA != 0 {
@@ -481,6 +512,28 @@ fn decode_lossless_pcm(
         .bitstream
         .as_deref()
         .ok_or(AudioError::InvalidData("missing WavPack audio bitstream"))?;
+    let correction_bitstream = if let Some(payload) = correction_payload {
+        let mut correction = None;
+        let mut input = Cursor::new(payload);
+        visit_metadata_sub_blocks(&mut input, payload.len() as u64, |sub_block, data| {
+            if sub_block.id == 0x0b {
+                if correction.is_some() {
+                    return Err(AudioError::InvalidData(
+                        "duplicate WavPack correction bitstream",
+                    ));
+                }
+                let mut bytes = Vec::new();
+                data.read_to_end(&mut bytes)?;
+                correction = Some(bytes);
+            }
+            Ok(())
+        })?;
+        Some(correction.ok_or(AudioError::InvalidData(
+            "missing WavPack correction bitstream",
+        ))?)
+    } else {
+        None
+    };
     let hybrid = if hybrid_mode {
         Some(HybridState::parse(
             parts
@@ -493,6 +546,11 @@ fn decode_lossless_pcm(
     } else {
         None
     };
+    if correction_bitstream.is_some() && !hybrid_mode {
+        return Err(AudioError::InvalidData(
+            "WavPack correction block accompanies non-hybrid audio",
+        ));
+    }
     let sample_count = usize::try_from(header.block_samples)
         .map_err(|_| AudioError::InvalidData("WavPack block sample count does not fit memory"))?;
     if sample_count > 131_072 {
@@ -500,7 +558,13 @@ fn decode_lossless_pcm(
             "WavPack block exceeds 131072 samples",
         ));
     }
-    let mut words = EntropyDecoder::new(bitstream, medians, channels, hybrid)?;
+    let mut words = EntropyDecoder::new(
+        bitstream,
+        medians,
+        channels,
+        hybrid,
+        correction_bitstream.as_deref(),
+    )?;
     let value_count = sample_count
         .checked_mul(channels)
         .ok_or(AudioError::InvalidData("WavPack sample count overflow"))?;
@@ -508,22 +572,46 @@ fn decode_lossless_pcm(
     decoded
         .try_reserve_exact(value_count)
         .map_err(|_| AudioError::InvalidData("decoded WavPack block is too large"))?;
+    let mut correction_offsets = if correction_bitstream.is_some() {
+        let mut offsets = Vec::new();
+        offsets
+            .try_reserve_exact(value_count)
+            .map_err(|_| AudioError::InvalidData("WavPack correction block is too large"))?;
+        Some(offsets)
+    } else {
+        None
+    };
     for _ in 0..sample_count {
         let left = words.read_word(0)?.ok_or(AudioError::InvalidData(
             "WavPack bitstream ended before the block",
         ))?;
-        decoded.push(left);
+        decoded.push(left.value);
+        if let Some(offsets) = correction_offsets.as_mut() {
+            offsets.push(left.correction);
+        }
         if channels == 2 {
             let right = words.read_word(1)?.ok_or(AudioError::InvalidData(
                 "WavPack bitstream ended before the block",
             ))?;
-            decoded.push(right);
+            decoded.push(right.value);
+            if let Some(offsets) = correction_offsets.as_mut() {
+                offsets.push(right.correction);
+            }
         }
     }
     if channels == 1 {
         apply_mono_decorrelation(&mut decoded, &mut passes)?;
     } else {
-        apply_stereo_decorrelation(&mut decoded, &mut passes, flags & JOINT_STEREO != 0)?;
+        apply_stereo_decorrelation(&mut decoded, &mut passes)?;
+    }
+    if let Some(offsets) = correction_offsets {
+        for (sample, correction) in decoded.iter_mut().zip(offsets) {
+            *sample = i32::try_from(i64::from(*sample) + i64::from(correction))
+                .map_err(|_| AudioError::InvalidData("WavPack corrected sample overflow"))?;
+        }
+    }
+    if channels == 2 && flags & JOINT_STEREO != 0 {
+        apply_inverse_joint_stereo(&mut decoded)?;
     }
     let samples = if flags & FLOAT_DATA != 0 {
         if flags & INT32_DATA != 0 {
@@ -929,7 +1017,6 @@ fn apply_mono_decorrelation(
 fn apply_stereo_decorrelation(
     samples: &mut [i32],
     passes: &mut [DecorrPass],
-    joint_stereo: bool,
 ) -> Result<(), AudioError> {
     if samples.len() % 2 != 0 {
         return Err(AudioError::InvalidData(
@@ -1045,14 +1132,18 @@ fn apply_stereo_decorrelation(
             }
         }
         ring = (ring + 1) & 7;
-        if joint_stereo {
-            let mid = i64::from(pair[0]);
-            let side = i64::from(pair[1]) - (mid >> 1);
-            pair[0] = i32::try_from(mid + side)
-                .map_err(|_| AudioError::InvalidData("WavPack joint stereo overflow"))?;
-            pair[1] = i32::try_from(side)
-                .map_err(|_| AudioError::InvalidData("WavPack joint stereo overflow"))?;
-        }
+    }
+    Ok(())
+}
+
+fn apply_inverse_joint_stereo(samples: &mut [i32]) -> Result<(), AudioError> {
+    for pair in samples.chunks_exact_mut(2) {
+        let mid = i64::from(pair[0]);
+        let side = i64::from(pair[1]) - (mid >> 1);
+        pair[0] = i32::try_from(mid + side)
+            .map_err(|_| AudioError::InvalidData("WavPack joint stereo overflow"))?;
+        pair[1] = i32::try_from(side)
+            .map_err(|_| AudioError::InvalidData("WavPack joint stereo overflow"))?;
     }
     Ok(())
 }

@@ -4,8 +4,15 @@ use zemer_core::AudioError;
 
 const MEDIAN_DIVISORS: [u64; 3] = [128, 64, 32];
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DecodedWord {
+    pub(crate) value: i32,
+    pub(crate) correction: i32,
+}
+
 pub(crate) struct EntropyDecoder<'a> {
     bits: BitReader<'a>,
+    correction: Option<BitReader<'a>>,
     medians: [[u32; 3]; 2],
     channels: usize,
     holding_zero: bool,
@@ -20,6 +27,7 @@ impl<'a> EntropyDecoder<'a> {
         median_logs: [[u16; 3]; 2],
         channels: usize,
         hybrid: Option<HybridState>,
+        correction: Option<&'a [u8]>,
     ) -> Result<Self, AudioError> {
         if !(channels == 1 || channels == 2) {
             return Err(AudioError::Unsupported(
@@ -36,6 +44,7 @@ impl<'a> EntropyDecoder<'a> {
         }
         Ok(Self {
             bits: BitReader::new(bytes),
+            correction: correction.map(BitReader::new),
             medians,
             channels,
             holding_zero: false,
@@ -45,7 +54,7 @@ impl<'a> EntropyDecoder<'a> {
         })
     }
 
-    pub(crate) fn read_word(&mut self, channel: usize) -> Result<Option<i32>, AudioError> {
+    pub(crate) fn read_word(&mut self, channel: usize) -> Result<Option<DecodedWord>, AudioError> {
         if channel >= self.channels {
             return Err(AudioError::InvalidData("invalid WavPack entropy channel"));
         }
@@ -61,7 +70,10 @@ impl<'a> EntropyDecoder<'a> {
                     if let Some(hybrid) = self.hybrid.as_mut() {
                         hybrid.record_word(channel, 0);
                     }
-                    return Ok(Some(0));
+                    return Ok(Some(DecodedWord {
+                        value: 0,
+                        correction: 0,
+                    }));
                 }
             } else {
                 let Some(run) = self.bits.read_zero_run()? else {
@@ -73,7 +85,10 @@ impl<'a> EntropyDecoder<'a> {
                     if let Some(hybrid) = self.hybrid.as_mut() {
                         hybrid.record_word(channel, 0);
                     }
-                    return Ok(Some(0));
+                    return Ok(Some(DecodedWord {
+                        value: 0,
+                        correction: 0,
+                    }));
                 }
             }
         }
@@ -159,7 +174,27 @@ impl<'a> EntropyDecoder<'a> {
             }
             midpoint
         };
-        let word = if self.bits.read_bit()? {
+        let sign = self.bits.read_bit()?;
+        let correction = if error_limit != 0 {
+            if let Some(correction) = self.correction.as_mut() {
+                let exact = low
+                    .checked_add(correction.read_code(high - low)?)
+                    .ok_or(AudioError::InvalidData("WavPack correction word overflow"))?
+                    as i64;
+                let midpoint = i64::from(magnitude);
+                i32::try_from(if sign {
+                    midpoint - exact
+                } else {
+                    exact - midpoint
+                })
+                .map_err(|_| AudioError::InvalidData("WavPack correction offset overflow"))?
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+        let value = if sign {
             !(magnitude as i32)
         } else {
             magnitude as i32
@@ -167,7 +202,7 @@ impl<'a> EntropyDecoder<'a> {
         if let Some(hybrid) = self.hybrid.as_mut() {
             hybrid.record_word(channel, magnitude);
         }
-        Ok(Some(word))
+        Ok(Some(DecodedWord { value, correction }))
     }
 }
 
@@ -244,24 +279,30 @@ mod tests {
 
     #[test]
     fn rejects_invalid_channel_counts_and_indices() {
-        assert!(EntropyDecoder::new(&[], [[0; 3]; 2], 0, None).is_err());
-        assert!(EntropyDecoder::new(&[], [[0; 3]; 2], 3, None).is_err());
-        let mut decoder = EntropyDecoder::new(&[], [[0; 3]; 2], 1, None).unwrap();
+        assert!(EntropyDecoder::new(&[], [[0; 3]; 2], 0, None, None).is_err());
+        assert!(EntropyDecoder::new(&[], [[0; 3]; 2], 3, None, None).is_err());
+        let mut decoder = EntropyDecoder::new(&[], [[0; 3]; 2], 1, None, None).unwrap();
         assert!(decoder.read_word(1).is_err());
     }
 
     #[test]
     fn zero_run_metadata_decodes_silence_without_allocating_samples() {
-        let mut decoder = EntropyDecoder::new(&[0xff, 0], [[0; 3]; 2], 1, None).unwrap();
+        let mut decoder = EntropyDecoder::new(&[0xff, 0], [[0; 3]; 2], 1, None, None).unwrap();
         for _ in 0..128 {
-            assert_eq!(decoder.read_word(0).unwrap(), Some(0));
+            assert_eq!(
+                decoder.read_word(0).unwrap(),
+                Some(DecodedWord {
+                    value: 0,
+                    correction: 0
+                })
+            );
         }
     }
 
     #[test]
     fn entropy_metadata_logs_initialize_fixed_point_medians() {
         let decoder =
-            EntropyDecoder::new(&[], [[0x0f0e, 0x13ce, 0x1170], [0; 3]], 1, None).unwrap();
+            EntropyDecoder::new(&[], [[0x0f0e, 0x13ce, 0x1170], [0; 3]], 1, None, None).unwrap();
         assert_eq!(decoder.medians[0][0], 17_024);
         assert_ne!(decoder.medians[0][0], 17_024 * 16);
     }

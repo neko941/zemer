@@ -369,6 +369,45 @@ fn rejects_noise_shaped_hybrid_until_shaping_is_supported() {
 }
 
 #[test]
+fn restores_hybrid_lossless_pcm_with_correction_file() {
+    let correction = include_bytes!("fixtures/hybrid-lossless.wvc").to_vec();
+    let mut correction_reader = Cursor::new(correction.as_slice());
+    let mut decoder = WavPackDecoder::new_with_correction(
+        Cursor::new(include_bytes!("fixtures/hybrid-lossless.wv").as_slice()),
+        &mut correction_reader,
+    )
+    .unwrap();
+    assert_eq!(decoder.spec().channels(), 2);
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
+
+    let reference = include_bytes!("fixtures/hybrid-lossless.expected.pcm");
+    let expected = reference
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect::<Vec<_>>();
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(257).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("WavPack corrected stream returned the wrong sample type");
+        };
+        decoded.extend_from_slice(samples);
+    }
+    assert_eq!(decoded, expected);
+}
+
+#[test]
+fn rejects_truncated_hybrid_correction_file() {
+    let correction = include_bytes!("fixtures/hybrid-lossless.wvc");
+    assert!(
+        WavPackDecoder::new_with_correction(
+            Cursor::new(include_bytes!("fixtures/hybrid-lossless.wv").as_slice()),
+            Cursor::new(&correction[..31]),
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn decodes_consecutive_six_channel_block_groups() {
     let file = include_bytes!("fixtures/surround51-twogroups.wv");
     let mut decoder = WavPackDecoder::new(Cursor::new(file.as_slice())).unwrap();
