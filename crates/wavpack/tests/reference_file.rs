@@ -357,13 +357,33 @@ fn decodes_hybrid_lossy_pcm_against_official_wvunpack_output() {
 }
 
 #[test]
-fn rejects_noise_shaped_hybrid_until_shaping_is_supported() {
-    let mut encoded = include_bytes!("fixtures/hybrid-mono.wv").to_vec();
-    let flags = u32::from_le_bytes(encoded[24..28].try_into().unwrap());
-    encoded[24..28].copy_from_slice(&(flags | (1 << 6)).to_le_bytes());
+fn decodes_noise_shaped_hybrid_lossy_pcm_against_official_wvunpack_output() {
+    let mut decoder = WavPackDecoder::new(Cursor::new(
+        include_bytes!("fixtures/hybrid-shaped.wv").as_slice(),
+    ))
+    .unwrap();
+    let reference = include_bytes!("fixtures/hybrid-shaped.expected.pcm");
+    let expected = reference
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect::<Vec<_>>();
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(257).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("noise-shaped WavPack decoder returned a non-16-bit sample buffer");
+        };
+        decoded.extend_from_slice(samples);
+    }
+    assert_eq!(decoded, expected);
+}
 
+#[test]
+fn rejects_noise_shaped_hybrid_correction_until_feedback_is_supported() {
     assert!(matches!(
-        WavPackDecoder::new(Cursor::new(encoded)),
+        WavPackDecoder::new_with_correction(
+            Cursor::new(include_bytes!("fixtures/hybrid-shaped-lossless.wv").as_slice()),
+            Cursor::new(include_bytes!("fixtures/hybrid-shaped-lossless.wvc").as_slice()),
+        ),
         Err(zemer_core::AudioError::Unsupported(_))
     ));
 }

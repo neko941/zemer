@@ -397,9 +397,9 @@ fn decode_lossless_pcm(
         ));
     }
     let hybrid_mode = flags & HYBRID_FLAG != 0;
-    if hybrid_mode && flags & HYBRID_SHAPE != 0 {
+    if hybrid_mode && flags & HYBRID_SHAPE != 0 && correction_payload.is_some() {
         return Err(AudioError::Unsupported(
-            "WavPack hybrid noise shaping is not supported yet",
+            "noise-shaped WavPack correction restoration is not supported yet",
         ));
     }
     if hybrid_mode && flags & FLOAT_DATA != 0 {

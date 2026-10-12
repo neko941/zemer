@@ -11,8 +11,9 @@ available through its Rust crate.
 The ``zemer-wavpack`` crate decodes mono and stereo lossless integer PCM at 8,
 16, 24, and 32 bits, stereo lossless IEEE float32, 5.1 lossless PCM16, and mono
 and stereo unshaped hybrid-lossy PCM16. Stereo PCM16 hybrid-lossless restoration
-with a paired ``.wvc`` file is tested. Noise-shaped hybrid audio, broader
-multichannel layouts, and DSD remain incomplete.
+and stereo noise-shaped hybrid-lossy PCM16 are tested. Stereo PCM16
+hybrid-lossless restoration with a paired ``.wvc`` file is tested. Shaped
+``.wvc`` restoration, broader multichannel layouts, and DSD remain incomplete.
 
 .. toctree::
    :maxdepth: 2
