@@ -35,17 +35,17 @@ flac.workspace = true
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
-version = "0.5.1"
+version = "0.6.0"
 
 [workspace.dependencies]
-zemer-core = { path = "crates/core", version = "0.5.1" }
-zemer-dsd = { path = "crates/dsd", version = "0.5.1" }
-zemer-metadata = { path = "crates/metadata", version = "0.5.1" }
-zemer-pcm = { path = "crates/pcm", version = "0.5.1" }
-wav = { package = "zemer-wav", path = "crates/wav", version = "0.5.1" }
-cue = { package = "zemer-cue", path = "crates/cue", version = "0.5.1" }
-flac = { package = "zemer-flac", path = "crates/flac", version = "0.5.1" }
-ogg = { package = "zemer-ogg", path = "crates/ogg", version = "0.5.1" }
-wavpack = { package = "zemer-wavpack", path = "crates/wavpack", version = "0.5.1" }
+zemer-core = { path = "crates/core", version = "0.6.0" }
+zemer-dsd = { path = "crates/dsd", version = "0.6.0" }
+zemer-metadata = { path = "crates/metadata", version = "0.6.0" }
+zemer-pcm = { path = "crates/pcm", version = "0.6.0" }
+wav = { package = "zemer-wav", path = "crates/wav", version = "0.6.0" }
+cue = { package = "zemer-cue", path = "crates/cue", version = "0.6.0" }
+flac = { package = "zemer-flac", path = "crates/flac", version = "0.6.0" }
+ogg = { package = "zemer-ogg", path = "crates/ogg", version = "0.6.0" }
+wavpack = { package = "zemer-wavpack", path = "crates/wavpack", version = "0.6.0" }
 cue-rw = "0.3.0"
 encoding_rs = "=0.8.35"
