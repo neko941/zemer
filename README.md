@@ -29,10 +29,11 @@ The WAV reader handles the first `data` chunk and skips unknown RIFF/RF64 chunks
 
 ## Workspace crates
 
-- [`zemer-core`](crates/zemer-core/): reusable PCM buffers and conversion, audio metadata, and shared decoder/encoder interfaces.
+- [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
+- [`zemer-core`](crates/core/): audio metadata and shared decoder/encoder interfaces; re-exports PCM types for convenience.
 - [`wav`](crates/wav/): RIFF/WAVE library crate (`zemer-wav` Cargo package).
 - [`cue`](crates/cue/): CUE sheet types and checked sector/sample-frame conversion.
-- [`zemer-cli`](crates/zemer-cli/): optional `zemer` executable for inspection, conversion, and CUE/WAV workflows.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, and CUE/WAV workflows.
 - `tests/`: workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 ## Documentation
@@ -60,7 +61,7 @@ while let Some(block) = decoder.read_frames(4096)? {
 Install the latest version from the `main` branch with Cargo (Rust must be installed):
 
 ```sh
-cargo install --git https://github.com/neko941/zemer.git --branch main --locked zemer-cli
+  cargo install --git https://github.com/neko941/zemer.git --branch main --locked zemer
 ```
 
 This installs the `zemer` command in Cargo's binary directory, usually `~/.cargo/bin`.
@@ -68,7 +69,7 @@ This installs the `zemer` command in Cargo's binary directory, usually `~/.cargo
 Inspect a WAV file in stable machine-readable JSON (useful in scripts and agent workflows):
 
 ```sh
-cargo run -p zemer-cli -- inspect --json input.wav
+cargo run -p zemer -- inspect --json input.wav
 ```
 
 Errors are emitted as a JSON object on stderr with a non-zero exit status when `--json` is set.
@@ -77,10 +78,10 @@ The inspection JSON includes `speaker_mask` as a number or `null` so scripts can
 Convert to another supported WAVE sample format or explicitly encode G.711 (no resampling or channel remixing):
 
 ```sh
-cargo run -p zemer-cli -- convert --format pcm_i16 input.wav output.wav
-cargo run -p zemer-cli -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
-cargo run -p zemer-cli -- convert --format g711_alaw input.wav voice-alaw.wav
-cargo run -p zemer-cli -- convert --format g711_mulaw input.wav voice-mulaw.wav
+cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
+cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
+cargo run -p zemer -- convert --format g711_alaw input.wav voice-alaw.wav
+cargo run -p zemer -- convert --format g711_mulaw input.wav voice-mulaw.wav
 ```
 
 Split a WAVE-backed CUE sheet to numbered track WAVs, or create a CUE for WAV

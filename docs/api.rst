@@ -1,22 +1,27 @@
 API overview
 ============
 
-Crate ``zemer-core``
---------------------
+Crate ``zemer-pcm``
+-------------------
 
-Format-independent audio types and streaming interfaces:
+Format-independent PCM types and sample-format conversion:
 
 * ``AudioSpec`` — sample rate, channel count, sample format, and optional
   speaker-position mask.
 * ``Samples`` and ``PcmBuffer`` — interleaved PCM data with validated frame
   counts.
-* ``convert_sample_format`` — sample representation conversion without
-  resampling or channel remixing.
+* ``convert_sample_format`` — conversion between integer PCM and IEEE float
+  sample formats without resampling or channel remixing.
+
+Crate ``zemer-core``
+--------------------
+
+Format-independent metadata and streaming interfaces. It re-exports the PCM
+types for convenience and compatibility:
+
 * ``Metadata`` — case-insensitive text tag names with support for repeated
   values.
 * ``AudioDecoder`` and ``AudioEncoder`` — block-based read and write traits.
-* ``convert_sample_format`` — normalized conversion between integer PCM and
-  IEEE float sample formats without resampling or channel remixing.
 * ``transcode`` — bounded block copying between matching PCM specifications,
   preserving metadata when the encoder supports it and returning an error if
   it cannot.

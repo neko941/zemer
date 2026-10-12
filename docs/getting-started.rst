@@ -21,7 +21,7 @@ from GitHub:
 
 .. code-block:: console
 
-   cargo install --git https://github.com/neko941/zemer.git --branch main --locked zemer-cli
+   cargo install --git https://github.com/neko941/zemer.git --branch main --locked zemer
 
 To use the library crates in an application, start from a source checkout. The
 following example uses ``zemer-core`` and ``wav``:

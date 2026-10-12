@@ -9,22 +9,22 @@ installed):
 
 .. code-block:: console
 
-   cargo install --git https://github.com/neko941/zemer.git --branch main --locked zemer-cli
+   cargo install --git https://github.com/neko941/zemer.git --branch main --locked zemer
 
 This installs ``zemer`` in Cargo's binary directory, usually ``~/.cargo/bin``.
-Alternatively, run it from a source checkout with ``cargo run -p zemer-cli --``.
+Alternatively, run it from a source checkout with ``cargo run -p zemer --``.
 
 Inspect a WAVE file:
 
 .. code-block:: console
 
-   cargo run -p zemer-cli -- inspect input.wav
+   cargo run -p zemer -- inspect input.wav
 
 For scripts and agents, request JSON:
 
 .. code-block:: console
 
-   cargo run -p zemer-cli -- inspect --json input.wav
+   cargo run -p zemer -- inspect --json input.wav
 
 The JSON report contains the WAVE container (``riff`` or ``rf64``), sample rate,
 channel count, optional speaker mask,
@@ -37,15 +37,15 @@ RIFF; choose RF64 explicitly when needed:
 
 .. code-block:: console
 
-   cargo run -p zemer-cli -- convert --format pcm_i16 input.wav output.wav
-   cargo run -p zemer-cli -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
+   cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
+   cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
 
 The same command can explicitly select G.711 output:
 
 .. code-block:: console
 
-   cargo run -p zemer-cli -- convert --format g711_alaw input.wav output-alaw.wav
-   cargo run -p zemer-cli -- convert --format g711_mulaw input.wav output-mulaw.wav
+   cargo run -p zemer -- convert --format g711_alaw input.wav output-alaw.wav
+   cargo run -p zemer -- convert --format g711_mulaw input.wav output-mulaw.wav
 
 The output file must not already exist. Conversion keeps the input sample rate,
 channel count, and supported RIFF INFO tags. It does not resample or remix.
