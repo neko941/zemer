@@ -1,6 +1,6 @@
 //! Clean-room WavPack block inspection and decoding.
 
-use std::io::{self, Read};
+use std::io::{self, Read, SeekFrom};
 
 use zemer_core::AudioError;
 
@@ -8,6 +8,8 @@ mod bitstream;
 mod checksum;
 mod decode;
 mod dsd_decode;
+mod dsd_encode;
+mod encode;
 mod entropy;
 mod float;
 mod hybrid;
@@ -15,6 +17,8 @@ pub mod metadata;
 mod tags;
 pub use decode::WavPackDecoder;
 pub use dsd_decode::WavPackDsdDecoder;
+pub use dsd_encode::WavPackDsdEncoder;
+pub use encode::WavPackEncoder;
 pub use metadata::{WavPackMetadataSubBlockHeader, visit_metadata_sub_blocks};
 pub use tags::{read_apev2_tag, rewrite_metadata};
 
@@ -111,9 +115,15 @@ impl<R: io::Read + io::Seek> WavPackDecoder<R> {
     ///
     /// Streaming inputs should use [`WavPackDecoder::new`]; they cannot inspect an end tag
     /// before audio decoding reaches the end of the stream.
-    pub fn new_seekable(reader: R) -> Result<Self, AudioError> {
-        let mut decoder = Self::new(reader)?;
-        decoder.load_trailing_metadata()?;
+    pub fn new_seekable(mut reader: R) -> Result<WavPackDecoder<io::Take<R>>, AudioError> {
+        let start = reader.stream_position()?;
+        let (audio_end, metadata) = tags::trailing_metadata_and_audio_end(&mut reader)?;
+        let audio_size = audio_end
+            .checked_sub(start)
+            .ok_or(AudioError::InvalidData("invalid WavPack audio range"))?;
+        reader.seek(SeekFrom::Start(start))?;
+        let mut decoder = WavPackDecoder::new(reader.take(audio_size))?;
+        decoder.metadata = metadata;
         Ok(decoder)
     }
 }

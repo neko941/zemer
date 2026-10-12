@@ -1,4 +1,4 @@
-use std::io::{Cursor, Read, Seek};
+use std::io::{Cursor, Read};
 
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
@@ -264,13 +264,6 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
             self.finished = end == header.total_samples();
         }
         Ok(true)
-    }
-}
-
-impl<R: Read + Seek> WavPackDecoder<R> {
-    pub(crate) fn load_trailing_metadata(&mut self) -> Result<(), AudioError> {
-        self.metadata = crate::tags::read_tag_metadata(&mut self.reader)?;
-        Ok(())
     }
 }
 
@@ -794,9 +787,21 @@ fn decode_lossless_pcm(
             let ones = int32_info[2] & 0x1f;
             let duplicates = int32_info[3] & 0x1f;
             let wvx = correction_wvx.as_deref().or(parts.wvx_bitstream.as_deref());
+            let new_wvx = correction_new_wvx || parts.new_wvx;
             let mut extra_bits = match (sent_bits, wvx) {
                 (0, _) => None,
-                (_, Some(bytes)) if bytes.len() >= 4 => Some(BitReader::new(&bytes[4..])),
+                (_, Some(bytes)) if bytes.len() >= 4 => {
+                    let mut bits = BitReader::new(&bytes[4..]);
+                    if new_wvx {
+                        let max_width = bits.read_bits(5)?;
+                        if max_width > u32::from(sent_bits) {
+                            return Err(AudioError::InvalidData(
+                                "WavPack extended integer width exceeds its precision",
+                            ));
+                        }
+                    }
+                    Some(bits)
+                }
                 _ => {
                     return Err(AudioError::InvalidData(
                         "missing or truncated WavPack extended integer bitstream",

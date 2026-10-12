@@ -20,6 +20,24 @@ pub trait DsdDecoder {
     -> Result<Option<DsdBuffer>, AudioError>;
 }
 
+pub trait DsdEncoder {
+    fn dsd_spec(&self) -> DsdSpec;
+    fn write_dsd_octets(&mut self, block: &DsdBuffer) -> Result<(), AudioError>;
+
+    fn finish(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
+    fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
+        if metadata.iter().next().is_some() {
+            return Err(AudioError::Unsupported(
+                "DSD encoder does not support audio metadata",
+            ));
+        }
+        Ok(())
+    }
+}
+
 pub trait AudioEncoder {
     fn spec(&self) -> AudioSpec;
     fn write_block(&mut self, block: &PcmBuffer) -> Result<(), AudioError>;

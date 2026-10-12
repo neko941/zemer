@@ -48,6 +48,7 @@ defaults to classic RIFF; choose RF64 explicitly when needed:
    cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
    cargo run -p zemer -- convert --format pcm_i16 input.flac output.wav
    cargo run -p zemer -- convert --format pcm_i16 input.wv output.wav
+   cargo run -p zemer -- convert --format wavpack input.wav output.wv
    cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
 
 The same command can explicitly select G.711 output:

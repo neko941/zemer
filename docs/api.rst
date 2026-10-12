@@ -116,8 +116,8 @@ Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
 * ``visit_metadata_sub_blocks`` — visits each bounded sub-block in a block
   payload without buffering it; the visitor sees unpadded data, and unread
   bytes are drained before parsing the next header.
-* ``WavPackDecoder`` — implements ``AudioDecoder`` for mono and stereo lossless
-  integer PCM at 8, 16, 24, and 32 bits, stereo lossless IEEE float32, custom
+* ``WavPackDecoder`` — implements ``AudioDecoder`` for lossless integer PCM at
+  8, 16, 24, and 32 bits, stereo lossless IEEE float32, custom
   sample rates, false stereo, and multichannel lossless PCM. It also decodes
   mono/stereo hybrid-lossy PCM16 and float32, hybrid-lossless PCM16/24/32 and
   float32 with paired ``.wvc`` files, and shaped/cross-channel hybrid PCM16. Tests
@@ -131,6 +131,10 @@ Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
 * ``WavPackDsdDecoder`` — implements ``DsdDecoder`` for native DSD direct, fast,
   and adaptive profiles, verifying each decoded block checksum. Oracle tests
   cover all three profiles in stereo and adaptive DSD in 5.1.
+* ``WavPackEncoder`` — implements ``AudioEncoder`` for lossless integer PCM at
+  8/16/24/32 bits and up to 32 channels.
+* ``WavPackDsdEncoder`` — implements ``DsdEncoder`` for raw native DSD octets
+  for up to 32 channels.
 
 The multichannel block-group fixtures cover 3–8 channel PCM16. WavPack DSD is
 always lossless and has no hybrid ``.wvc`` correction mode.

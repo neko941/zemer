@@ -10,7 +10,7 @@ use std::{
 
 use flac::{FlacDecoder, OggFlacDecoder};
 use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
-use wavpack::WavPackDecoder;
+use wavpack::{WavPackDecoder, WavPackEncoder};
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioError, AudioSpec, Metadata, SampleFormat,
     convert_sample_format,
@@ -38,13 +38,15 @@ struct AudioInput {
 enum OutputFormat {
     Samples(SampleFormat),
     G711(G711Encoding),
+    WavPack,
 }
 
 impl OutputFormat {
-    fn input_sample_format(self) -> SampleFormat {
+    fn input_sample_format(self) -> Option<SampleFormat> {
         match self {
-            Self::Samples(format) => format,
-            Self::G711(_) => SampleFormat::PcmI16,
+            Self::Samples(format) => Some(format),
+            Self::G711(_) => Some(SampleFormat::PcmI16),
+            Self::WavPack => None,
         }
     }
 
@@ -53,6 +55,7 @@ impl OutputFormat {
             Self::Samples(format) => sample_format_name(format),
             Self::G711(G711Encoding::ALaw) => "g711_alaw",
             Self::G711(G711Encoding::MuLaw) => "g711_mulaw",
+            Self::WavPack => "wavpack",
         }
     }
 }
@@ -368,6 +371,9 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliErr
     let input = paths.remove(0);
     let output = paths.remove(0);
     let format = format.ok_or_else(usage_error)?;
+    if matches!(format, OutputFormat::WavPack) && container.is_some() {
+        return Err(usage_error());
+    }
     convert_wav(
         input,
         output.clone(),
@@ -395,6 +401,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "float64" => Some(OutputFormat::Samples(SampleFormat::Float64)),
         "g711_alaw" => Some(OutputFormat::G711(G711Encoding::ALaw)),
         "g711_mulaw" => Some(OutputFormat::G711(G711Encoding::MuLaw)),
+        "wavpack" => Some(OutputFormat::WavPack),
         _ => None,
     }
 }
@@ -407,13 +414,17 @@ fn convert_wav(
 ) -> Result<Report, CliError> {
     let AudioInput { mut decoder, .. } = open_decoder(&input)?;
     let input_spec = decoder.spec();
-    let spec = AudioSpec::new_with_speaker_mask(
-        input_spec.sample_rate(),
-        input_spec.channels(),
-        format.input_sample_format(),
-        input_spec.speaker_mask(),
-    )
-    .map_err(|error| cli_audio_error(error.into(), &input))?;
+    let spec = if let Some(sample_format) = format.input_sample_format() {
+        AudioSpec::new_with_speaker_mask(
+            input_spec.sample_rate(),
+            input_spec.channels(),
+            sample_format,
+            input_spec.speaker_mask(),
+        )
+        .map_err(|error| cli_audio_error(error.into(), &input))?
+    } else {
+        input_spec
+    };
     let output_file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -424,49 +435,69 @@ fn convert_wav(
         })?;
 
     let result = (|| {
-        let mut encoder = match format {
-            OutputFormat::Samples(_) => WavWriter::new_with_metadata_and_container(
-                output_file,
-                spec,
-                decoder.metadata(),
-                container,
+        let mut encoder: Box<dyn AudioEncoder> = match format {
+            OutputFormat::Samples(_) => Box::new(
+                WavWriter::new_with_metadata_and_container(
+                    output_file,
+                    spec,
+                    decoder.metadata(),
+                    container,
+                )
+                .map_err(|error| cli_audio_error(error, &output))?,
             ),
-            OutputFormat::G711(encoding) => WavWriter::new_g711_with_metadata_and_container(
-                output_file,
-                spec,
-                encoding,
-                decoder.metadata(),
-                container,
+            OutputFormat::G711(encoding) => Box::new(
+                WavWriter::new_g711_with_metadata_and_container(
+                    output_file,
+                    spec,
+                    encoding,
+                    decoder.metadata(),
+                    container,
+                )
+                .map_err(|error| cli_audio_error(error, &output))?,
             ),
-        }
-        .map_err(|error| cli_audio_error(error, &output))?;
+            OutputFormat::WavPack => {
+                let mut encoder = WavPackEncoder::new(output_file, spec)
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                encoder
+                    .set_metadata(decoder.metadata())
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                Box::new(encoder)
+            }
+        };
         let mut frames = 0_u64;
         while let Some(block) = decoder
             .read_frames(8192)
             .map_err(|error| cli_audio_error(error, &input))?
         {
-            let converted = convert_sample_format(&block, format.input_sample_format())
-                .map_err(|error| cli_audio_error(error.into(), &input))?;
+            let block_frames = block.frames() as u64;
+            let converted = if let Some(sample_format) = format.input_sample_format() {
+                convert_sample_format(&block, sample_format)
+                    .map_err(|error| cli_audio_error(error.into(), &input))?
+            } else {
+                block
+            };
             encoder
                 .write_block(&converted)
                 .map_err(|error| cli_audio_error(error, &output))?;
-            frames = frames
-                .checked_add(block.frames() as u64)
-                .ok_or_else(|| CliError {
-                    kind: "invalid_data",
-                    message: "converted frame count overflow".to_owned(),
-                })?;
+            frames = frames.checked_add(block_frames).ok_or_else(|| CliError {
+                kind: "invalid_data",
+                message: "converted frame count overflow".to_owned(),
+            })?;
         }
         encoder
             .finish()
             .map_err(|error| cli_audio_error(error, &output))?;
         Ok(Report {
-            format: "wav",
+            format: if matches!(format, OutputFormat::WavPack) {
+                "wavpack"
+            } else {
+                "wav"
+            },
             spec,
             frames,
             metadata: decoder.metadata().clone(),
             output_encoding: matches!(format, OutputFormat::G711(_)).then(|| format.name()),
-            container: Some(container),
+            container: (!matches!(format, OutputFormat::WavPack)).then_some(container),
         })
     })();
 
@@ -581,7 +612,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw> [--container <riff|rf64>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> <output.wav> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|wavpack> [--container <riff|rf64>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> <output.wav|output.wv> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 

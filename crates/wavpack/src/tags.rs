@@ -47,8 +47,28 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write>(
     Ok(())
 }
 
-pub(crate) fn read_tag_metadata<R: Read + Seek>(reader: &mut R) -> Result<Metadata, AudioError> {
-    Ok(read_apev2_tag(reader)?.map_or_else(Metadata::default, |tag| tag.metadata()))
+pub(crate) fn trailing_metadata_and_audio_end<R: Read + Seek>(
+    reader: &mut R,
+) -> Result<(u64, Metadata), AudioError> {
+    let original_position = reader.stream_position()?;
+    let result = (|| {
+        let file_end = reader.seek(SeekFrom::End(0))?;
+        let id3v1_start = has_id3v1(reader, file_end)?;
+        let tag = locate_tag(reader)?;
+        let audio_end = tag
+            .as_ref()
+            .map_or(id3v1_start.unwrap_or(file_end), |(start, _, _)| *start);
+        Ok((
+            audio_end,
+            tag.map_or_else(Metadata::default, |(_, _, tag)| tag.metadata()),
+        ))
+    })();
+    let restore = reader.seek(SeekFrom::Start(original_position));
+    match (result, restore) {
+        (Ok(value), Ok(_)) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error.into()),
+    }
 }
 
 fn locate_tag<R: Read + Seek>(reader: &mut R) -> Result<Option<(u64, u64, ApeTag)>, AudioError> {

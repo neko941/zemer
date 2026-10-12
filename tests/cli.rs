@@ -654,6 +654,39 @@ fn convert_encodes_g711_only_when_explicitly_selected() {
 }
 
 #[test]
+fn convert_encodes_wavpack_pcm_and_metadata() {
+    let input_path = temporary_path();
+    let output_path = temporary_path().with_extension("wv");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(vec![i16::MIN, i16::MAX, -1, 0, 1234, -9876]),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("artist", "Zemer");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "wavpack", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"format\":\"wavpack\""));
+    let mut decoder = WavPackDecoder::new_seekable(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata(), &metadata);
+    assert_eq!(decoder.read_frames(16).unwrap().unwrap(), audio);
+    assert!(decoder.read_frames(16).unwrap().is_none());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
 fn cue_split_and_create_preserve_track_samples_and_metadata() {
     let audio_path = temporary_path();
     let cue_path = audio_path.with_extension("cue");

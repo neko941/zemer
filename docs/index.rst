@@ -8,16 +8,11 @@ crates, so applications can use only the pieces they need.
 The project implements RIFF/WAVE PCM, IEEE float, and G.711 reading and
 writing, plus CUE sheets for WAVE tracks. Its FLAC crate streams integer PCM
 to and from native FLAC files and decodes Ogg-FLAC.
-The ``zemer-wavpack`` crate decodes mono and stereo lossless integer PCM at 8,
-16, 24, and 32 bits, stereo lossless IEEE float32, custom sample rates, and
-lossless PCM16 channel groups with 3–8 channels. Hybrid-lossy PCM16 and float32
-are supported; stereo hybrid-lossless restoration with paired ``.wvc`` files is
-tested for PCM16/24/32 and float32, including noise shaping and cross-channel
-decorrelation. False stereo, a three-channel hybrid group, 5.1 PCM24/32, and
-custom sample rates are also covered. Native DSD
-direct/fast/adaptive stereo and adaptive 5.1 decode to packed, channel-interleaved
-DSD octets. WavPack APEv2 UTF-8 text tags can be inspected and edited while
-retaining non-text items.
+The ``zemer-wavpack`` crate decodes lossless PCM, float32, hybrid PCM/float with
+paired ``.wvc`` correction, and native DSD profiles. It writes lossless integer
+PCM at 8/16/24/32 bits for up to 32 channels and raw native DSD for up to 32 channels.
+APEv2 UTF-8 text tags can be edited while retaining non-text items. Float and
+hybrid encoding and broader profile conformance remain open.
 
 .. toctree::
    :maxdepth: 2
