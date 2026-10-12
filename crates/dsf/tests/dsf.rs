@@ -1,4 +1,4 @@
-use std::io::Cursor;
+use std::{fs::File, io::Cursor};
 
 use dsf::DsfDecoder;
 use zemer_core::{DsdDecoder, DsdSpec};
@@ -111,4 +111,18 @@ fn rejects_invalid_chunk_bounds_and_zero_read_size() {
     let mut bytes = bytes;
     bytes[4..12].copy_from_slice(&27_u64.to_le_bytes());
     assert!(DsfDecoder::new(Cursor::new(bytes)).is_err());
+}
+
+#[test]
+#[ignore = "requires the temporary public-domain DSF sample described in docs-internal/REFERENCES.md"]
+fn decodes_external_public_domain_dsf_sample() {
+    let path = std::env::var_os("ZEMER_DSF_SAMPLE").expect("set ZEMER_DSF_SAMPLE");
+    let mut decoder = DsfDecoder::new(File::open(path).unwrap()).unwrap();
+    assert_eq!(decoder.dsd_spec().bit_rate(), 2_822_400);
+    assert_eq!(decoder.dsd_spec().channels(), 2);
+    assert!(decoder.sample_count() > 32_768);
+    assert_eq!(
+        decoder.read_dsd_octets(4096).unwrap().unwrap().frames(),
+        4096
+    );
 }
