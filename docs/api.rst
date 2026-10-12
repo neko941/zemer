@@ -20,7 +20,7 @@ Format-independent audio types and streaming interfaces:
   it cannot.
 
 Rust library crate ``wav`` (Cargo package ``zemer-wav``)
--------------------------------------------------------
+--------------------------------------------------------
 
 * ``WavDecoder<R>`` — seekable RIFF/WAVE and RF64 reader implementing
   ``AudioDecoder``; ``container()`` identifies which one was read.
