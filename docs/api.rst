@@ -19,8 +19,8 @@ Format-independent audio types and streaming interfaces:
   preserving metadata when the encoder supports it and returning an error if
   it cannot.
 
-Crate ``zemer-wav``
--------------------
+Rust library crate ``wav`` (Cargo package ``zemer-wav``)
+-------------------------------------------------------
 
 * ``WavDecoder<R>`` — seekable RIFF/WAVE and RF64 reader implementing
   ``AudioDecoder``; ``container()`` identifies which one was read.

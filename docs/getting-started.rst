@@ -24,13 +24,13 @@ from GitHub:
    cargo install --git https://github.com/neko941/zemer.git --branch main --locked zemer-cli
 
 To use the library crates in an application, start from a source checkout. The
-following example uses ``zemer-core`` and ``zemer-wav``:
+following example uses ``zemer-core`` and ``wav``:
 
 .. code-block:: rust
 
    use std::fs::File;
    use zemer_core::AudioDecoder;
-   use zemer_wav::WavDecoder;
+   use wav::WavDecoder;
 
    fn inspect(path: &str) -> Result<(), Box<dyn std::error::Error>> {
        let mut decoder = WavDecoder::new(File::open(path)?)?;

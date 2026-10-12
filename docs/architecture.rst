@@ -6,7 +6,7 @@ writers:
 
 * ``zemer-core`` defines sample formats, audio specifications, metadata, and
   streaming decoder/encoder traits.
-* ``zemer-wav`` implements RIFF/WAVE on top of those shared interfaces.
+* ``wav`` implements RIFF/WAVE on top of those shared interfaces.
 
 The core crate does not identify files by extension. A future format crate can
 depend on ``zemer-core`` without pulling in other format implementations.

@@ -21,19 +21,16 @@ The workspace separates format-independent audio types from each format implemen
 | RIFF/WAVE IEEE float 32/64-bit | Yes | Yes | RIFF INFO read/write | WAVE_FORMAT_EXTENSIBLE float and optional channel masks are preserved |
 | RIFF/WAVE G.711 A-law and μ-law | Yes | Yes | RIFF INFO read/write | Decodes to signed 16-bit PCM; writing requires explicit G.711 selection |
 | RF64/WAVE | Yes | Yes | RIFF INFO read/write | 64-bit file and data sizes; select explicitly for output |
-| DTS Coherent Acoustics (`.dts`) | No | No | No | Planned; core decode and DTS-HD scope to be evaluated |
-| Nero disc image (`.nrg`) | No | No | No | Planned; disc-image evaluation, not an audio codec |
-| FLAC, AIFF, CAF, AU, ALAC, MP3, AAC, Ogg/Vorbis, Opus, APE, WavPack, WMA, TTA | No | No | No | Planned |
-| DSF, DSDIFF/DFF, SACD/DSD ISO (including DST) | No | No | No | Planned; independent spec-based work |
 
-“Planned” does not mean supported yet. Format work will be added only with implementation and conformance tests.
+Planned formats and workflows are listed in the [roadmap](ROADMAP.md). They
+will appear here only after implementation and conformance tests land.
 
 The WAV reader handles the first `data` chunk and skips unknown RIFF/RF64 chunks, including RF64 `ds64` size-table entries. `wavl`/`slnt` and non-G.711 compressed codecs inside WAV are not implemented. The writer defaults to classic RIFF/WAVE (using WAVE_FORMAT_EXTENSIBLE when a channel mask is provided); select `WavContainer::Rf64` or CLI `--container rf64` for 64-bit sizes. Classic RIFF reports an explicit error before exceeding its 4 GiB size limit.
 
 ## Workspace crates
 
 - `zemer-core`: format-independent PCM buffers, metadata tags, and the decoder interface.
-- `zemer-wav`: RIFF/WAVE reader and writer.
+- `wav`: RIFF/WAVE library crate (`zemer-wav` package in `crates/wav`).
 - `zemer-cli`: optional `zemer` executable for inspection and explicit sample-format conversion; library crates do not depend on it.
 - `tests/`: workspace-level integration tests; codec parser unit tests stay with their format crate.
 
@@ -47,7 +44,7 @@ See [ROADMAP.md](ROADMAP.md) for planned format, metadata, conversion, and disc-
 ```rust,no_run
 use std::fs::File;
 use zemer_core::AudioDecoder;
-use zemer_wav::WavDecoder;
+use wav::WavDecoder;
 
 let mut decoder = WavDecoder::new(File::open("input.wav")?)?;
 while let Some(block) = decoder.read_frames(4096)? {

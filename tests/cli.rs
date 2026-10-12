@@ -6,7 +6,7 @@ use std::{
 };
 
 use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
-use zemer_wav::{write_wav, write_wav_with_metadata};
+use wav::{write_wav, write_wav_with_metadata};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -136,7 +136,7 @@ fn convert_changes_sample_format_and_preserves_metadata() {
     assert!(json.contains("\"TITLE\":[\"Endian test\"]"));
     assert!(json.contains("\"ARTIST\":[\"Artist A\",\"Artist B\"]"));
 
-    let mut decoder = zemer_wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
     assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
     assert_eq!(
         decoder.read_frames(3).unwrap().unwrap().samples(),
@@ -184,8 +184,8 @@ fn convert_can_explicitly_write_rf64() {
 
     let bytes = fs::read(&output_path).unwrap();
     assert_eq!(&bytes[..4], b"RF64");
-    let mut decoder = zemer_wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
-    assert_eq!(decoder.container(), zemer_wav::WavContainer::Rf64);
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.container(), wav::WavContainer::Rf64);
     assert_eq!(decoder.read_frames(1).unwrap().unwrap(), audio);
     let _ = fs::remove_file(input_path);
     let _ = fs::remove_file(output_path);
@@ -246,7 +246,7 @@ fn convert_encodes_g711_only_when_explicitly_selected() {
 
         let bytes = fs::read(&output_path).unwrap();
         assert_eq!(u16::from_le_bytes(bytes[20..22].try_into().unwrap()), tag);
-        let mut decoder = zemer_wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+        let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
         assert_eq!(decoder.metadata(), &metadata);
         assert_eq!(decoder.read_frames(3).unwrap().unwrap().frames(), 3);
         let _ = fs::remove_file(output_path);

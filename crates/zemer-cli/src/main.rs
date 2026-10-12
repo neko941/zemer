@@ -10,7 +10,7 @@ use zemer_core::{
     AudioDecoder, AudioEncoder, AudioError, AudioSpec, Metadata, SampleFormat,
     convert_sample_format,
 };
-use zemer_wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
+use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
 
 struct Report {
     spec: AudioSpec,

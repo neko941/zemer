@@ -11,7 +11,7 @@ then returns decoded audio in frame blocks through ``AudioDecoder``.
 
    use std::{fs::File, io::BufReader};
    use zemer_core::AudioDecoder;
-   use zemer_wav::WavDecoder;
+   use wav::WavDecoder;
 
    let input = BufReader::new(File::open("input.wav")?);
    let mut decoder = WavDecoder::new(input)?;
@@ -32,7 +32,7 @@ caller.
 
    use std::{fs::File, io::BufWriter};
    use zemer_core::{AudioEncoder, AudioSpec, SampleFormat};
-   use zemer_wav::WavWriter;
+   use wav::WavWriter;
 
    let spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16)?;
    let mut writer = WavWriter::new(BufWriter::new(File::create("output.wav")?), spec)?;
@@ -45,7 +45,7 @@ For large files, select RF64:
 
    use std::{fs::File, io::BufWriter};
    use zemer_core::{AudioEncoder, AudioSpec, SampleFormat};
-   use zemer_wav::{WavContainer, WavWriter};
+   use wav::{WavContainer, WavWriter};
 
    let spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16)?;
    let mut writer = WavWriter::new_with_container(
