@@ -88,6 +88,20 @@ pub(crate) fn verify_sample_checksum(
     Ok(())
 }
 
+pub(crate) fn verify_dsd_checksum(
+    header: &WavPackBlockHeader,
+    bytes: &[u8],
+) -> Result<(), AudioError> {
+    let mut checksum = u32::MAX;
+    for &byte in bytes {
+        checksum = checksum.wrapping_mul(3).wrapping_add(u32::from(byte));
+    }
+    if checksum != header.crc {
+        return Err(AudioError::InvalidData("WavPack DSD checksum mismatch"));
+    }
+    Ok(())
+}
+
 pub(crate) fn verify_block_checksum(
     header: &WavPackBlockHeader,
     payload: &[u8],

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/dsd",
     "crates/metadata",
     "crates/pcm",
     "crates/wav",
@@ -37,6 +38,7 @@ version = "0.4.0"
 
 [workspace.dependencies]
 zemer-core = { path = "crates/core", version = "0.4.0" }
+zemer-dsd = { path = "crates/dsd", version = "0.4.0" }
 zemer-metadata = { path = "crates/metadata", version = "0.4.0" }
 zemer-pcm = { path = "crates/pcm", version = "0.4.0" }
 wav = { package = "zemer-wav", path = "crates/wav", version = "0.4.0" }

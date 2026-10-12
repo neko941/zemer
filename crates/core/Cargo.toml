@@ -8,4 +8,5 @@ rust-version.workspace = true
 
 [dependencies]
 zemer-pcm.workspace = true
+zemer-dsd.workspace = true
 zemer-metadata.workspace = true

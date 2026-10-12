@@ -31,7 +31,7 @@ const BYTES_STORED: u32 = 0x3;
 const SHIFT_MASK: u32 = 0x3e000;
 const MAX_CHANNELS: usize = 256;
 const MAX_DECODED_BLOCK_BYTES: usize = 64 * 1024 * 1024;
-const SAMPLE_RATES: [u32; 15] = [
+pub(crate) const SAMPLE_RATES: [u32; 15] = [
     6_000, 8_000, 9_600, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 64_000,
     88_200, 96_000, 192_000,
 ];
@@ -39,26 +39,31 @@ const SAMPLE_RATES: [u32; 15] = [
 pub struct WavPackDecoder<R, C = std::io::Empty> {
     reader: R,
     correction_reader: Option<C>,
-    spec: AudioSpec,
-    metadata: Metadata,
+    pub(crate) spec: AudioSpec,
+    pub(crate) metadata: Metadata,
     pending: Option<Samples>,
     pending_offset: usize,
     has_audio_block: bool,
     finished: bool,
+    decode_dsd: bool,
 }
 
 impl<R: Read> WavPackDecoder<R, std::io::Empty> {
     pub fn new(reader: R) -> Result<Self, AudioError> {
-        Self::new_inner(reader, None)
+        Self::new_inner(reader, None, false)
     }
 }
 
 impl<R: Read, C: Read> WavPackDecoder<R, C> {
     pub fn new_with_correction(reader: R, correction_reader: C) -> Result<Self, AudioError> {
-        Self::new_inner(reader, Some(correction_reader))
+        Self::new_inner(reader, Some(correction_reader), false)
     }
 
-    fn new_inner(reader: R, correction_reader: Option<C>) -> Result<Self, AudioError> {
+    pub(crate) fn new_inner(
+        reader: R,
+        correction_reader: Option<C>,
+        decode_dsd: bool,
+    ) -> Result<Self, AudioError> {
         let mut decoder = Self {
             reader,
             correction_reader,
@@ -68,6 +73,7 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
             pending_offset: 0,
             has_audio_block: false,
             finished: false,
+            decode_dsd,
         };
         while decoder.pending.is_none() && decoder.read_next_block()? {}
         if decoder.pending.is_none() {
@@ -111,6 +117,13 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
                     "WavPack channel blocks disagree on sample position or count",
                 ));
             }
+            if (current.flags & DSD_DATA != 0) != self.decode_dsd {
+                return Err(AudioError::Unsupported(if self.decode_dsd {
+                    "WavPack stream is not native DSD"
+                } else {
+                    "use WavPackDsdDecoder for native DSD audio"
+                }));
+            }
             if !first_block && current.flags & INITIAL_BLOCK != 0 {
                 return Err(AudioError::InvalidData(
                     "WavPack channel block group has an unexpected INITIAL_BLOCK",
@@ -144,6 +157,7 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
                 &payload,
                 correction_payload.as_deref(),
                 correction_header.as_ref(),
+                self.decode_dsd,
             )?;
             if self.has_audio_block
                 && (block_spec.sample_rate() != self.spec.sample_rate()
@@ -238,6 +252,19 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
         self.spec = spec;
         self.pending = Some(samples);
         self.pending_offset = 0;
+        if header.total_samples_low != u32::MAX {
+            let end = header
+                .block_index()
+                .checked_add(u64::from(header.block_samples))
+                .ok_or(AudioError::InvalidData("WavPack sample position overflow"))?;
+            if end > header.total_samples() {
+                return Err(AudioError::InvalidData(
+                    "WavPack audio block exceeds its declared sample count",
+                ));
+            }
+            // Known block counts let tagged files stop before trailing APEv2/ID3 data.
+            self.finished = end == header.total_samples();
+        }
         Ok(true)
     }
 }
@@ -375,6 +402,17 @@ impl<R: Read, C: Read> AudioDecoder for WavPackDecoder<R, C> {
     }
 
     fn read_frames(&mut self, max_frames: usize) -> Result<Option<PcmBuffer>, AudioError> {
+        self.read_samples(max_frames)?
+            .map(|samples| PcmBuffer::new(self.spec, samples).map_err(AudioError::from))
+            .transpose()
+    }
+}
+
+impl<R: Read, C: Read> WavPackDecoder<R, C> {
+    pub(crate) fn read_samples(
+        &mut self,
+        max_frames: usize,
+    ) -> Result<Option<Samples>, AudioError> {
         if max_frames == 0 {
             return Err(AudioError::InvalidData(
                 "max_frames must be greater than zero",
@@ -398,9 +436,7 @@ impl<R: Read, C: Read> AudioDecoder for WavPackDecoder<R, C> {
         let end_sample = (self.pending_offset + frames) * channels;
         let samples = slice_samples(pending, start_sample, end_sample);
         self.pending_offset += frames;
-        PcmBuffer::new(self.spec, samples)
-            .map(Some)
-            .map_err(AudioError::from)
+        Ok(Some(samples))
     }
 }
 
@@ -409,20 +445,52 @@ fn decode_lossless_pcm(
     payload: &[u8],
     correction_payload: Option<&[u8]>,
     correction_header: Option<&WavPackBlockHeader>,
+    decode_dsd: bool,
 ) -> Result<(AudioSpec, Samples, Option<ChannelInfo>), AudioError> {
     let flags = header.flags;
     if flags & DSD_DATA != 0 {
-        return Err(AudioError::Unsupported(
-            "WavPack DSD decoding is not supported yet",
-        ));
+        if !decode_dsd {
+            return Err(AudioError::Unsupported(
+                "use WavPackDsdDecoder for native DSD audio",
+            ));
+        }
+        if correction_payload.is_some() {
+            return Err(AudioError::Unsupported(
+                "WavPack hybrid DSD correction is not supported",
+            ));
+        }
+        let (byte_rate, bytes, channel_info) = crate::dsd_decode::decode_block(header, payload)?;
+        let channels = if flags & (MONO_DATA | FALSE_STEREO) != 0 {
+            1
+        } else {
+            2
+        };
+        let output_channels = if flags & FALSE_STEREO != 0 {
+            2
+        } else {
+            channels
+        };
+        let mut output = bytes;
+        if output_channels != channels {
+            let output_len = false_stereo_output_len(output.len())?;
+            let mut stereo = Vec::new();
+            stereo
+                .try_reserve_exact(output_len)
+                .map_err(|_| AudioError::InvalidData("decoded WavPack DSD block is too large"))?;
+            for byte in output {
+                stereo.extend([byte, byte]);
+            }
+            output = stereo;
+        }
+        let spec = AudioSpec::new(byte_rate, output_channels as u16, SampleFormat::PcmU8)?;
+        return Ok((spec, Samples::U8(output), channel_info));
     }
     let hybrid_mode = flags & HYBRID_FLAG != 0;
-    if hybrid_mode && flags & FLOAT_DATA != 0 {
-        return Err(AudioError::Unsupported(
-            "hybrid WavPack float decoding is not supported yet",
-        ));
-    }
-    let channels = if flags & MONO_DATA != 0 { 1 } else { 2 };
+    let channels = if flags & (MONO_DATA | FALSE_STEREO) != 0 {
+        1
+    } else {
+        2
+    };
     let output_channels = if flags & FALSE_STEREO != 0 {
         2
     } else {
@@ -438,12 +506,6 @@ fn decode_lossless_pcm(
             _ => SampleFormat::PcmI32,
         }
     };
-    let rate_index = ((flags >> 23) & 0x0f) as usize;
-    let sample_rate = *SAMPLE_RATES.get(rate_index).ok_or(AudioError::Unsupported(
-        "custom WavPack sample rate is not supported yet",
-    ))?;
-    let spec = AudioSpec::new(sample_rate, output_channels as u16, sample_format)?;
-
     let mut parts = BlockParts::default();
     let mut input = Cursor::new(payload);
     visit_metadata_sub_blocks(&mut input, payload.len() as u64, |sub_block, data| {
@@ -461,6 +523,7 @@ fn decode_lossless_pcm(
                 &mut parts.wvx_bitstream
             }
             0x0d => &mut parts.channel_info,
+            0x27 => &mut parts.sample_rate,
             _ => return Ok(()),
         };
         if slot.is_some() {
@@ -474,6 +537,7 @@ fn decode_lossless_pcm(
                 0x09 => "duplicate WavPack extended integer metadata",
                 0x0a => "duplicate WavPack audio bitstream",
                 0x0c => "duplicate WavPack extended bitstream",
+                0x27 => "duplicate WavPack sample-rate metadata",
                 _ => "duplicate WavPack decoder metadata",
             }));
         }
@@ -482,6 +546,10 @@ fn decode_lossless_pcm(
         *slot = Some(bytes);
         Ok(())
     })?;
+
+    let rate_index = ((flags >> 23) & 0x0f) as usize;
+    let sample_rate = parse_sample_rate(rate_index, parts.sample_rate.as_deref())?;
+    let spec = AudioSpec::new(sample_rate, output_channels as u16, sample_format)?;
 
     let terms = parts.terms.as_deref().ok_or(AudioError::InvalidData(
         "missing WavPack decorrelation terms",
@@ -527,47 +595,56 @@ fn decode_lossless_pcm(
         .bitstream
         .as_deref()
         .ok_or(AudioError::InvalidData("missing WavPack audio bitstream"))?;
-    let (correction_bitstream, mut shaping) = if let Some(payload) = correction_payload {
-        let mut correction = None;
-        let mut shaping_weights = None;
-        let mut input = Cursor::new(payload);
-        visit_metadata_sub_blocks(&mut input, payload.len() as u64, |sub_block, data| {
-            let slot = match sub_block.id {
-                0x07 => &mut shaping_weights,
-                0x0b => &mut correction,
-                _ => return Ok(()),
+    let mut correction_new_wvx = false;
+    let (correction_bitstream, mut shaping, correction_wvx) =
+        if let Some(payload) = correction_payload {
+            let mut correction = None;
+            let mut correction_wvx = None;
+            let mut shaping_weights = None;
+            let mut input = Cursor::new(payload);
+            visit_metadata_sub_blocks(&mut input, payload.len() as u64, |sub_block, data| {
+                let slot = match sub_block.id {
+                    0x07 => &mut shaping_weights,
+                    0x0b => &mut correction,
+                    0x0c | 0x2c => {
+                        correction_new_wvx |= sub_block.id == 0x2c;
+                        &mut correction_wvx
+                    }
+                    _ => return Ok(()),
+                };
+                if slot.is_some() {
+                    return Err(AudioError::InvalidData(match sub_block.id {
+                        0x07 => "duplicate WavPack shaping weights",
+                        0x0b => "duplicate WavPack correction bitstream",
+                        _ => "duplicate WavPack correction extended bitstream",
+                    }));
+                }
+                let mut bytes = Vec::new();
+                data.read_to_end(&mut bytes)?;
+                *slot = Some(bytes);
+                Ok(())
+            })?;
+            let shaping = if hybrid_mode && flags & HYBRID_SHAPE != 0 {
+                Some(ShapingState::parse(
+                    shaping_weights
+                        .as_deref()
+                        .ok_or(AudioError::InvalidData("missing WavPack shaping weights"))?,
+                    channels,
+                    flags,
+                )?)
+            } else {
+                None
             };
-            if slot.is_some() {
-                return Err(AudioError::InvalidData(match sub_block.id {
-                    0x07 => "duplicate WavPack shaping weights",
-                    _ => "duplicate WavPack correction bitstream",
-                }));
-            }
-            let mut bytes = Vec::new();
-            data.read_to_end(&mut bytes)?;
-            *slot = Some(bytes);
-            Ok(())
-        })?;
-        let shaping = if hybrid_mode && flags & HYBRID_SHAPE != 0 {
-            Some(ShapingState::parse(
-                shaping_weights
-                    .as_deref()
-                    .ok_or(AudioError::InvalidData("missing WavPack shaping weights"))?,
-                channels,
-                flags,
-            )?)
+            (
+                Some(correction.ok_or(AudioError::InvalidData(
+                    "missing WavPack correction bitstream",
+                ))?),
+                shaping,
+                correction_wvx,
+            )
         } else {
-            None
+            (None, None, None)
         };
-        (
-            Some(correction.ok_or(AudioError::InvalidData(
-                "missing WavPack correction bitstream",
-            ))?),
-            shaping,
-        )
-    } else {
-        (None, None)
-    };
     let hybrid = if hybrid_mode {
         Some(HybridState::parse(
             parts
@@ -673,13 +750,15 @@ fn decode_lossless_pcm(
         let info = FloatInfo::parse(parts.float_info.as_deref().ok_or(
             AudioError::InvalidData("missing WavPack floating-point metadata"),
         )?)?;
+        let wvx = correction_wvx.as_deref().or(parts.wvx_bitstream.as_deref());
         let mut floats = crate::float::restore(
             &decoded,
             info,
-            parts.wvx_bitstream.as_deref(),
-            parts.new_wvx,
+            wvx,
+            parts.new_wvx || correction_new_wvx,
+            hybrid_mode && correction_bitstream.is_none() && wvx.is_none(),
         )?;
-        if let Some(wvx) = parts.wvx_bitstream.as_deref() {
+        if let Some(wvx) = wvx {
             verify_wvx_float_checksum(wvx, &floats)?;
         }
         if output_channels != channels {
@@ -707,7 +786,8 @@ fn decode_lossless_pcm(
             let zeros = int32_info[1] & 0x1f;
             let ones = int32_info[2] & 0x1f;
             let duplicates = int32_info[3] & 0x1f;
-            let mut extra_bits = match (sent_bits, parts.wvx_bitstream.as_deref()) {
+            let wvx = correction_wvx.as_deref().or(parts.wvx_bitstream.as_deref());
+            let mut extra_bits = match (sent_bits, wvx) {
                 (0, _) => None,
                 (_, Some(bytes)) if bytes.len() >= 4 => Some(BitReader::new(&bytes[4..])),
                 _ => {
@@ -724,7 +804,7 @@ fn decode_lossless_pcm(
                 *sample =
                     restore_extended_integer(*sample, low_bits, zeros, ones, duplicates, sent_bits);
             }
-            if let Some(wvx) = parts.wvx_bitstream.as_deref() {
+            if let Some(wvx) = wvx {
                 verify_wvx_integer_checksum(wvx, &decoded)?;
             }
         }
@@ -806,6 +886,15 @@ fn decode_lossless_pcm(
     Ok((spec, samples, channel_info))
 }
 
+fn false_stereo_output_len(input_len: usize) -> Result<usize, AudioError> {
+    input_len
+        .checked_mul(2)
+        .filter(|&length| length <= MAX_DECODED_BLOCK_BYTES)
+        .ok_or(AudioError::InvalidData(
+            "decoded WavPack DSD block exceeds the configured size limit",
+        ))
+}
+
 fn slice_samples(samples: &Samples, start: usize, end: usize) -> Samples {
     match samples {
         Samples::U8(values) => Samples::U8(values[start..end].to_vec()),
@@ -830,15 +919,43 @@ struct BlockParts {
     wvx_bitstream: Option<Vec<u8>>,
     new_wvx: bool,
     channel_info: Option<Vec<u8>>,
+    sample_rate: Option<Vec<u8>>,
+}
+
+pub(crate) fn parse_sample_rate(
+    rate_index: usize,
+    custom_rate: Option<&[u8]>,
+) -> Result<u32, AudioError> {
+    match (rate_index, custom_rate) {
+        (15, Some([low, middle, high])) => {
+            Ok(u32::from(*low) | (u32::from(*middle) << 8) | (u32::from(*high) << 16))
+        }
+        (15, Some([low, middle, high, top])) => {
+            Ok(u32::from_le_bytes([*low, *middle, *high, *top]))
+        }
+        (15, Some(_)) => Err(AudioError::InvalidData(
+            "invalid WavPack custom sample-rate metadata",
+        )),
+        (15, None) => Err(AudioError::InvalidData(
+            "missing WavPack custom sample-rate metadata",
+        )),
+        (_, Some(_)) => Err(AudioError::InvalidData(
+            "WavPack custom sample rate has a standard rate index",
+        )),
+        (index, None) => SAMPLE_RATES
+            .get(index)
+            .copied()
+            .ok_or(AudioError::InvalidData("invalid WavPack sample-rate index")),
+    }
 }
 
 #[derive(Clone, Copy)]
-struct ChannelInfo {
-    channels: u16,
-    speaker_mask: Option<u32>,
+pub(crate) struct ChannelInfo {
+    pub(crate) channels: u16,
+    pub(crate) speaker_mask: Option<u32>,
 }
 
-fn parse_channel_info(bytes: &[u8]) -> Result<ChannelInfo, AudioError> {
+pub(crate) fn parse_channel_info(bytes: &[u8]) -> Result<ChannelInfo, AudioError> {
     if bytes.is_empty() || bytes.len() > 7 {
         return Err(AudioError::InvalidData(
             "invalid WavPack channel information size",
@@ -1403,7 +1520,10 @@ fn restore_weight(weight: i8) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_channel_info, restore_extended_integer};
+    use super::{
+        MAX_DECODED_BLOCK_BYTES, false_stereo_output_len, parse_channel_info, parse_sample_rate,
+        restore_extended_integer,
+    };
 
     #[test]
     fn parses_legacy_and_extended_channel_information() {
@@ -1434,5 +1554,28 @@ mod tests {
         );
         assert_eq!(restore_extended_integer(0x10, 0, 0, 3, 0, 0), 135);
         assert_eq!(restore_extended_integer(5, 0, 0, 0, 2, 0), 23);
+    }
+
+    #[test]
+    fn parses_standard_and_custom_sample_rates() {
+        assert_eq!(parse_sample_rate(10, None).unwrap(), 48_000);
+        assert_eq!(
+            parse_sample_rate(15, Some(&[0x39, 0x30, 0])).unwrap(),
+            12_345
+        );
+        assert_eq!(
+            parse_sample_rate(15, Some(&[0x00, 0x36, 0x6e, 0x01])).unwrap(),
+            24_000_000
+        );
+        assert!(parse_sample_rate(15, None).is_err());
+        assert!(parse_sample_rate(15, Some(&[1, 2])).is_err());
+        assert!(parse_sample_rate(10, Some(&[1, 2, 3])).is_err());
+    }
+
+    #[test]
+    fn false_stereo_expansion_respects_decoded_block_limit() {
+        assert_eq!(false_stereo_output_len(32).unwrap(), 64);
+        assert!(false_stereo_output_len(MAX_DECODED_BLOCK_BYTES / 2 + 1).is_err());
+        assert!(false_stereo_output_len(usize::MAX).is_err());
     }
 }

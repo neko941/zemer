@@ -4,13 +4,14 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 
 ## Workspace crates
 
-- [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata and PCM types for convenience.
+- [`zemer-core`](crates/core/): shared PCM/DSD decoder and encoder interfaces; re-exports metadata and audio buffer types.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
+- [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
 - [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming decoder with frame CRC and STREAMINFO MD5 verification after full consumption, and a Vorbis-comment rewriter with preserved raw metadata blocks and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
-- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded block inspection with v5 block, decoded-sample, and integer/float WVX checksum verification, mono/stereo lossless integer PCM (8/16/24/32-bit), stereo lossless IEEE float32, 5.1 and 7.1 lossless PCM16 block groups, mono/stereo unshaped hybrid-lossy PCM16, tested stereo noise-shaped hybrid-lossy PCM16, and tested stereo PCM16 hybrid-lossless restoration with `.wvc` in flat and shaped modes, including shaped cross-channel decorrelation; other multichannel layouts and DSD remain incomplete.
+- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded block inspection; PCM/float32 including false stereo and custom rates; tested multichannel lossless/hybrid profiles; PCM16/24/32/float32 `.wvc` restoration; and native DSD direct/fast/adaptive decoding (stereo, plus adaptive 5.1), with block, decoded-sample, WVX, and DSD checksum validation.
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, WAVE/FLAC metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 

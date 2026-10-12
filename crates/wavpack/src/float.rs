@@ -38,6 +38,7 @@ pub(crate) fn restore(
     info: FloatInfo,
     wvx: Option<&[u8]>,
     new_wvx: bool,
+    allow_missing_wvx: bool,
 ) -> Result<Vec<f32>, AudioError> {
     let needs_wvx = info.flags & (SHIFT_SAME | SHIFT_SENT | ZEROS_SENT | EXCEPTIONS) != 0;
     let mut bits = match wvx {
@@ -47,7 +48,7 @@ pub(crate) fn restore(
                 "invalid WavPack floating-point extended bitstream",
             ));
         }
-        None if needs_wvx => {
+        None if needs_wvx && !allow_missing_wvx => {
             return Err(AudioError::InvalidData(
                 "missing WavPack floating-point extended bitstream",
             ));
@@ -77,14 +78,14 @@ pub(crate) fn restore(
         if word == 0 {
             exponent = 0;
             if info.flags & ZEROS_SENT != 0 {
-                if read_bit(&mut bits)? {
-                    mantissa = read_bits(&mut bits, 23)?;
+                if read_bit(&mut bits, allow_missing_wvx)? {
+                    mantissa = read_bits(&mut bits, 23, allow_missing_wvx)?;
                     if info.max_exp >= 25 {
-                        exponent = read_bits(&mut bits, 8)? as u8;
+                        exponent = read_bits(&mut bits, 8, allow_missing_wvx)? as u8;
                     }
-                    sign = read_bit(&mut bits)?;
+                    sign = read_bit(&mut bits, allow_missing_wvx)?;
                 } else if info.flags & NEGATIVE_ZEROS != 0 {
-                    sign = read_bit(&mut bits)?;
+                    sign = read_bit(&mut bits, allow_missing_wvx)?;
                 }
             }
         } else {
@@ -103,8 +104,8 @@ pub(crate) fn restore(
                 }
                 mantissa = magnitude & 0x007f_ffff;
             } else if magnitude == 0x0100_0000 {
-                if read_bit(&mut bits)? {
-                    mantissa = read_bits(&mut bits, 23)?;
+                if read_bit(&mut bits, allow_missing_wvx)? {
+                    mantissa = read_bits(&mut bits, 23, allow_missing_wvx)?;
                 }
                 exponent = u8::MAX;
             } else {
@@ -119,7 +120,7 @@ pub(crate) fn restore(
                 if shift_count != 0 {
                     let low_mask = (1_u32 << shift_count) - 1;
                     if info.flags & SHIFT_ONES != 0
-                        || (info.flags & SHIFT_SAME != 0 && read_bit(&mut bits)?)
+                        || (info.flags & SHIFT_SAME != 0 && read_bit(&mut bits, allow_missing_wvx)?)
                     {
                         magnitude |= low_mask;
                     } else if info.flags & SHIFT_SENT != 0 {
@@ -132,7 +133,8 @@ pub(crate) fn restore(
                         }
                         let sent = shift_count - zeros;
                         if sent != 0 {
-                            magnitude |= read_bits(&mut bits, u32::from(sent))? << zeros;
+                            magnitude |=
+                                read_bits(&mut bits, u32::from(sent), allow_missing_wvx)? << zeros;
                         }
                     }
                 }
@@ -147,20 +149,28 @@ pub(crate) fn restore(
     Ok(output)
 }
 
-fn read_bit(bits: &mut Option<BitReader<'_>>) -> Result<bool, AudioError> {
-    bits.as_mut()
-        .ok_or(AudioError::InvalidData(
+fn read_bit(bits: &mut Option<BitReader<'_>>, allow_missing_wvx: bool) -> Result<bool, AudioError> {
+    match bits {
+        Some(bits) => bits.read_bit(),
+        None if allow_missing_wvx => Ok(false),
+        None => Err(AudioError::InvalidData(
             "missing WavPack floating-point extended bitstream",
-        ))?
-        .read_bit()
+        )),
+    }
 }
 
-fn read_bits(bits: &mut Option<BitReader<'_>>, count: u32) -> Result<u32, AudioError> {
-    bits.as_mut()
-        .ok_or(AudioError::InvalidData(
+fn read_bits(
+    bits: &mut Option<BitReader<'_>>,
+    count: u32,
+    allow_missing_wvx: bool,
+) -> Result<u32, AudioError> {
+    match bits {
+        Some(bits) => bits.read_bits(count),
+        None if allow_missing_wvx => Ok(0),
+        None => Err(AudioError::InvalidData(
             "missing WavPack floating-point extended bitstream",
-        ))?
-        .read_bits(count)
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -176,7 +186,7 @@ mod tests {
             _norm_exp: 127,
         };
         let values = [0, 0x0080_0000, 0x0100_0000];
-        let decoded = restore(&values, info, None, false).unwrap();
+        let decoded = restore(&values, info, None, false, false).unwrap();
         assert_eq!(
             decoded
                 .iter()

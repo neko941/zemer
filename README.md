@@ -21,7 +21,7 @@ The workspace separates format-independent audio types from each format implemen
 | RF64/WAVE | Supported | Read and write; RIFF INFO metadata read/write. Supports 64-bit file and data sizes; select explicitly for output. |
 | CUE sheets for WAVE/AUDIO tracks | Supported | Read and write; track title and performer fields. Split referenced WAV audio into track WAVs and create CUE sheets for WAV tracks. |
 | Native FLAC | Partial | Streaming read with frame CRC and STREAMINFO MD5 verification when the checksum is present and the stream is fully consumed; Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE, and comment editing are available; FLAC audio encoding is not implemented. |
-| WavPack | Partial | Streaming decode of mono/stereo lossless integer PCM at 8/16/24/32 bits, stereo lossless IEEE float32, 5.1 and 7.1 lossless PCM16; mono/stereo unshaped hybrid-lossy PCM16; tested stereo noise-shaped hybrid-lossy PCM16; tested stereo PCM16 hybrid-lossless restoration with `.wvc` in flat and shaped modes, including shaped cross-channel decorrelation. Block, decoded-sample, and integer/float WVX checksums are verified. Other multichannel layouts and DSD remain unsupported. |
+| WavPack | Partial | Streaming decode of mono/stereo lossless integer PCM at 8/16/24/32 bits, stereo lossless float32, custom rates and false stereo, PCM16 groups with 3–8 channels, and 5.1 PCM24/32; hybrid-lossy PCM16/float32; `.wvc` restoration for PCM16/24/32/float32 including 3-channel PCM16 and shaped/cross-channel stereo PCM16; native DSD direct/fast/adaptive stereo and adaptive 5.1. Block, decoded-sample, WVX, and DSD checksums are verified. |
 
 ## Roadmap
 
@@ -31,13 +31,14 @@ The WAV reader handles the first `data` chunk and skips unknown RIFF/RF64 chunks
 
 ## Workspace crates
 
-- [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata and PCM types for convenience.
+- [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata, PCM, and DSD types for convenience.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
+- [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
 - [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming decoder and metadata rewriter with raw metadata-block access and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE reader and writer.
-- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded block inspection; mono/stereo lossless integer PCM, stereo float32, 5.1/7.1 PCM16, mono/stereo unshaped hybrid-lossy PCM16, tested stereo shaped hybrid-lossy PCM16, and tested stereo PCM16 hybrid-lossless decoding with `.wvc` correction files in flat and shaped modes, including shaped cross-channel decorrelation.
+- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded block inspection; PCM profiles and native DSD direct, fast, and adaptive decoding through `WavPackDsdDecoder`.
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 

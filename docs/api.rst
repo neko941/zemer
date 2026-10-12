@@ -26,10 +26,23 @@ Streaming decoder and encoder interfaces. It re-exports metadata and PCM types
 for convenience and compatibility:
 
 * ``AudioDecoder`` and ``AudioEncoder`` — block-based read and write traits;
-  ``AudioEncoder::finish`` finalizes streaming output.
+  ``AudioEncoder::finish`` finalizes streaming output. ``DsdDecoder`` exposes
+  native one-bit audio without passing it through the PCM API.
 * ``transcode`` — bounded block copying between matching PCM specifications,
   preserving metadata when the encoder supports it and finalizing the encoder
   after successful copying.
+
+Crate ``zemer-dsd``
+-------------------
+
+* ``DsdSpec`` — native one-bit sample rate, channel count, and optional speaker
+  mask.
+* ``DsdBuffer`` — channel-interleaved packed octets, with DSD bits ordered
+  most-significant-bit first within each octet. Each frame holds one octet per
+  channel.
+
+The DSD stream interface is in ``zemer-core``; this crate owns its format-neutral
+specification and buffer types.
 
 Rust library crate ``cue`` (Cargo package ``zemer-cue``)
 --------------------------------------------------------
@@ -89,17 +102,21 @@ Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
   payload without buffering it; the visitor sees unpadded data, and unread
   bytes are drained before parsing the next header.
 * ``WavPackDecoder`` — implements ``AudioDecoder`` for mono and stereo lossless
-  integer PCM at 8, 16, 24, and 32 bits, stereo lossless IEEE float32, and
-  5.1/7.1 lossless PCM16, plus mono and stereo unshaped hybrid-lossy PCM16, tested
-  stereo noise-shaped hybrid-lossy PCM16, and tested stereo PCM16
-  hybrid-lossless streams with paired ``.wvc`` correction files in flat and
-  shaped modes, including shaped cross-channel decorrelation, through
-  ``WavPackDecoder::new_with_correction``. WavPack v5 block,
-  decoded-sample, and integer/float WVX checksums are verified.
+  integer PCM at 8, 16, 24, and 32 bits, stereo lossless IEEE float32, custom
+  sample rates, false stereo, and multichannel lossless PCM. It also decodes
+  mono/stereo hybrid-lossy PCM16 and float32, hybrid-lossless PCM16/24/32 and
+  float32 with paired ``.wvc`` files, and shaped/cross-channel hybrid PCM16. Tests
+  cover 3–8 channel PCM16 groups, 3-channel hybrid PCM16, and 5.1 PCM24/32. Pair
+  correction streams with ``WavPackDecoder::new_with_correction``. WavPack v5
+  block, decoded-sample, and integer/float WVX checksums are verified.
+* ``WavPackDsdDecoder`` — implements ``DsdDecoder`` for native DSD direct, fast,
+  and adaptive profiles, verifying each decoded block checksum. Oracle tests
+  cover all three profiles in stereo and adaptive DSD in 5.1.
 
-Other multichannel layouts and DSD decoding remain unsupported.
-Hybrid-lossless restoration has conformance coverage for stereo PCM16,
-including shaped, unshaped, and shaped cross-channel profiles.
+The multichannel block-group fixtures cover 3–8 channel PCM16. WavPack DSD is
+always lossless and has no hybrid ``.wvc`` correction mode.
+Hybrid-lossless restoration has conformance coverage for stereo PCM16/24/32
+and float32, including shaped and cross-channel PCM16 profiles.
 The float32 conformance fixture checks exact IEEE-754 bit patterns including
 signed zero, subnormals, infinities, and NaNs. The crate uses only Rust's
 standard library and ``zemer-core``; no external codec implementation is linked.

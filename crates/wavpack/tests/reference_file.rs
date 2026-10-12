@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
-use wavpack::{WavPackBlockHeader, WavPackDecoder, visit_metadata_sub_blocks};
-use zemer_core::{AudioDecoder, SampleFormat, Samples};
+use wavpack::{WavPackBlockHeader, WavPackDecoder, WavPackDsdDecoder, visit_metadata_sub_blocks};
+use zemer_core::{AudioDecoder, DsdDecoder, SampleFormat, Samples};
 
 fn rechecksum_blocks(file: &mut [u8]) {
     let mut block_start = 0;
@@ -216,6 +216,30 @@ fn decodes_signed_twenty_four_bit_pcm() {
 }
 
 #[test]
+fn decodes_custom_sample_rate_from_metadata() {
+    let expected = include_bytes!("fixtures/custom-rate-stereo.expected.pcm")
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect::<Vec<_>>();
+    for file in [
+        &include_bytes!("fixtures/custom-rate-stereo.wv")[..],
+        &include_bytes!("fixtures/tagged-custom-rate-stereo.wv")[..],
+    ] {
+        let mut decoder = WavPackDecoder::new(Cursor::new(file)).unwrap();
+        assert_eq!(decoder.spec().sample_rate(), 12_345);
+        assert_eq!(decoder.spec().channels(), 2);
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_frames(29).unwrap() {
+            let Samples::I16(samples) = block.samples() else {
+                panic!("WavPack decoder returned non-16-bit PCM");
+            };
+            decoded.extend_from_slice(samples);
+        }
+        assert_eq!(decoded, expected);
+    }
+}
+
+#[test]
 fn decodes_extended_signed_thirty_two_bit_pcm() {
     let file = include_bytes!("fixtures/mono32.wv");
     let mut decoder = WavPackDecoder::new(Cursor::new(file.as_slice())).unwrap();
@@ -376,6 +400,31 @@ fn decodes_stereo_lossless_integer_pcm_at_all_sample_widths() {
 }
 
 #[test]
+fn expands_false_stereo_mono_payloads_to_two_output_channels() {
+    let file = include_bytes!("fixtures/false-stereo.wv");
+    let header = WavPackBlockHeader::read_from(&mut Cursor::new(file.as_slice()))
+        .unwrap()
+        .unwrap();
+    assert_ne!(header.flags & (1 << 30), 0);
+
+    let mut decoder = WavPackDecoder::new(Cursor::new(file.as_slice())).unwrap();
+    assert_eq!(decoder.spec().channels(), 2);
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(37).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("WavPack decoder returned non-16-bit PCM");
+        };
+        decoded.extend_from_slice(samples);
+    }
+    let expected = include_bytes!("fixtures/false-stereo.expected.pcm")
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect::<Vec<_>>();
+    assert_eq!(decoded, expected);
+    assert!(decoded.chunks_exact(2).all(|channels| channels[0] == channels[1]));
+}
+
+#[test]
 fn decodes_six_channel_lossless_pcm_with_speaker_mask() {
     let file = include_bytes!("fixtures/surround51.wv");
     let mut decoder = WavPackDecoder::new(Cursor::new(file.as_slice())).unwrap();
@@ -423,6 +472,179 @@ fn decodes_eight_channel_lossless_pcm_with_speaker_mask() {
 }
 
 #[test]
+fn decodes_other_multichannel_block_group_sizes() {
+    let cases: [(u16, u32, &[u8], &[u8]); 4] = [
+        (
+            3,
+            0x007,
+            include_bytes!("fixtures/channels-3.wv"),
+            include_bytes!("fixtures/channels-3.expected.pcm"),
+        ),
+        (
+            4,
+            0x033,
+            include_bytes!("fixtures/channels-4.wv"),
+            include_bytes!("fixtures/channels-4.expected.pcm"),
+        ),
+        (
+            5,
+            0x037,
+            include_bytes!("fixtures/channels-5.wv"),
+            include_bytes!("fixtures/channels-5.expected.pcm"),
+        ),
+        (
+            7,
+            0x70f,
+            include_bytes!("fixtures/channels-7.wv"),
+            include_bytes!("fixtures/channels-7.expected.pcm"),
+        ),
+    ];
+    for (channels, speaker_mask, file, expected_bytes) in cases {
+        let mut decoder = WavPackDecoder::new(Cursor::new(file)).unwrap();
+        assert_eq!(decoder.spec().channels(), channels);
+        assert_eq!(decoder.spec().speaker_mask(), Some(speaker_mask));
+        assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
+
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_frames(31).unwrap() {
+            let Samples::I16(samples) = block.samples() else {
+                panic!("WavPack decoder returned a non-16-bit sample buffer");
+            };
+            decoded.extend_from_slice(samples);
+        }
+        let expected = expected_bytes
+            .chunks_exact(2)
+            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+            .collect::<Vec<_>>();
+        assert_eq!(decoded, expected, "{channels}-channel output differs");
+    }
+}
+
+#[test]
+fn decodes_six_channel_lossless_pcm24_and_pcm32() {
+    let mut pcm24 = WavPackDecoder::new(Cursor::new(
+        include_bytes!("fixtures/surround51-24.wv").as_slice(),
+    ))
+    .unwrap();
+    assert_eq!(pcm24.spec().sample_format(), SampleFormat::PcmI24);
+    assert_eq!(pcm24.spec().channels(), 6);
+    assert_eq!(pcm24.spec().speaker_mask(), Some(0x003f));
+    let mut decoded24 = Vec::new();
+    while let Some(block) = pcm24.read_frames(13).unwrap() {
+        let Samples::I24(samples) = block.samples() else {
+            panic!("WavPack decoder returned non-24-bit samples");
+        };
+        decoded24.extend_from_slice(samples);
+    }
+    let expected24 = include_bytes!("fixtures/surround51-24.expected.pcm")
+        .chunks_exact(3)
+        .map(|bytes| {
+            let value =
+                i32::from(bytes[0]) | (i32::from(bytes[1]) << 8) | (i32::from(bytes[2]) << 16);
+            if value & 0x0080_0000 != 0 {
+                value | !0x00ff_ffff
+            } else {
+                value
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(decoded24, expected24);
+
+    let mut pcm32 = WavPackDecoder::new(Cursor::new(
+        include_bytes!("fixtures/surround51-32.wv").as_slice(),
+    ))
+    .unwrap();
+    assert_eq!(pcm32.spec().sample_format(), SampleFormat::PcmI32);
+    assert_eq!(pcm32.spec().channels(), 6);
+    assert_eq!(pcm32.spec().speaker_mask(), Some(0x003f));
+    let mut decoded32 = Vec::new();
+    while let Some(block) = pcm32.read_frames(13).unwrap() {
+        let Samples::I32(samples) = block.samples() else {
+            panic!("WavPack decoder returned non-32-bit samples");
+        };
+        decoded32.extend_from_slice(samples);
+    }
+    let expected32 = include_bytes!("fixtures/surround51-32.expected.pcm")
+        .chunks_exact(4)
+        .map(|bytes| i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect::<Vec<_>>();
+    assert_eq!(decoded32, expected32);
+}
+
+#[test]
+fn restores_multichannel_hybrid_pcm_with_correction_file() {
+    let mut decoder = WavPackDecoder::new_with_correction(
+        Cursor::new(include_bytes!("fixtures/channels-3-hybrid.wv").as_slice()),
+        Cursor::new(include_bytes!("fixtures/channels-3-hybrid.wvc").as_slice()),
+    )
+    .unwrap();
+    assert_eq!(decoder.spec().channels(), 3);
+    assert_eq!(decoder.spec().speaker_mask(), Some(0x007));
+
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(31).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("WavPack correction decoder returned a non-16-bit buffer");
+        };
+        decoded.extend_from_slice(samples);
+    }
+    let expected = include_bytes!("fixtures/channels-3-hybrid.expected.pcm")
+        .chunks_exact(2)
+        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+        .collect::<Vec<_>>();
+    assert_eq!(decoded, expected);
+}
+
+#[test]
+fn restores_hybrid_lossless_pcm24_and_pcm32_with_correction_files() {
+    let mut decoder = WavPackDecoder::new_with_correction(
+        Cursor::new(include_bytes!("fixtures/hybrid-24-stereo.wv").as_slice()),
+        Cursor::new(include_bytes!("fixtures/hybrid-24-stereo.wvc").as_slice()),
+    )
+    .unwrap();
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI24);
+    let mut decoded24 = Vec::new();
+    while let Some(block) = decoder.read_frames(31).unwrap() {
+        let Samples::I24(samples) = block.samples() else {
+            panic!("WavPack decoder returned a non-24-bit buffer");
+        };
+        decoded24.extend_from_slice(samples);
+    }
+    let expected24 = include_bytes!("fixtures/hybrid-24-stereo.expected.pcm")
+        .chunks_exact(3)
+        .map(|bytes| {
+            let value =
+                i32::from(bytes[0]) | (i32::from(bytes[1]) << 8) | (i32::from(bytes[2]) << 16);
+            if value & 0x0080_0000 != 0 {
+                value | !0x00ff_ffff
+            } else {
+                value
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(decoded24, expected24);
+
+    let mut decoder = WavPackDecoder::new_with_correction(
+        Cursor::new(include_bytes!("fixtures/hybrid-32-stereo.wv").as_slice()),
+        Cursor::new(include_bytes!("fixtures/hybrid-32-stereo.wvc").as_slice()),
+    )
+    .unwrap();
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI32);
+    let mut decoded32 = Vec::new();
+    while let Some(block) = decoder.read_frames(31).unwrap() {
+        let Samples::I32(samples) = block.samples() else {
+            panic!("WavPack decoder returned a non-32-bit buffer");
+        };
+        decoded32.extend_from_slice(samples);
+    }
+    let expected32 = include_bytes!("fixtures/hybrid-32-stereo.expected.pcm")
+        .chunks_exact(4)
+        .map(|bytes| i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect::<Vec<_>>();
+    assert_eq!(decoded32, expected32);
+}
+
+#[test]
 fn decodes_stereo_float32_losslessly_by_bit_pattern() {
     let file = include_bytes!("fixtures/float32.wv");
     let mut decoder = WavPackDecoder::new(Cursor::new(file.as_slice())).unwrap();
@@ -461,6 +683,40 @@ fn decodes_stereo_float32_losslessly_by_bit_pattern() {
             0x8080_0001,
         ]
     );
+}
+
+#[test]
+fn decodes_hybrid_float_with_and_without_correction_file() {
+    let lossy_file = include_bytes!("fixtures/hybrid-float-stereo.wv");
+    let mut lossy = WavPackDecoder::new(Cursor::new(lossy_file.as_slice())).unwrap();
+    assert_eq!(lossy.spec().sample_format(), SampleFormat::Float32);
+    let mut lossy_samples = Vec::new();
+    while let Some(block) = lossy.read_frames(37).unwrap() {
+        let Samples::F32(samples) = block.samples() else {
+            panic!("WavPack decoder returned non-float samples");
+        };
+        lossy_samples.extend_from_slice(samples);
+    }
+    assert_eq!(lossy_samples.len(), 1024);
+    assert!(lossy_samples.iter().all(|sample| sample.is_finite()));
+
+    let mut lossless = WavPackDecoder::new_with_correction(
+        Cursor::new(lossy_file.as_slice()),
+        Cursor::new(include_bytes!("fixtures/hybrid-float-stereo.wvc").as_slice()),
+    )
+    .unwrap();
+    let mut restored_bits = Vec::new();
+    while let Some(block) = lossless.read_frames(37).unwrap() {
+        let Samples::F32(samples) = block.samples() else {
+            panic!("WavPack correction decoder returned non-float samples");
+        };
+        restored_bits.extend(samples.iter().map(|sample| sample.to_bits()));
+    }
+    let expected_bits = include_bytes!("fixtures/hybrid-float-stereo.expected.f32le")
+        .chunks_exact(4)
+        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect::<Vec<_>>();
+    assert_eq!(restored_bits, expected_bits);
 }
 
 #[test]
@@ -593,6 +849,85 @@ fn restores_cross_channel_shaped_hybrid_lossless_pcm() {
         .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
         .collect::<Vec<_>>();
     assert_eq!(decoded, expected);
+}
+
+#[test]
+fn decodes_raw_native_dsd_octets_and_verifies_dsd_checksum() {
+    let file = include_bytes!("fixtures/dsd-direct-stereo.wv");
+    let mut decoder = WavPackDsdDecoder::new(Cursor::new(file.as_slice())).unwrap();
+    assert_eq!(decoder.dsd_spec().bit_rate(), 2_822_400);
+    assert_eq!(decoder.dsd_spec().channels(), 2);
+
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_dsd_octets(257).unwrap() {
+        decoded.extend_from_slice(block.bytes());
+    }
+    assert_eq!(
+        decoded,
+        include_bytes!("fixtures/dsd-direct-stereo.expected.dsd")
+    );
+    assert!(WavPackDecoder::new(Cursor::new(file.as_slice())).is_err());
+
+    let mut corrupted = file.to_vec();
+    corrupted[28] ^= 1;
+    rechecksum_blocks(&mut corrupted);
+    assert!(matches!(
+        WavPackDsdDecoder::new(Cursor::new(corrupted)),
+        Err(zemer_core::AudioError::InvalidData(
+            "WavPack DSD checksum mismatch"
+        ))
+    ));
+}
+
+#[test]
+fn decodes_fast_native_dsd_octets_from_official_encoder() {
+    let file = include_bytes!("fixtures/dsd-fast-stereo.wv");
+    let mut decoder = WavPackDsdDecoder::new(Cursor::new(file.as_slice())).unwrap();
+    assert_eq!(decoder.dsd_spec().bit_rate(), 2_822_400);
+    assert_eq!(decoder.dsd_spec().channels(), 2);
+
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_dsd_octets(257).unwrap() {
+        decoded.extend_from_slice(block.bytes());
+    }
+    assert_eq!(
+        decoded,
+        include_bytes!("fixtures/dsd-fast-stereo.expected.dsd")
+    );
+}
+
+#[test]
+fn decodes_adaptive_native_dsd_octets_from_official_encoder() {
+    let file = include_bytes!("fixtures/dsd-adaptive-stereo.wv");
+    let mut decoder = WavPackDsdDecoder::new(Cursor::new(file.as_slice())).unwrap();
+    assert_eq!(decoder.dsd_spec().bit_rate(), 2_822_400);
+    assert_eq!(decoder.dsd_spec().channels(), 2);
+
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_dsd_octets(257).unwrap() {
+        decoded.extend_from_slice(block.bytes());
+    }
+    assert_eq!(
+        decoded,
+        include_bytes!("fixtures/dsd-adaptive-stereo.expected.dsd")
+    );
+}
+
+#[test]
+fn decodes_six_channel_adaptive_native_dsd() {
+    let file = include_bytes!("fixtures/dsd-adaptive-51.wv");
+    let mut decoder = WavPackDsdDecoder::new(Cursor::new(file.as_slice())).unwrap();
+    assert_eq!(decoder.dsd_spec().bit_rate(), 2_822_400);
+    assert_eq!(decoder.dsd_spec().channels(), 6);
+
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_dsd_octets(127).unwrap() {
+        decoded.extend_from_slice(block.bytes());
+    }
+    assert_eq!(
+        decoded,
+        include_bytes!("fixtures/dsd-adaptive-51.expected.dsd")
+    );
 }
 
 #[test]

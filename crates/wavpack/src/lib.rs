@@ -7,11 +7,13 @@ use zemer_core::AudioError;
 mod bitstream;
 mod checksum;
 mod decode;
+mod dsd_decode;
 mod entropy;
 mod float;
 mod hybrid;
 pub mod metadata;
 pub use decode::WavPackDecoder;
+pub use dsd_decode::WavPackDsdDecoder;
 pub use metadata::{WavPackMetadataSubBlockHeader, visit_metadata_sub_blocks};
 
 const HEADER_SIZE: usize = 32;
