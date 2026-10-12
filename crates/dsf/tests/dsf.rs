@@ -38,6 +38,40 @@ fn dsf(channels: u32, channel_type: u32, sample_count: u64, data: &[Vec<u8>]) ->
     bytes
 }
 
+fn id3_frame(id: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+    let size = payload.len();
+    let mut frame = id.to_vec();
+    frame.extend_from_slice(&[
+        ((size >> 21) & 0x7f) as u8,
+        ((size >> 14) & 0x7f) as u8,
+        ((size >> 7) & 0x7f) as u8,
+        (size & 0x7f) as u8,
+        0,
+        0,
+    ]);
+    frame.extend_from_slice(payload);
+    frame
+}
+
+fn with_id3(mut bytes: Vec<u8>) -> Vec<u8> {
+    let offset = bytes.len() as u64;
+    let mut body = id3_frame(b"TIT2", &[3, b'T', b'i', b't', b'l', b'e']);
+    body.extend(id3_frame(b"TPE1", &[3, b'A', b'r', b't', b'i', b's', b't']));
+    let size = body.len();
+    let mut tag = b"ID3\x04\x00\x00".to_vec();
+    tag.extend_from_slice(&[
+        ((size >> 21) & 0x7f) as u8,
+        ((size >> 14) & 0x7f) as u8,
+        ((size >> 7) & 0x7f) as u8,
+        (size & 0x7f) as u8,
+    ]);
+    tag.extend_from_slice(&body);
+    bytes[12..20].copy_from_slice(&((offset + tag.len() as u64).to_le_bytes()));
+    bytes[20..28].copy_from_slice(&offset.to_le_bytes());
+    bytes.extend(tag);
+    bytes
+}
+
 #[test]
 fn decodes_dsf_channel_blocks_into_msb_first_interleaved_octets() {
     let bytes = dsf(2, 2, 16, &[vec![0x01, 0x02], vec![0x80, 0x40]]);
@@ -62,6 +96,14 @@ fn reports_and_decodes_a_partial_final_octet() {
     assert_eq!(decoded.bytes(), [0x80, 0x80]);
     assert_eq!(decoder.sample_count(), 9);
     assert!(decoder.read_dsd_octets(1).unwrap().is_none());
+}
+
+#[test]
+fn reads_id3v24_text_metadata_from_the_dsf_metadata_pointer() {
+    let bytes = with_id3(dsf(1, 1, 8, &[vec![0x55]]));
+    let decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(decoder.metadata().values("TITLE"), ["Title"]);
+    assert_eq!(decoder.metadata().values("ARTIST"), ["Artist"]);
 }
 
 #[test]
@@ -121,6 +163,7 @@ fn decodes_external_public_domain_dsf_sample() {
     assert_eq!(decoder.dsd_spec().bit_rate(), 2_822_400);
     assert_eq!(decoder.dsd_spec().channels(), 2);
     assert!(decoder.sample_count() > 32_768);
+    assert!(decoder.metadata().iter().next().is_some());
     assert_eq!(
         decoder.read_dsd_octets(4096).unwrap().unwrap().frames(),
         4096

@@ -2,6 +2,8 @@ use std::io::{Read, Seek, SeekFrom};
 
 use zemer_core::{AudioError, DsdBuffer, DsdDecoder, DsdSpec, Metadata};
 
+use crate::id3::read_metadata;
+
 const DSD_HEADER_SIZE: u64 = 28;
 const FMT_CHUNK_SIZE: u64 = 52;
 const BLOCK_BYTES: usize = 4096;
@@ -86,12 +88,18 @@ impl<R: Read + Seek> DsfDecoder<R> {
         if &data[..4] != b"data"
             || data_size != expected_data_size
             || data_end > file_size
+            || (metadata_offset == 0 && data_end != file_size)
             || (metadata_offset != 0 && metadata_offset < data_end)
             || (metadata_offset != 0 && metadata_offset >= file_size)
         {
             return Err(AudioError::InvalidFormat("invalid DSF data chunk bounds"));
         }
 
+        let metadata = if metadata_offset == 0 {
+            Metadata::default()
+        } else {
+            read_metadata(&mut reader, metadata_offset, file_size)?
+        };
         reader.seek(SeekFrom::Start(DSD_HEADER_SIZE + FMT_CHUNK_SIZE + 12))?;
         let channels = channels as usize;
         let mut channel_blocks = Vec::new();
@@ -109,7 +117,7 @@ impl<R: Read + Seek> DsfDecoder<R> {
                 channel_mask(channel_type),
             )
             .map_err(|error| AudioError::InvalidData(error.0))?,
-            metadata: Metadata::default(),
+            metadata,
             sample_count,
             total_octets: sample_count.div_ceil(8),
             emitted_octets: 0,
