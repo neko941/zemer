@@ -12,6 +12,8 @@ writers:
 * ``ogg`` validates Ogg page framing/CRC and exposes bounded packets; codec
   mapping rules remain in their own crates.
 * ``wav`` implements RIFF/WAVE on top of those shared interfaces.
+* ``dsf`` and ``dsdiff`` implement separate raw DSD container layouts on top
+  of the shared packed-octet DSD interface.
 * ``flac`` decodes native FLAC frames and uses ``ogg`` for the Ogg-FLAC
   mapping, producing the same shared PCM and metadata types.
 * ``cue`` parses and writes CUE sheet models without depending on a codec or

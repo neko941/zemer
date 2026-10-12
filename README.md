@@ -24,6 +24,7 @@ The workspace separates format-independent audio types from each format implemen
 | Ogg-FLAC | Supported | Streaming decode and encode through the reusable `zemer-ogg` page/packet reader/writer; validates terminal granules, trims final-frame samples, and decodes chained links with matching audio specifications. Seekable readers can seek by restarting and decoding forward. The decoder exposes metadata from the first link. CLI inspection and conversion to WAVE/Ogg-FLAC are available. |
 | WavPack | Supported | Streaming decode covers lossless PCM, IEEE float32, hybrid `.wvc` restoration, and native DSD profiles. Lossless integer PCM encoding supports 1–32 channels at 8/16/24/32 bits; float32 is bit-exact but stored uncompressed in WVX; raw native DSD encoding supports 1–32 channels. Integer PCM hybrid encoding writes standard-bitrate `.wv`+`.wvc` pairs; APEv2 text tags, CLI inspect, conversion, and metadata editing are supported. The official suite decoded 35 supported files (including 2 DSD and 16 correction-paired files), skipped 9 legacy files, and rejected all 4 malformed files. |
 | [DSF](crates/dsf/) | Partial | `zemer-dsf` reads and writes Sony DSF 1.01 raw one-bit DSD for supported layouts at 2.8224/5.6448 MHz; it reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags. CLI inspect and bit-exact DSF ↔ native DSD WavPack conversion are supported. Artwork/unknown-frame preservation remains open. |
+| [DSDIFF / DFF](crates/dsdiff/) | Partial | Reads and writes uncompressed, interleaved raw DSD; supports title, artist, and channel IDs, plus CLI inspect and DSD conversion. DST compression, comments, markers, and unknown-chunk preservation are not implemented. |
 
 ## Roadmap
 
@@ -36,6 +37,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata, PCM, and DSD types for convenience.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
+- [`zemer-dsdiff`](crates/dsdiff/) (Rust crate `dsdiff`): raw DSDIFF `.dff` decoder and encoder for uncompressed DSD.
 - [`zemer-dsf`](crates/dsf/) (Rust crate `dsf`): DSF 1.01 raw one-bit DSD decoder and encoder for the documented profile, with common ID3 text-tag mapping.
 - [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming integer PCM encoder, decoder, seek API, and metadata rewriter with raw metadata-block access and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
@@ -43,7 +45,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE reader and writer.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/native DSD decoding, lossless integer PCM, standard-bitrate integer PCM hybrid `.wv`+`.wvc` encoding, bit-exact float32, raw native DSD encoding, APEv2 text metadata reading and rewriting, and checksum validation.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, DSF/native DSD WavPack transcoding, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, DSF/DSDIFF/native DSD WavPack transcoding, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 ## Documentation

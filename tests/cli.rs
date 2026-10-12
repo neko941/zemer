@@ -6,6 +6,7 @@ use std::{
 };
 
 use dsf::{DsfDecoder, DsfEncoder};
+use dsdiff::DsdiffDecoder;
 use flac::{FlacDecoder, OggFlacDecoder};
 use wav::{write_wav, write_wav_with_metadata};
 use wavpack::{WavPackDecoder, WavPackDsdDecoder};
@@ -979,6 +980,7 @@ fn cue_split_and_create_preserve_track_samples_and_metadata() {
 fn dsd_cli_inspects_and_transcodes_wavpack_and_dsf_without_pcm() {
     let input = temporary_path().with_extension("wv");
     let dsf_path = temporary_path().with_extension("dsf");
+    let dsdiff_path = temporary_path().with_extension("dff");
     let wavpack_path = temporary_path().with_extension("wv");
     fs::write(
         &input,
@@ -1004,7 +1006,8 @@ fn dsd_cli_inspects_and_transcodes_wavpack_and_dsf_without_pcm() {
 
     for (source, target, format) in [
         (&input, &dsf_path, "dsf"),
-        (&dsf_path, &wavpack_path, "wavpack"),
+        (&dsf_path, &dsdiff_path, "dsdiff"),
+        (&dsdiff_path, &wavpack_path, "wavpack"),
     ] {
         let converted = Command::new(cli_path())
             .args(["convert", "--format", format, "--json"])
@@ -1024,13 +1027,30 @@ fn dsd_cli_inspects_and_transcodes_wavpack_and_dsf_without_pcm() {
         );
     }
 
+    let inspected = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&dsdiff_path)
+        .output()
+        .unwrap();
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    assert!(String::from_utf8(inspected.stdout)
+        .unwrap()
+        .contains("\"format\":\"dsdiff\""));
+
     let mut dsf_decoder = DsfDecoder::new(File::open(&dsf_path).unwrap()).unwrap();
     assert_eq!(dsd_bytes(&mut dsf_decoder), expected);
+    let mut dsdiff_decoder = DsdiffDecoder::new(File::open(&dsdiff_path).unwrap()).unwrap();
+    assert_eq!(dsd_bytes(&mut dsdiff_decoder), expected);
     let mut wavpack_decoder = WavPackDsdDecoder::new(File::open(&wavpack_path).unwrap()).unwrap();
     assert_eq!(dsd_bytes(&mut wavpack_decoder), expected);
 
     let _ = fs::remove_file(input);
     let _ = fs::remove_file(dsf_path);
+    let _ = fs::remove_file(dsdiff_path);
     let _ = fs::remove_file(wavpack_path);
 }
 

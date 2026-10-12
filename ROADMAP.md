@@ -82,7 +82,7 @@ support for every file with that extension.
 | Ogg with Vorbis / Opus | Reusable bounded Ogg page/packet reader is implemented; parse streams and decode each codec | Encode each codec and write stream metadata | Separate codec support |
 | WMA and other legacy formats | Evaluate supported variants and dependencies | Encode only where clean-room scope and licensing permit | Evaluate separately |
 | DSF (`.dsf`) | DSF 1.01 raw one-bit DSD decode and encode for supported channel layouts at 2.8224/5.6448 MHz; reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags | CLI inspects DSF and native DSD WavPack and transcodes between them without PCM conversion | Artwork/unknown-frame preservation remains open |
-| DSDIFF (`.dff`) | Inspect, decode supported uncompressed DSD, read format metadata | Write DSD and metadata where specified | Separate feasibility and conformance work |
+| DSDIFF (`.dff`) | Read and decode uncompressed raw DSD, title/artist, and channel IDs | Write uncompressed raw DSD, title/artist, and channel IDs | Implemented profile is partial; DST, markers/comments, unknown-chunk retention, and independent corpus remain open |
 | SACD DSD ISO | Evaluate TOC/area inspection and extraction of readable DSD tracks from user-supplied images | Image creation only if specification-based workflows and tests are practical | Deferred pending a lawful normative source, usable test-image rights, and an explicit image/sector model; no DRM circumvention, DST is a separate codec |
 
 Read and write are separate capabilities: a format may be readable before an
@@ -92,8 +92,10 @@ platform-specific implementations may remain unsupported.
 ## 4. DSD and optical-disc audio
 
 - DSF 1.01 raw one-bit DSD read/write, common ID3 text mapping, and CLI inspect
-  plus DSF/native DSD WavPack transcoding are implemented. Add DSDIFF/DFF
-  metadata/audio support and artwork/unknown-frame preservation for DSF.
+  plus DSF/native DSD WavPack transcoding are implemented. DSDIFF/DFF raw DSD
+  read/write and CLI conversion are implemented for its uncompressed profile;
+  DST and richer metadata remain separate work. Artwork/unknown-frame
+  preservation for DSF is still open.
 - Inspect SACD/DSD ISO navigation, stereo and multichannel areas, track
   boundaries, timing, and metadata only after normative documentation and
   fixture rights are established. Any future extraction must stream readable,

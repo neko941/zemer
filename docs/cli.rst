@@ -14,7 +14,7 @@ installed):
 This installs ``zemer`` in Cargo's binary directory, usually ``~/.cargo/bin``.
 Alternatively, run it from a source checkout with ``cargo run -p zemer --``.
 
-Inspect a WAVE, native FLAC, Ogg-FLAC, DSF, or WavPack file:
+Inspect a WAVE, native FLAC, Ogg-FLAC, DSF, DSDIFF, or WavPack file:
 
 .. code-block:: console
 
@@ -22,6 +22,7 @@ Inspect a WAVE, native FLAC, Ogg-FLAC, DSF, or WavPack file:
    cargo run -p zemer -- inspect input.flac
    cargo run -p zemer -- inspect input.wv
    cargo run -p zemer -- inspect input.dsf
+   cargo run -p zemer -- inspect input.dff
 
 For scripts and agents, request JSON:
 
@@ -31,6 +32,7 @@ For scripts and agents, request JSON:
    cargo run -p zemer -- inspect --json input.flac
    cargo run -p zemer -- inspect --json input.wv
    cargo run -p zemer -- inspect --json input.dsf
+   cargo run -p zemer -- inspect --json input.dff
 
 The JSON report contains the detected format, a WAVE container (``riff`` or
 ``rf64``) or ``null`` for FLAC, sample rate, channel count, optional speaker
@@ -42,8 +44,8 @@ For native DSD, JSON reports bit rate, octet-frame count, exact samples per
 channel, duration as a sample-count/bit-rate fraction, and supported metadata.
 Inspection streams the entire file to validate and count audio.
 
-Convert WAVE, native FLAC, Ogg-FLAC, or WavPack input to a supported WAVE
-sample format, native FLAC, or Ogg-FLAC:
+Convert WAVE, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF input to a
+supported target format:
 
 .. code-block:: console
 
@@ -56,6 +58,7 @@ sample format, native FLAC, or Ogg-FLAC:
    cargo run -p zemer -- convert --format ogg_flac input.wav output.oga
    cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
    cargo run -p zemer -- convert --format dsf input.wv output.dsf
+   cargo run -p zemer -- convert --format dsdiff input.dsf output.dff
    cargo run -p zemer -- convert --format wavpack input.dsf output.wv
 
 WAVE output defaults to classic RIFF; choose RF64 explicitly when needed.
@@ -78,10 +81,12 @@ PCM before companding. Its JSON report includes ``output_encoding``. With
 ``--json``, failures are JSON objects on stderr with a stable ``kind`` field
 and the process exits with status 2.
 
-Native DSD conversion copies packed one-bit octets directly between DSF and
-native DSD WavPack streams; it does not decode through PCM. Conversion preserves
-the DSD rate, channel layout, supported text metadata, and exact DSF sample
-count. The CLI does not convert between DSD and PCM.
+Native DSD conversion copies packed one-bit octets directly between DSF,
+DSDIFF, and native DSD WavPack streams; it does not decode through PCM.
+Conversion preserves the DSD rate, channel IDs, supported text metadata, and
+exact DSF sample count. DSDIFF stores complete octets and cannot represent a
+partial final octet. DST-compressed DSDIFF is rejected. The CLI does not
+convert between DSD and PCM.
 
 Metadata editing
 ----------------

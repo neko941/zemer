@@ -1,0 +1,13 @@
+[package]
+name = "zemer-dsdiff"
+description = "Clean-room DSDIFF container reader and writer for raw DSD"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "dsdiff"
+
+[dependencies]
+zemer-core.workspace = true

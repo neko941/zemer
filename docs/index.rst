@@ -16,7 +16,9 @@ standard-bitrate integer PCM hybrid pairs. APEv2 UTF-8 text tags can be edited
 while retaining non-text items. The official suite decoded all 35 supported
 files, skipped 9 legacy files, and rejected all 4 malformed files.
 The ``zemer-dsf`` crate reads and writes raw DSF 1.01 DSD streams for its
-documented channel/rate profile and maps common ID3 text fields.
+documented channel/rate profile and maps common ID3 text fields. The
+``zemer-dsdiff`` crate reads and writes uncompressed DSDIFF/DFF audio; DST is
+not supported.
 
 .. toctree::
    :maxdepth: 2
@@ -27,6 +29,7 @@ documented channel/rate profile and maps common ID3 text fields.
    flac
    wavpack
    dsf
+   dsdiff
    ogg
    cue
    cli

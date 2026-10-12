@@ -7,6 +7,7 @@ members = [
     "crates/wav",
     "crates/cue",
     "crates/dsf",
+    "crates/dsdiff",
     "crates/flac",
     "crates/ogg",
     "crates/wavpack",
@@ -33,6 +34,7 @@ wav.workspace = true
 cue.workspace = true
 flac.workspace = true
 wavpack.workspace = true
+dsdiff.workspace = true
 
 [workspace.package]
 edition = "2024"
@@ -48,6 +50,7 @@ zemer-pcm = { path = "crates/pcm", version = "0.7.0" }
 wav = { package = "zemer-wav", path = "crates/wav", version = "0.7.0" }
 cue = { package = "zemer-cue", path = "crates/cue", version = "0.7.0" }
 dsf = { package = "zemer-dsf", path = "crates/dsf", version = "0.7.0" }
+dsdiff = { package = "zemer-dsdiff", path = "crates/dsdiff", version = "0.7.0" }
 flac = { package = "zemer-flac", path = "crates/flac", version = "0.7.0" }
 ogg = { package = "zemer-ogg", path = "crates/ogg", version = "0.7.0" }
 wavpack = { package = "zemer-wavpack", path = "crates/wavpack", version = "0.7.0" }

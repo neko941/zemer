@@ -70,6 +70,16 @@ Crate ``zemer-dsf``
 * The decoder reads common ID3v2.3/v2.4 text fields. The encoder writes ID3v2.4
   UTF-8 text frames and stores unknown metadata keys in ``TXXX`` frames.
 
+Rust library crate ``dsdiff`` (Cargo package ``zemer-dsdiff``)
+---------------------------------------------------------------
+
+* ``DsdiffDecoder<R>`` and ``DsdiffEncoder<W>`` — stream the DSDIFF 1.5 raw
+  uncompressed DSD profile without converting through PCM.
+* The shared DSD buffers use interleaved channel octets, MSB-first. DSDIFF
+  octet frames map directly to this representation.
+* Supported metadata fields are title, artist, and channel IDs. DST and other
+  DSDIFF metadata chunks are not decoded or written.
+
 Rust library crate ``cue`` (Cargo package ``zemer-cue``)
 --------------------------------------------------------
 
