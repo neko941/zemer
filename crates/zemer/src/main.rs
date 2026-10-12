@@ -3,7 +3,7 @@ use std::{
     env,
     fmt::Write as _,
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
@@ -479,13 +479,11 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
         message: format!("{}: {error}", path.display()),
     })?;
     let mut file = file;
-    let mut signature = [0; 4];
-    let count = file
-        .read(&mut signature)
-        .map_err(|error| cli_audio_error(error.into(), path))?;
+    let is_flac =
+        has_flac_signature(&mut file).map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| cli_audio_error(error.into(), path))?;
-    if count == signature.len() && signature == *b"fLaC" {
+    if is_flac {
         let decoder = FlacDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
         Ok(AudioInput {
             decoder: Box::new(decoder),
@@ -500,6 +498,15 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             format: "wav",
             container: Some(container),
         })
+    }
+}
+
+fn has_flac_signature(reader: &mut impl Read) -> io::Result<bool> {
+    let mut signature = [0; 4];
+    match reader.read_exact(&mut signature) {
+        Ok(()) => Ok(signature == *b"fLaC"),
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(error),
     }
 }
 
@@ -672,7 +679,18 @@ fn json_string(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::json_string;
+    use std::io::{self, Cursor, Read};
+
+    use super::{has_flac_signature, json_string};
+
+    struct OneByteAtATime<R>(R);
+
+    impl<R: Read> Read for OneByteAtATime<R> {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            let length = output.len().min(1);
+            self.0.read(&mut output[..length])
+        }
+    }
 
     #[test]
     fn json_string_escapes_quotes_slashes_and_controls() {
@@ -680,5 +698,17 @@ mod tests {
             json_string("a\"\\\n\t\u{0001}é"),
             "\"a\\\"\\\\\\n\\t\\u0001é\""
         );
+    }
+
+    #[test]
+    fn reads_flac_signature_across_short_reads() {
+        let mut reader = OneByteAtATime(Cursor::new(b"fLaC audio"));
+        assert!(has_flac_signature(&mut reader).unwrap());
+    }
+
+    #[test]
+    fn treats_truncated_signature_as_non_flac() {
+        let mut reader = OneByteAtATime(Cursor::new(b"fLa"));
+        assert!(!has_flac_signature(&mut reader).unwrap());
     }
 }
