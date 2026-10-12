@@ -1,3 +1,5 @@
+use crate::SampleFormat;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Samples {
     U8(Vec<u8>),

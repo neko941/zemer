@@ -1,3 +1,5 @@
+use crate::{PcmError, SampleFormat};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AudioSpec {
     sample_rate: u32,
