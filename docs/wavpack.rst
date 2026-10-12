@@ -1,5 +1,5 @@
 WavPack
-=======
+-------
 
 The ``zemer-wavpack`` crate decodes WavPack PCM and native DSD without linking
 an external codec implementation. It also reads and rewrites trailing APEv2
