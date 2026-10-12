@@ -456,6 +456,28 @@ mod tests {
     }
 
     #[test]
+    fn decodes_24_bit_samples_across_internal_md5_buffer_boundaries() {
+        let samples: Vec<i32> = (0..1400)
+            .map(|index| (index * 31) % 16_000_001 - 8_000_000)
+            .collect();
+        let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI24).unwrap();
+        let input = PcmBuffer::new(spec, Samples::I24(samples.clone())).unwrap();
+        let mut encoder = FlacEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_block(&input).unwrap();
+        encoder.finish().unwrap();
+
+        let mut decoder = FlacDecoder::new(Cursor::new(encoder.writer.into_inner())).unwrap();
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_frames(317).unwrap() {
+            let Samples::I24(values) = block.samples() else {
+                panic!("unexpected FLAC sample representation");
+            };
+            decoded.extend_from_slice(values);
+        }
+        assert_eq!(decoded, samples);
+    }
+
+    #[test]
     fn rejects_empty_streams_and_non_integer_specs() {
         let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
         let mut encoder = FlacEncoder::new(Cursor::new(Vec::new()), spec).unwrap();

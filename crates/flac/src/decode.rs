@@ -109,7 +109,7 @@ impl<R: Read> FlacDecoder<R> {
             ));
         }
         let bytes_per_sample = usize::from(self.info.bits_per_sample().div_ceil(8));
-        let mut audio_bytes = [0_u8; 4096];
+        let mut audio_bytes = [0_u8; 4092];
         let mut audio_bytes_used = 0;
         for sample in &samples {
             audio_bytes[audio_bytes_used..audio_bytes_used + bytes_per_sample]
