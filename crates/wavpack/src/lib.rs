@@ -5,6 +5,7 @@ use std::io::{self, Read};
 use zemer_core::AudioError;
 
 mod bitstream;
+mod checksum;
 mod decode;
 mod entropy;
 mod float;

@@ -5,6 +5,7 @@ use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, Sampl
 use crate::{
     WavPackBlockHeader,
     bitstream::BitReader,
+    checksum::verify_block_checksum,
     entropy::EntropyDecoder,
     float::FloatInfo,
     hybrid::{HybridState, ShapingState},
@@ -82,6 +83,7 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
         validate_header(&header)?;
         if header.block_samples == 0 {
             let payload = read_payload(&mut self.reader, &header)?;
+            verify_block_checksum(&header, &payload)?;
             let mut input = Cursor::new(payload.as_slice());
             visit_metadata_sub_blocks(&mut input, payload.len() as u64, |_, _| Ok(()))?;
             return Ok(true);
@@ -112,6 +114,7 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
                 ));
             }
             let payload = read_payload(&mut self.reader, &current)?;
+            verify_block_checksum(&current, &payload)?;
             let correction_payload = if let Some(reader) = self.correction_reader.as_mut() {
                 let correction_header = WavPackBlockHeader::read_from(reader)?.ok_or(
                     AudioError::InvalidData("WavPack correction stream ended before audio stream"),
@@ -125,7 +128,9 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
                         "WavPack correction block does not match audio block",
                     ));
                 }
-                Some(read_payload(reader, &correction_header)?)
+                let correction_payload = read_payload(reader, &correction_header)?;
+                verify_block_checksum(&correction_header, &correction_payload)?;
+                Some(correction_payload)
             } else {
                 None
             };

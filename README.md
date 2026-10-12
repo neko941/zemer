@@ -21,7 +21,7 @@ The workspace separates format-independent audio types from each format implemen
 | RF64/WAVE | Supported | Read and write; RIFF INFO metadata read/write. Supports 64-bit file and data sizes; select explicitly for output. |
 | CUE sheets for WAVE/AUDIO tracks | Supported | Read and write; track title and performer fields. Split referenced WAV audio into track WAVs and create CUE sheets for WAV tracks. |
 | Native FLAC | Partial | Streaming read with frame CRC and STREAMINFO MD5 verification when the checksum is present and the stream is fully consumed; Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE, and comment editing are available; FLAC audio encoding is not implemented. |
-| WavPack | Partial | Streaming decode of mono/stereo lossless integer PCM at 8/16/24/32 bits, stereo lossless IEEE float32, 5.1 and 7.1 lossless PCM16; mono/stereo unshaped hybrid-lossy PCM16; tested stereo noise-shaped hybrid-lossy PCM16; tested stereo PCM16 hybrid-lossless restoration with `.wvc`, both flat and noise-shaped. Cross-channel `.wvc` correction, other multichannel layouts, and DSD remain unsupported. |
+| WavPack | Partial | Streaming decode of mono/stereo lossless integer PCM at 8/16/24/32 bits, stereo lossless IEEE float32, 5.1 and 7.1 lossless PCM16; mono/stereo unshaped hybrid-lossy PCM16; tested stereo noise-shaped hybrid-lossy PCM16; tested stereo PCM16 hybrid-lossless restoration with `.wvc`, both flat and noise-shaped. WavPack v5 block checksums are verified. Cross-channel `.wvc` correction, other multichannel layouts, decoded-sample CRC verification, and DSD remain unsupported. |
 
 ## Roadmap
 

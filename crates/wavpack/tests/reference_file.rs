@@ -3,6 +3,49 @@ use std::io::Cursor;
 use wavpack::{WavPackBlockHeader, WavPackDecoder, visit_metadata_sub_blocks};
 use zemer_core::{AudioDecoder, SampleFormat, Samples};
 
+fn rechecksum_blocks(file: &mut [u8]) {
+    let mut block_start = 0;
+    while block_start < file.len() {
+        let block_size = {
+            let mut input = Cursor::new(&file[block_start..]);
+            WavPackBlockHeader::read_from(&mut input)
+                .unwrap()
+                .unwrap()
+                .block_size as usize
+        };
+        let block_end = block_start + block_size;
+        let mut offset = block_start + 32;
+        while offset < block_end {
+            let id = file[offset];
+            let large = id & 0x80 != 0;
+            let header_size = if large { 4 } else { 2 };
+            let words = if large {
+                u32::from_le_bytes([file[offset + 1], file[offset + 2], file[offset + 3], 0])
+            } else {
+                u32::from(file[offset + 1])
+            };
+            let padded_size = usize::try_from(words * 2).unwrap();
+            if id & 0x3f == 0x2f {
+                let mut checksum = u32::MAX;
+                for word in file[block_start..offset].chunks_exact(2) {
+                    checksum = checksum
+                        .wrapping_mul(3)
+                        .wrapping_add(u32::from(u16::from_le_bytes([word[0], word[1]])));
+                }
+                let data_offset = offset + header_size;
+                if padded_size == 4 {
+                    file[data_offset..data_offset + 4].copy_from_slice(&checksum.to_le_bytes());
+                } else {
+                    let checksum = (checksum ^ (checksum >> 16)) as u16;
+                    file[data_offset..data_offset + 2].copy_from_slice(&checksum.to_le_bytes());
+                }
+            }
+            offset += header_size + padded_size;
+        }
+        block_start = block_end;
+    }
+}
+
 #[test]
 fn reads_block_and_sub_blocks_from_wavpack_5_9_output() {
     let file = include_bytes!("fixtures/reference-5.9.0-mono.wv");
@@ -24,6 +67,47 @@ fn reads_block_and_sub_blocks_from_wavpack_5_9_output() {
 
     assert!(has_audio_bitstream, "missing WavPack audio bitstream");
     assert_eq!(input.position(), block.block_size);
+}
+
+#[test]
+fn rejects_corrupted_wavpack_v5_block_checksum() {
+    use wavpack::WavPackMetadataSubBlockHeader;
+
+    let file = include_bytes!("fixtures/stereo16.wv");
+    let mut input = Cursor::new(file.as_slice());
+    let block = WavPackBlockHeader::read_from(&mut input).unwrap().unwrap();
+    let mut remaining = block.payload_size();
+    let mut checksum_offset = None;
+    while let Some(sub_block) =
+        WavPackMetadataSubBlockHeader::read_from(&mut input, &mut remaining).unwrap()
+    {
+        if sub_block.id == 0x2f {
+            checksum_offset = Some(input.position() as usize);
+            break;
+        }
+        input.set_position(input.position() + sub_block.padded_data_size);
+    }
+    let checksum_offset = checksum_offset.expect("WavPack v5 fixture contains a block checksum");
+
+    for offset in [checksum_offset, 32 + 8] {
+        let mut corrupted = file.to_vec();
+        corrupted[offset] ^= 1;
+        assert!(matches!(
+            WavPackDecoder::new(Cursor::new(corrupted)),
+            Err(zemer_core::AudioError::InvalidData(
+                "WavPack block checksum mismatch"
+            ))
+        ));
+    }
+
+    let mut missing = file.to_vec();
+    missing[checksum_offset - 2] = 0x2e;
+    assert!(matches!(
+        WavPackDecoder::new(Cursor::new(missing)),
+        Err(zemer_core::AudioError::InvalidData(
+            "WavPack block declares a missing checksum"
+        ))
+    ));
 }
 
 #[test]
@@ -436,6 +520,7 @@ fn rejects_hybrid_correction_with_cross_channel_decorrelation() {
     for block in [&mut audio, &mut correction] {
         let flags = u32::from_le_bytes(block[24..28].try_into().unwrap()) | (1 << 5);
         block[24..28].copy_from_slice(&flags.to_le_bytes());
+        rechecksum_blocks(block);
     }
     assert!(matches!(
         WavPackDecoder::new_with_correction(Cursor::new(audio), Cursor::new(correction)),
@@ -522,6 +607,7 @@ fn rejects_multichannel_block_group_without_final_block() {
     let offset = final_flags_offset.expect("fixture has a final multichannel block");
     let flags = u32::from_le_bytes(corrupted[offset..offset + 4].try_into().unwrap());
     corrupted[offset..offset + 4].copy_from_slice(&(flags & !(1 << 12)).to_le_bytes());
+    rechecksum_blocks(&mut corrupted);
     assert!(WavPackDecoder::new(Cursor::new(corrupted)).is_err());
 }
 
@@ -544,6 +630,7 @@ fn rejects_extended_integer_blocks_without_required_metadata() {
             }
             input.set_position(input.position() + sub_block.padded_data_size);
         }
+        rechecksum_blocks(&mut result);
         result
     }
 
