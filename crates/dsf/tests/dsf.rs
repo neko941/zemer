@@ -172,6 +172,39 @@ fn encodes_and_decodes_channel_blocks_and_id3_text() {
     encoder.finish().unwrap();
     let bytes = encoder.into_inner().into_inner();
 
+    let blocks_per_channel = 2_usize;
+    let data_end = 92 + 2 * 4096 * blocks_per_channel;
+    assert_eq!(&bytes[..4], b"DSD ");
+    assert_eq!(
+        u64::from_le_bytes(bytes[12..20].try_into().unwrap()),
+        bytes.len() as u64
+    );
+    assert_eq!(
+        u64::from_le_bytes(bytes[20..28].try_into().unwrap()),
+        data_end as u64
+    );
+    assert_eq!(
+        u64::from_le_bytes(bytes[64..72].try_into().unwrap()),
+        4097 * 8
+    );
+    assert_eq!(
+        u64::from_le_bytes(bytes[84..92].try_into().unwrap()),
+        (12 + 2 * 4096 * blocks_per_channel) as u64
+    );
+    for channel in 0..2 {
+        let mut expected_block = vec![0; 4096];
+        for frame in 0..4097 {
+            expected_block[frame % 4096] = expected[frame * 2 + channel].reverse_bits();
+            if frame == 4095 {
+                let start = 92 + (channel * 4096);
+                assert_eq!(&bytes[start..start + 4096], expected_block);
+                expected_block.fill(0);
+            }
+        }
+        let start = 92 + (2 * 4096) + (channel * 4096);
+        assert_eq!(&bytes[start..start + 4096], expected_block);
+    }
+
     let mut decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
     assert_eq!(decoder.sample_count(), 4097 * 8);
     assert_eq!(decoder.metadata(), &metadata);
@@ -181,6 +214,52 @@ fn encodes_and_decodes_channel_blocks_and_id3_text() {
     assert_eq!(second.frames(), 1);
     assert_eq!([first.bytes(), second.bytes()].concat(), expected);
     assert!(decoder.read_dsd_octets(1).unwrap().is_none());
+}
+
+#[test]
+fn encodes_every_declared_dsf_channel_layout() {
+    for (channels, mask) in [
+        (1, None),
+        (2, Some(0x3)),
+        (3, Some(0x7)),
+        (4, Some(0x33)),
+        (4, Some(0x0f)),
+        (5, Some(0x37)),
+        (6, Some(0x3f)),
+    ] {
+        let spec = DsdSpec::new_with_speaker_mask(2_822_400, channels, mask).unwrap();
+        let input = DsdBuffer::new(spec, vec![0x96; usize::from(channels)]).unwrap();
+        let mut encoder = DsfEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_dsd_octets(&input).unwrap();
+        encoder.finish().unwrap();
+        let bytes = encoder.into_inner().into_inner();
+        let decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.dsd_spec(), spec);
+    }
+}
+
+#[test]
+fn preserves_partial_final_sample_counts() {
+    let spec = DsdSpec::new(2_822_400, 1).unwrap();
+    let mut encoder = DsfEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder
+        .write_dsd_octets(&DsdBuffer::new(spec, vec![0x80, 0x80]).unwrap())
+        .unwrap();
+    encoder.set_sample_count(9).unwrap();
+    encoder.finish().unwrap();
+    let bytes = encoder.into_inner().into_inner();
+    let mut decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(decoder.sample_count(), 9);
+    assert_eq!(
+        decoder.read_dsd_octets(8).unwrap().unwrap().bytes(),
+        [0x80, 0x80]
+    );
+
+    let mut encoder = DsfEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder
+        .write_dsd_octets(&DsdBuffer::new(spec, vec![0x80, 0x81]).unwrap())
+        .unwrap();
+    assert!(encoder.set_sample_count(9).is_err());
 }
 
 #[test]

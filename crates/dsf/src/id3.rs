@@ -89,7 +89,7 @@ fn append_frame(body: &mut Vec<u8>, id: [u8; 4], payload: &[u8]) -> Result<(), A
         .ok_or(AudioError::InvalidData(
             "DSF ID3 metadata exceeds its size limit",
         ))?;
-    body.try_reserve(frame_size)
+    body.try_reserve_exact(frame_size)
         .map_err(|_| AudioError::InvalidData("DSF ID3 metadata is too large"))?;
     body.extend_from_slice(&id);
     body.extend_from_slice(&[

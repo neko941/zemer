@@ -13,8 +13,10 @@ pub struct DsfEncoder<W> {
     spec: DsdSpec,
     metadata: Metadata,
     channel_blocks: Vec<Vec<u8>>,
+    last_octets: Vec<u8>,
     block_frames: usize,
     frames: u64,
+    sample_count: Option<u64>,
     finished: bool,
     poisoned: bool,
 }
@@ -62,13 +64,20 @@ impl<W: Write + Seek> DsfEncoder<W> {
         for _ in 0..channels {
             channel_blocks.push(vec![0; BLOCK_BYTES]);
         }
+        let mut last_octets = Vec::new();
+        last_octets
+            .try_reserve_exact(channels)
+            .map_err(|_| AudioError::InvalidData("DSF channel buffer is too large"))?;
+        last_octets.resize(channels, 0);
         Ok(Self {
             writer,
             spec,
             metadata: Metadata::default(),
             channel_blocks,
+            last_octets,
             block_frames: 0,
             frames: 0,
+            sample_count: None,
             finished: false,
             poisoned: false,
         })
@@ -76,6 +85,41 @@ impl<W: Write + Seek> DsfEncoder<W> {
 
     pub fn into_inner(self) -> W {
         self.writer
+    }
+
+    /// Sets the exact final per-channel DSD bit count after all octets are written.
+    /// The supplied count must fit the written octets; unused bits in the final
+    /// octet are serialized as zero.
+    pub fn set_sample_count(&mut self, sample_count: u64) -> Result<(), AudioError> {
+        if self.finished || self.poisoned || self.frames == 0 || self.sample_count.is_some() {
+            return Err(AudioError::InvalidData(
+                "DSF sample count must be set once after writing audio",
+            ));
+        }
+        let octets = sample_count
+            .checked_sub(1)
+            .map(|count| count / 8 + 1)
+            .ok_or(AudioError::InvalidData("DSF sample count must be non-zero"))?;
+        if octets != self.frames {
+            return Err(AudioError::InvalidData(
+                "DSF sample count does not match the written octets",
+            ));
+        }
+        let final_bits = (sample_count % 8) as u8;
+        if final_bits != 0 {
+            let unused_mask = (1 << (8 - final_bits)) - 1;
+            if self
+                .last_octets
+                .iter()
+                .any(|octet| octet & unused_mask != 0)
+            {
+                return Err(AudioError::InvalidData(
+                    "unused bits in the final DSF octet must be zero",
+                ));
+            }
+        }
+        self.sample_count = Some(sample_count);
+        Ok(())
     }
 
     fn flush_block(&mut self) -> Result<(), AudioError> {
@@ -106,10 +150,7 @@ impl<W: Write + Seek> DsfEncoder<W> {
         self.writer.write_all(&tag)?;
         let file_size = self.writer.stream_position()?;
         let metadata_offset = if tag.is_empty() { 0 } else { data_end };
-        let sample_count = self
-            .frames
-            .checked_mul(8)
-            .ok_or(AudioError::InvalidData("DSF sample count overflow"))?;
+        let sample_count = self.sample_count.unwrap_or(self.frames * 8);
         let data_size = data_end
             .checked_sub(HEADER_BYTES - 12)
             .ok_or(AudioError::InvalidData("DSF data size underflow"))?;
@@ -145,6 +186,11 @@ impl<W: Write + Seek> DsdEncoder for DsfEncoder<W> {
                 "DSF specification changed while encoding",
             ));
         }
+        if self.sample_count.is_some() && !block.is_empty() {
+            return Err(AudioError::InvalidData(
+                "cannot append DSD octets after setting the DSF sample count",
+            ));
+        }
         let frames = u64::try_from(block.frames())
             .map_err(|_| AudioError::InvalidData("DSF frame count overflow"))?;
         let next_frames = self
@@ -157,6 +203,9 @@ impl<W: Write + Seek> DsdEncoder for DsfEncoder<W> {
             for frame in block.bytes().chunks_exact(channels) {
                 for (channel, &octet) in self.channel_blocks.iter_mut().zip(frame) {
                     channel[self.block_frames] = octet.reverse_bits();
+                }
+                for (last_octet, &octet) in self.last_octets.iter_mut().zip(frame) {
+                    *last_octet = octet;
                 }
                 self.block_frames += 1;
                 if self.block_frames == BLOCK_BYTES {
