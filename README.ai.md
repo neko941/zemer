@@ -7,14 +7,14 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-core`](crates/core/): shared PCM/DSD decoder and encoder interfaces; re-exports metadata and audio buffer types.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
-- [`zemer-dsf`](crates/dsf/): DSF 1.01 raw one-bit DSD decoder/encoder; reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags. Artwork/raw-frame preservation and CLI integration remain open.
+- [`zemer-dsf`](crates/dsf/): DSF 1.01 raw one-bit DSD decoder/encoder; reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags. The CLI inspects DSF/native DSD WavPack and transcodes between the two without a PCM path. Artwork/raw-frame preservation remains open.
 - [`zemer-flac`](crates/flac/) (Rust crate `flac`): native and Ogg-FLAC integer-PCM encoders, native/Ogg-FLAC decoders, native seekable decoding, Vorbis-comment rewriting, and preserved typed metadata blocks. The CLI can encode both mappings. Ogg-FLAC chained-stream decoding and seeking remain open.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer reused by Ogg-FLAC.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/float32, hybrid `.wvc`, and native DSD decoding; lossless integer PCM encoding for 1–32 channels at 8/16/24/32 bits; standard-bitrate integer PCM hybrid `.wv`+`.wvc` encoding; bit-exact float32 encoding through uncompressed WVX; raw native DSD encoding for 1–32 channels; APEv2 UTF-8 text tags preserve non-text items. The official suite decoded all 35 supported files, skipped 9 legacy files, and rejected all 4 malformed files.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, WAVE/FLAC/WavPack conversion, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, WAVE/FLAC/WavPack conversion, DSF/native DSD WavPack transcoding, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 Ogg-FLAC decoding handles one logical stream and verifies the terminal granule

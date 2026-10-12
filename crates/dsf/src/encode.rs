@@ -247,6 +247,10 @@ impl<W: Write + Seek> DsdEncoder for DsfEncoder<W> {
         self.metadata = metadata.clone();
         Ok(())
     }
+
+    fn set_sample_count(&mut self, sample_count: u64) -> Result<(), AudioError> {
+        DsfEncoder::set_sample_count(self, sample_count)
+    }
 }
 
 fn dsf_channel_type(spec: DsdSpec) -> Result<u32, AudioError> {

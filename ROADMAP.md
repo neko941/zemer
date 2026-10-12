@@ -81,7 +81,7 @@ support for every file with that extension.
 | DTS Coherent Acoustics (`.dts`) | Inspect and decode DTS core; evaluate DTS-HD and embedded/container streams separately | Evaluate clean-room encoding scope and licensing before promising a writer | Spec-based feasibility review ([ETSI TS 102 114](https://www.etsi.org/deliver/etsi_ts/102100_102199/102114/01.06.01_60/ts_102114v010601p.pdf)) |
 | Ogg with Vorbis / Opus | Reusable bounded Ogg page/packet reader is implemented; parse streams and decode each codec | Encode each codec and write stream metadata | Separate codec support |
 | WMA and other legacy formats | Evaluate supported variants and dependencies | Encode only where clean-room scope and licensing permit | Evaluate separately |
-| DSF (`.dsf`) | DSF 1.01 raw one-bit DSD decode and encode for supported channel layouts at 2.8224/5.6448 MHz; reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags | Library read/write path implemented | Artwork/unknown-frame preservation and CLI workflows remain open |
+| DSF (`.dsf`) | DSF 1.01 raw one-bit DSD decode and encode for supported channel layouts at 2.8224/5.6448 MHz; reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags | CLI inspects DSF and native DSD WavPack and transcodes between them without PCM conversion | Artwork/unknown-frame preservation remains open |
 | DSDIFF (`.dff`) | Inspect, decode supported uncompressed DSD, read format metadata | Write DSD and metadata where specified | Separate feasibility and conformance work |
 | SACD DSD ISO | Evaluate TOC/area inspection and extraction of readable DSD tracks from user-supplied images | Image creation only if specification-based workflows and tests are practical | Deferred pending a lawful normative source, usable test-image rights, and an explicit image/sector model; no DRM circumvention, DST is a separate codec |
 
@@ -91,9 +91,9 @@ platform-specific implementations may remain unsupported.
 
 ## 4. DSD and optical-disc audio
 
-- DSF 1.01 raw one-bit DSD read/write and common ID3 text mapping are
-  implemented. Add DSDIFF/DFF metadata/audio support and artwork/unknown-frame
-  preservation for DSF.
+- DSF 1.01 raw one-bit DSD read/write, common ID3 text mapping, and CLI inspect
+  plus DSF/native DSD WavPack transcoding are implemented. Add DSDIFF/DFF
+  metadata/audio support and artwork/unknown-frame preservation for DSF.
 - Inspect SACD/DSD ISO navigation, stereo and multichannel areas, track
   boundaries, timing, and metadata only after normative documentation and
   fixture rights are established. Any future extraction must stream readable,
@@ -162,7 +162,8 @@ discard layout or audio information.
 See the [README support matrix](README.md#current-support) for implemented
 formats and exact read/write support. WAVE/RF64, native FLAC, single-stream
 Ogg-FLAC, DSF 1.01 raw one-bit DSD decoding/encoding for the declared profile,
-WAVE-backed CUE splitting, CUE creation, and common DSF ID3v2.3/v2.4 text-tag
-reads/writes are implemented. DSF artwork/raw-frame preservation and CLI
-workflows, Ogg-FLAC seeking and chaining, other codecs, track types, and
+DSF/native DSD WavPack CLI inspection and transcoding, WAVE-backed CUE
+splitting, CUE creation, and common DSF ID3v2.3/v2.4 text-tag reads/writes are
+implemented. DSF artwork/raw-frame preservation, Ogg-FLAC seeking and chaining,
+other codecs, track types, and
 archive/disc workflows remain planned until code and tests land.

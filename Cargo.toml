@@ -28,6 +28,7 @@ path = "crates/zemer/src/main.rs"
 
 [dependencies]
 zemer-core.workspace = true
+dsf.workspace = true
 wav.workspace = true
 cue.workspace = true
 flac.workspace = true

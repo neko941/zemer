@@ -14,6 +14,10 @@ pub trait AudioDecoder {
 pub trait DsdDecoder {
     fn dsd_spec(&self) -> DsdSpec;
     fn metadata(&self) -> &Metadata;
+    /// Exact one-bit sample count per channel, when the container declares it.
+    fn sample_count(&self) -> Option<u64> {
+        None
+    }
     /// Reads at most `max_octet_frames` frames, where each frame contains one
     /// packed DSD octet for every channel.
     fn read_dsd_octets(&mut self, max_octet_frames: usize)
@@ -32,6 +36,16 @@ pub trait DsdEncoder {
         if metadata.iter().next().is_some() {
             return Err(AudioError::Unsupported(
                 "DSD encoder does not support audio metadata",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Sets a container's exact final DSD bit count after octet frames are written.
+    fn set_sample_count(&mut self, sample_count: u64) -> Result<(), AudioError> {
+        if sample_count == 0 || sample_count % 8 != 0 {
+            return Err(AudioError::Unsupported(
+                "DSD encoder cannot preserve a partial final octet",
             ));
         }
         Ok(())
@@ -81,6 +95,55 @@ pub fn transcode<D: AudioDecoder, E: AudioEncoder>(
     }
     encoder.finish()?;
     Ok(frames)
+}
+
+/// Copies packed native DSD octets between matching DSD specifications.
+pub fn transcode_dsd<D: DsdDecoder + ?Sized, E: DsdEncoder + ?Sized>(
+    decoder: &mut D,
+    encoder: &mut E,
+    block_octet_frames: usize,
+) -> Result<u64, AudioError> {
+    if block_octet_frames == 0 {
+        return Err(AudioError::InvalidData(
+            "block_octet_frames must be greater than zero",
+        ));
+    }
+    if decoder.dsd_spec() != encoder.dsd_spec() {
+        return Err(AudioError::InvalidData(
+            "decoder and encoder DSD specifications differ",
+        ));
+    }
+    let exact_sample_count = decoder.sample_count();
+    encoder.set_metadata(decoder.metadata())?;
+    let mut octet_frames = 0_u64;
+    while let Some(block) = decoder.read_dsd_octets(block_octet_frames)? {
+        if block.spec() != decoder.dsd_spec() {
+            return Err(AudioError::InvalidData(
+                "DSD decoder returned a changed specification",
+            ));
+        }
+        encoder.write_dsd_octets(&block)?;
+        octet_frames =
+            octet_frames
+                .checked_add(block.frames() as u64)
+                .ok_or(AudioError::InvalidData(
+                    "transcoded DSD frame count overflow",
+                ))?;
+    }
+    if let Some(sample_count) = exact_sample_count {
+        let expected_octets = sample_count
+            .checked_sub(1)
+            .map(|count| count / 8 + 1)
+            .ok_or(AudioError::InvalidData("DSD sample count must be non-zero"))?;
+        if octet_frames != expected_octets {
+            return Err(AudioError::InvalidData(
+                "DSD sample count does not match decoded octets",
+            ));
+        }
+        encoder.set_sample_count(sample_count)?;
+    }
+    encoder.finish()?;
+    Ok(octet_frames)
 }
 
 #[derive(Debug)]

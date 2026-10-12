@@ -23,7 +23,7 @@ The workspace separates format-independent audio types from each format implemen
 | Native FLAC | Supported | Streaming integer PCM encode (8/16/24/32-bit, verbatim or fixed-predictor Rice-coded frames) and decode with frame CRC and STREAMINFO MD5 verification; sample seeking for seekable readers (SEEKTABLE accelerated, forward-scan fallback); Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE/FLAC, and comment editing are available. |
 | Ogg-FLAC | Supported | Streaming decode and encode through the reusable `zemer-ogg` page/packet reader/writer; validates terminal granules, trims final-frame samples, and supports CLI inspection and conversion to WAVE/Ogg-FLAC. One logical stream per file; Ogg seeking and chained logical streams are not included. |
 | WavPack | Supported | Streaming decode covers lossless PCM, IEEE float32, hybrid `.wvc` restoration, and native DSD profiles. Lossless integer PCM encoding supports 1–32 channels at 8/16/24/32 bits; float32 is bit-exact but stored uncompressed in WVX; raw native DSD encoding supports 1–32 channels. Integer PCM hybrid encoding writes standard-bitrate `.wv`+`.wvc` pairs; APEv2 text tags, CLI inspect, conversion, and metadata editing are supported. The official suite decoded 35 supported files (including 2 DSD and 16 correction-paired files), skipped 9 legacy files, and rejected all 4 malformed files. |
-| [DSF](crates/dsf/) | Partial | `zemer-dsf` reads and writes Sony DSF 1.01 raw one-bit DSD for supported layouts at 2.8224/5.6448 MHz; it reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags. Artwork/unknown-frame preservation and CLI workflows remain open. |
+| [DSF](crates/dsf/) | Partial | `zemer-dsf` reads and writes Sony DSF 1.01 raw one-bit DSD for supported layouts at 2.8224/5.6448 MHz; it reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags. CLI inspect and bit-exact DSF ↔ native DSD WavPack conversion are supported. Artwork/unknown-frame preservation remains open. |
 
 ## Roadmap
 
@@ -43,7 +43,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE reader and writer.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/native DSD decoding, lossless integer PCM, standard-bitrate integer PCM hybrid `.wv`+`.wvc` encoding, bit-exact float32, raw native DSD encoding, APEv2 text metadata reading and rewriting, and checksum validation.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, DSF/native DSD WavPack transcoding, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 ## Documentation

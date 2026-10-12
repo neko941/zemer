@@ -44,6 +44,8 @@ for convenience and compatibility:
 * ``transcode`` — bounded block copying between matching PCM specifications,
   preserving metadata when the encoder supports it and finalizing the encoder
   after successful copying.
+* ``transcode_dsd`` — bounded packed-octet copying between matching native DSD
+  specifications, preserving supported metadata and exact sample counts.
 
 Crate ``zemer-dsd``
 -------------------

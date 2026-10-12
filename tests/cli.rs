@@ -5,10 +5,14 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, OggFlacDecoder};
 use wav::{write_wav, write_wav_with_metadata};
-use wavpack::WavPackDecoder;
-use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
+use wavpack::{WavPackDecoder, WavPackDsdDecoder};
+use zemer_core::{
+    AudioDecoder, AudioSpec, DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata, PcmBuffer,
+    SampleFormat, Samples,
+};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -22,6 +26,14 @@ fn temporary_path() -> PathBuf {
         std::process::id(),
         NEXT_FILE.fetch_add(1, Ordering::Relaxed)
     ))
+}
+
+fn dsd_bytes<D: DsdDecoder>(decoder: &mut D) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while let Some(block) = decoder.read_dsd_octets(257).unwrap() {
+        bytes.extend_from_slice(block.bytes());
+    }
+    bytes
 }
 
 fn flac_comment_block(vendor: &[u8], fields: &[(&[u8], &[u8])]) -> Vec<u8> {
@@ -961,4 +973,114 @@ fn cue_split_and_create_preserve_track_samples_and_metadata() {
     let _ = fs::remove_file(audio_path);
     let _ = fs::remove_file(cue_path);
     let _ = fs::remove_dir_all(output_dir);
+}
+
+#[test]
+fn dsd_cli_inspects_and_transcodes_wavpack_and_dsf_without_pcm() {
+    let input = temporary_path().with_extension("wv");
+    let dsf_path = temporary_path().with_extension("dsf");
+    let wavpack_path = temporary_path().with_extension("wv");
+    fs::write(
+        &input,
+        include_bytes!("../crates/wavpack/tests/fixtures/dsd-direct-stereo.wv"),
+    )
+    .unwrap();
+    let expected =
+        include_bytes!("../crates/wavpack/tests/fixtures/dsd-direct-stereo.expected.dsd");
+
+    let inspected = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    let report = String::from_utf8(inspected.stdout).unwrap();
+    assert!(report.contains("\"format\":\"wavpack-dsd\""));
+    assert!(report.contains("\"dsd_samples_per_channel\":32768"));
+
+    for (source, target, format) in [
+        (&input, &dsf_path, "dsf"),
+        (&dsf_path, &wavpack_path, "wavpack"),
+    ] {
+        let converted = Command::new(cli_path())
+            .args(["convert", "--format", format, "--json"])
+            .arg(source)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            converted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&converted.stderr)
+        );
+        assert!(
+            String::from_utf8(converted.stdout)
+                .unwrap()
+                .contains("\"dsd_samples_per_channel\":32768")
+        );
+    }
+
+    let mut dsf_decoder = DsfDecoder::new(File::open(&dsf_path).unwrap()).unwrap();
+    assert_eq!(dsd_bytes(&mut dsf_decoder), expected);
+    let mut wavpack_decoder = WavPackDsdDecoder::new(File::open(&wavpack_path).unwrap()).unwrap();
+    assert_eq!(dsd_bytes(&mut wavpack_decoder), expected);
+
+    let _ = fs::remove_file(input);
+    let _ = fs::remove_file(dsf_path);
+    let _ = fs::remove_file(wavpack_path);
+}
+
+#[test]
+fn dsd_cli_preserves_partial_final_octet_sample_count() {
+    let input = temporary_path().with_extension("dsf");
+    let output_path = temporary_path().with_extension("dsf");
+    let spec = DsdSpec::new(2_822_400, 2).unwrap();
+    let source = DsdBuffer::new(spec, vec![0x80, 0x80, 0x80, 0x80]).unwrap();
+    let mut encoder = DsfEncoder::new(File::create(&input).unwrap(), spec).unwrap();
+    encoder.write_dsd_octets(&source).unwrap();
+    encoder.set_sample_count(9).unwrap();
+    encoder.finish().unwrap();
+
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "dsf", "--json"])
+        .arg(&input)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    assert!(
+        String::from_utf8(converted.stdout)
+            .unwrap()
+            .contains("\"dsd_samples_per_channel\":9")
+    );
+    let mut decoder = DsfDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.sample_count(), 9);
+    assert_eq!(dsd_bytes(&mut decoder), [0x80, 0x80, 0x80, 0x80]);
+
+    let wavpack_path = temporary_path().with_extension("wv");
+    let rejected = Command::new(cli_path())
+        .args(["convert", "--format", "wavpack", "--json"])
+        .arg(&output_path)
+        .arg(&wavpack_path)
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(
+        String::from_utf8(rejected.stderr)
+            .unwrap()
+            .contains("\"kind\":\"unsupported\"")
+    );
+    assert!(!wavpack_path.exists());
+
+    let _ = fs::remove_file(input);
+    let _ = fs::remove_file(output_path);
+    let _ = fs::remove_file(wavpack_path);
 }

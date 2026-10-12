@@ -8,12 +8,15 @@ use std::{
     process::ExitCode,
 };
 
+use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
 use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
-use wavpack::{WavPackDecoder, WavPackEncoder, WavPackHybridEncoder};
+use wavpack::{
+    WavPackDecoder, WavPackDsdDecoder, WavPackDsdEncoder, WavPackEncoder, WavPackHybridEncoder,
+};
 use zemer_core::{
-    AudioDecoder, AudioEncoder, AudioError, AudioSpec, Metadata, SampleFormat,
-    convert_sample_format,
+    AudioDecoder, AudioEncoder, AudioError, AudioSpec, DsdDecoder, DsdEncoder, DsdSpec, Metadata,
+    SampleFormat, convert_sample_format, transcode_dsd,
 };
 
 #[path = "cue.rs"]
@@ -35,6 +38,16 @@ struct AudioInput {
     container: Option<WavContainer>,
 }
 
+type DsdInput = (Box<dyn DsdDecoder>, &'static str);
+
+struct DsdReport {
+    format: &'static str,
+    spec: DsdSpec,
+    octet_frames: u64,
+    sample_count: u64,
+    metadata: Metadata,
+}
+
 #[derive(Clone, Copy)]
 enum OutputFormat {
     Samples(SampleFormat),
@@ -42,6 +55,7 @@ enum OutputFormat {
     Flac,
     OggFlac,
     WavPack,
+    Dsf,
 }
 
 impl OutputFormat {
@@ -52,6 +66,7 @@ impl OutputFormat {
             Self::Flac => None,
             Self::OggFlac => None,
             Self::WavPack => None,
+            Self::Dsf => None,
         }
     }
 
@@ -63,13 +78,16 @@ impl OutputFormat {
             Self::Flac => "flac",
             Self::OggFlac => "ogg_flac",
             Self::WavPack => "wavpack",
+            Self::Dsf => "dsf",
         }
     }
 }
 
 enum CommandReport {
     Inspect(Report),
+    InspectDsd(DsdReport),
     Convert(Report, PathBuf),
+    ConvertDsd(DsdReport, PathBuf),
     Cue(cue_cli::CueReport),
     MetadataEdit(MetadataEditReport),
 }
@@ -97,6 +115,14 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Ok(CommandReport::InspectDsd(report)) => {
+            if json {
+                println!("{}", dsd_report_json(&report));
+            } else {
+                print_dsd_report(&report);
+            }
+            ExitCode::SUCCESS
+        }
         Ok(CommandReport::Convert(report, output)) => {
             if json {
                 println!("{}", conversion_json(&report, &output));
@@ -116,6 +142,17 @@ fn main() -> ExitCode {
                 if let Some(encoding) = report.output_encoding {
                     println!("output_encoding: {encoding}");
                 }
+            }
+            ExitCode::SUCCESS
+        }
+        Ok(CommandReport::ConvertDsd(report, output)) => {
+            if json {
+                println!("{}", dsd_conversion_json(&report, &output));
+            } else {
+                println!("converted_octet_frames: {}", report.octet_frames);
+                println!("output: {}", output.display());
+                println!("format: {}", report.format);
+                println!("dsd_samples_per_channel: {}", report.sample_count);
             }
             ExitCode::SUCCESS
         }
@@ -170,8 +207,8 @@ fn command_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         return Err(usage_error());
     };
     match command {
-        "inspect" => inspect_args(args).map(CommandReport::Inspect),
-        "convert" => convert_args(args).map(|(report, path)| CommandReport::Convert(report, path)),
+        "inspect" => inspect_args(args),
+        "convert" => convert_args(args),
         "cue" => cue_cli::run(&args[1..])
             .map(CommandReport::Cue)
             .map_err(|message| CliError {
@@ -325,7 +362,7 @@ fn cli_rewrite_error(error: AudioError, input: &Path, output: &Path) -> CliError
     }
 }
 
-fn inspect_args(args: &[std::ffi::OsString]) -> Result<Report, CliError> {
+fn inspect_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> {
     let mut input = None;
     for arg in &args[1..] {
         if arg == "--json" {
@@ -335,10 +372,14 @@ fn inspect_args(args: &[std::ffi::OsString]) -> Result<Report, CliError> {
             return Err(usage_error());
         }
     }
-    inspect_audio(input.ok_or_else(usage_error)?)
+    let input = input.ok_or_else(usage_error)?;
+    if let Some((decoder, format)) = open_dsd_decoder(&input)? {
+        return inspect_dsd(decoder, format, &input).map(CommandReport::InspectDsd);
+    }
+    inspect_audio(input).map(CommandReport::Inspect)
 }
 
-fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliError> {
+fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> {
     let mut format = None;
     let mut container = None;
     let mut bitrate = None;
@@ -395,6 +436,27 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliErr
     let input = paths.remove(0);
     let output = paths.remove(0);
     let format = format.ok_or_else(usage_error)?;
+    let dsd_input = open_dsd_decoder(&input)?;
+    if matches!(format, OutputFormat::Dsf) && dsd_input.is_none() {
+        return Err(CliError {
+            kind: "unsupported",
+            message: "DSF output requires a DSF or native DSD WavPack input".to_owned(),
+        });
+    }
+    if let Some((decoder, _)) = dsd_input {
+        if !matches!(format, OutputFormat::Dsf | OutputFormat::WavPack)
+            || container.is_some()
+            || bitrate.is_some()
+        {
+            return Err(CliError {
+                kind: "unsupported",
+                message: "native DSD conversion supports DSF and lossless WavPack outputs only"
+                    .to_owned(),
+            });
+        }
+        return convert_dsd(input, output, format, decoder)
+            .map(|(report, path)| CommandReport::ConvertDsd(report, path));
+    }
     if bitrate.is_some() && !matches!(format, OutputFormat::WavPack) {
         return Err(usage_error());
     }
@@ -405,14 +467,14 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliErr
     {
         return Err(usage_error());
     }
-    convert_wav(
+    let report = convert_wav(
         input,
         output.clone(),
         format,
         container.unwrap_or(WavContainer::Riff),
         bitrate,
-    )
-    .map(|report| (report, output))
+    )?;
+    Ok(CommandReport::Convert(report, output))
 }
 
 fn parse_container(value: &str) -> Option<WavContainer> {
@@ -436,6 +498,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "flac" => Some(OutputFormat::Flac),
         "ogg_flac" => Some(OutputFormat::OggFlac),
         "wavpack" => Some(OutputFormat::WavPack),
+        "dsf" => Some(OutputFormat::Dsf),
         _ => None,
     }
 }
@@ -548,6 +611,7 @@ fn convert_wav(
                     Box::new(encoder)
                 }
             }
+            OutputFormat::Dsf => unreachable!("DSF output uses the DSD interface"),
         };
         let mut frames = 0_u64;
         while let Some(block) = decoder
@@ -577,6 +641,7 @@ fn convert_wav(
                 OutputFormat::Flac => "flac",
                 OutputFormat::OggFlac => "ogg-flac",
                 OutputFormat::WavPack => "wavpack",
+                OutputFormat::Dsf => unreachable!("DSF output uses the DSD interface"),
                 _ => "wav",
             },
             spec,
@@ -585,7 +650,10 @@ fn convert_wav(
             output_encoding: matches!(format, OutputFormat::G711(_)).then(|| format.name()),
             container: (!matches!(
                 format,
-                OutputFormat::Flac | OutputFormat::OggFlac | OutputFormat::WavPack
+                OutputFormat::Flac
+                    | OutputFormat::OggFlac
+                    | OutputFormat::WavPack
+                    | OutputFormat::Dsf
             ))
             .then_some(container),
             companion_output: correction_output.clone(),
@@ -599,6 +667,136 @@ fn convert_wav(
         }
     }
     result
+}
+
+fn convert_dsd(
+    input: PathBuf,
+    output: PathBuf,
+    format: OutputFormat,
+    mut decoder: Box<dyn DsdDecoder>,
+) -> Result<(DsdReport, PathBuf), CliError> {
+    let output_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&output)
+        .map_err(|error| CliError {
+            kind: "io",
+            message: format!("{}: {error}", output.display()),
+        })?;
+    let spec = decoder.dsd_spec();
+    let declared_sample_count = decoder.sample_count();
+    let metadata = decoder.metadata().clone();
+    let result = (|| {
+        let mut encoder: Box<dyn DsdEncoder> = match format {
+            OutputFormat::Dsf => Box::new(
+                DsfEncoder::new(output_file, spec)
+                    .map_err(|error| cli_audio_error(error, &output))?,
+            ),
+            OutputFormat::WavPack => Box::new(
+                WavPackDsdEncoder::new(output_file, spec)
+                    .map_err(|error| cli_audio_error(error, &output))?,
+            ),
+            _ => unreachable!("DSD conversion format was checked"),
+        };
+        let octet_frames = transcode_dsd(&mut *decoder, &mut *encoder, 8192)
+            .map_err(|error| cli_audio_error(error, &input))?;
+        let sample_count = sample_count_for_octets(octet_frames, declared_sample_count)
+            .map_err(|error| cli_audio_error(error, &input))?;
+        Ok(DsdReport {
+            format: match format {
+                OutputFormat::Dsf => "dsf",
+                OutputFormat::WavPack => "wavpack-dsd",
+                _ => unreachable!("DSD conversion format was checked"),
+            },
+            spec,
+            octet_frames,
+            sample_count,
+            metadata,
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&output);
+    }
+    result.map(|report| (report, output))
+}
+
+fn inspect_dsd(
+    mut decoder: Box<dyn DsdDecoder>,
+    format: &'static str,
+    path: &Path,
+) -> Result<DsdReport, CliError> {
+    let spec = decoder.dsd_spec();
+    let declared_sample_count = decoder.sample_count();
+    let metadata = decoder.metadata().clone();
+    let mut octet_frames = 0_u64;
+    while let Some(block) = decoder
+        .read_dsd_octets(8192)
+        .map_err(|error| cli_audio_error(error, path))?
+    {
+        octet_frames = octet_frames
+            .checked_add(block.frames() as u64)
+            .ok_or_else(|| CliError {
+                kind: "invalid_data",
+                message: "decoded DSD octet frame count overflow".to_owned(),
+            })?;
+    }
+    let sample_count = sample_count_for_octets(octet_frames, declared_sample_count)
+        .map_err(|error| cli_audio_error(error, path))?;
+    Ok(DsdReport {
+        format,
+        spec,
+        octet_frames,
+        sample_count,
+        metadata,
+    })
+}
+
+fn sample_count_for_octets(
+    octet_frames: u64,
+    declared_sample_count: Option<u64>,
+) -> Result<u64, AudioError> {
+    let Some(sample_count) = declared_sample_count else {
+        return octet_frames
+            .checked_mul(8)
+            .ok_or(AudioError::InvalidData("DSD sample count overflow"));
+    };
+    let expected_octets = sample_count
+        .checked_sub(1)
+        .map(|count| count / 8 + 1)
+        .ok_or(AudioError::InvalidData("DSD sample count must be non-zero"))?;
+    if octet_frames != expected_octets {
+        return Err(AudioError::InvalidData(
+            "DSD sample count does not match decoded octets",
+        ));
+    }
+    Ok(sample_count)
+}
+
+fn open_dsd_decoder(path: &Path) -> Result<Option<DsdInput>, CliError> {
+    let mut file = File::open(path).map_err(|error| CliError {
+        kind: "io",
+        message: format!("{}: {error}", path.display()),
+    })?;
+    let is_dsf =
+        has_signature(&mut file, b"DSD ").map_err(|error| cli_audio_error(error.into(), path))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| cli_audio_error(error.into(), path))?;
+    if is_dsf {
+        let decoder = DsfDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
+        return Ok(Some((Box::new(decoder), "dsf")));
+    }
+    let is_wavpack =
+        has_signature(&mut file, b"wvpk").map_err(|error| cli_audio_error(error.into(), path))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| cli_audio_error(error.into(), path))?;
+    if !is_wavpack {
+        return Ok(None);
+    }
+    match WavPackDsdDecoder::new(file) {
+        Ok(decoder) => Ok(Some((Box::new(decoder), "wavpack-dsd"))),
+        Err(AudioError::Unsupported("WavPack stream is not native DSD")) => Ok(None),
+        Err(error) => Err(cli_audio_error(error, path)),
+    }
 }
 
 fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
@@ -707,7 +905,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|flac|ogg_flac|wavpack> [--container <riff|rf64>] [--bitrate <24..9600>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> <output.wav|output.flac|output.oga|output.wv> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv|input.dsf> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|flac|ogg_flac|wavpack|dsf> [--container <riff|rf64>] [--bitrate <24..9600>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv|input.dsf> <output.wav|output.flac|output.oga|output.wv|output.dsf> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 
@@ -736,6 +934,68 @@ fn print_report(report: &Report) {
             println!("metadata.{key}: {value}");
         }
     }
+}
+
+fn print_dsd_report(report: &DsdReport) {
+    println!("format: {}", report.format);
+    println!("dsd_bit_rate: {}", report.spec.bit_rate());
+    println!("channels: {}", report.spec.channels());
+    if let Some(mask) = report.spec.speaker_mask() {
+        println!("speaker_mask: 0x{mask:08x}");
+    }
+    println!("octet_frames: {}", report.octet_frames);
+    println!("dsd_samples_per_channel: {}", report.sample_count);
+    println!(
+        "duration: {}/{} seconds",
+        report.sample_count,
+        report.spec.bit_rate()
+    );
+    for (key, values) in report.metadata.iter() {
+        for value in values {
+            println!("metadata.{key}: {value}");
+        }
+    }
+}
+
+fn dsd_report_json(report: &DsdReport) -> String {
+    let mut json = format!(
+        "{{\"format\":{},\"dsd_bit_rate\":{},\"channels\":{},\"speaker_mask\":{},\"octet_frames\":{},\"dsd_samples_per_channel\":{},\"duration_samples\":{{\"numerator\":{},\"denominator\":{}}},\"metadata\":{{",
+        json_string(report.format),
+        report.spec.bit_rate(),
+        report.spec.channels(),
+        report
+            .spec
+            .speaker_mask()
+            .map_or_else(|| "null".to_owned(), |mask| mask.to_string()),
+        report.octet_frames,
+        report.sample_count,
+        report.sample_count,
+        report.spec.bit_rate(),
+    );
+    for (index, (key, values)) in report.metadata.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        let _ = write!(json, "{}:[", json_string(key));
+        for (value_index, value) in values.iter().enumerate() {
+            if value_index > 0 {
+                json.push(',');
+            }
+            json.push_str(&json_string(value));
+        }
+        json.push(']');
+    }
+    json.push_str("}}");
+    json
+}
+
+fn dsd_conversion_json(report: &DsdReport, output: &Path) -> String {
+    let mut json = dsd_report_json(report);
+    json.insert_str(
+        1,
+        &format!("\"output\":{},", json_string(&output.display().to_string())),
+    );
+    json
 }
 
 fn report_json(report: &Report) -> String {

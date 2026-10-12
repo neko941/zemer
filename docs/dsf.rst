@@ -13,8 +13,13 @@ including unknown metadata keys as ``TXXX`` values. Both APIs use
 ``DsdBuffer``'s channel-interleaved octets with most-significant-bit-first bit
 order, converting to/from DSF's on-disk bit order.
 
+The CLI can inspect DSF and native DSD WavPack files and copy DSD octets
+between the two containers with ``zemer convert --format dsf`` or
+``--format wavpack``. These paths preserve exact DSF sample counts and do not
+pass through PCM.
+
 The current implementation does not retain artwork or unsupported ID3 frames,
-and DSF workflows are not yet exposed by the CLI.
+so those metadata frames are not preserved when converting.
 
 See the `Sony DSF 1.01 format specification <https://dsd-guide.com/sites/default/files/white-papers/DSFFileFormatSpec_E.pdf>`_
 for the container layout and block packing rules.

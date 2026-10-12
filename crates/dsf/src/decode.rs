@@ -177,6 +177,10 @@ impl<R: Read + Seek> DsdDecoder for DsfDecoder<R> {
         &self.metadata
     }
 
+    fn sample_count(&self) -> Option<u64> {
+        Some(self.sample_count)
+    }
+
     fn read_dsd_octets(
         &mut self,
         max_octet_frames: usize,
