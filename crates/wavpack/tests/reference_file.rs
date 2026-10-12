@@ -46,6 +46,22 @@ fn rechecksum_blocks(file: &mut [u8]) {
     }
 }
 
+fn first_metadata_data_offset(file: &[u8], wanted_id: u8) -> usize {
+    let mut input = Cursor::new(file);
+    let block = WavPackBlockHeader::read_from(&mut input).unwrap().unwrap();
+    let mut remaining = block.payload_size();
+    while let Some(sub_block) =
+        wavpack::WavPackMetadataSubBlockHeader::read_from(&mut input, &mut remaining).unwrap()
+    {
+        let data_offset = input.position() as usize;
+        if sub_block.id == wanted_id {
+            return data_offset;
+        }
+        input.set_position(input.position() + sub_block.padded_data_size);
+    }
+    panic!("WavPack fixture lacks metadata block {wanted_id:#x}");
+}
+
 #[test]
 fn reads_block_and_sub_blocks_from_wavpack_5_9_output() {
     let file = include_bytes!("fixtures/reference-5.9.0-mono.wv");
@@ -108,6 +124,39 @@ fn rejects_corrupted_wavpack_v5_block_checksum() {
             "WavPack block declares a missing checksum"
         ))
     ));
+}
+
+#[test]
+fn rejects_corrupted_wavpack_decoded_sample_checksum() {
+    let mut corrupted = include_bytes!("fixtures/stereo16.wv").to_vec();
+    corrupted[28] ^= 1;
+    rechecksum_blocks(&mut corrupted);
+
+    assert!(matches!(
+        WavPackDecoder::new(Cursor::new(corrupted)),
+        Err(zemer_core::AudioError::InvalidData(
+            "WavPack decoded-sample checksum mismatch"
+        ))
+    ));
+}
+
+#[test]
+fn rejects_corrupted_wvx_extended_checksum() {
+    for file in [
+        &include_bytes!("fixtures/mono32.wv")[..],
+        &include_bytes!("fixtures/float32.wv")[..],
+    ] {
+        let mut corrupted = file.to_vec();
+        let offset = first_metadata_data_offset(&corrupted, 0x0c);
+        corrupted[offset] ^= 1;
+        rechecksum_blocks(&mut corrupted);
+        assert!(matches!(
+            WavPackDecoder::new(Cursor::new(corrupted)),
+            Err(zemer_core::AudioError::InvalidData(
+                "WavPack WVX checksum mismatch"
+            ))
+        ));
+    }
 }
 
 #[test]

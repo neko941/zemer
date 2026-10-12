@@ -93,12 +93,12 @@ Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
   5.1/7.1 lossless PCM16, plus mono and stereo unshaped hybrid-lossy PCM16, tested
   stereo noise-shaped hybrid-lossy PCM16, and tested stereo PCM16
   hybrid-lossless streams with paired ``.wvc`` correction files in flat and
-  shaped modes through ``WavPackDecoder::new_with_correction``. WavPack v5 block
-  checksums are verified before decoding.
+  shaped modes through ``WavPackDecoder::new_with_correction``. WavPack v5 block,
+  decoded-sample, and integer/float WVX checksums are verified.
 
-Decoded-sample CRC verification, cross-channel correction, other multichannel
-layouts, and DSD decoding remain unsupported. Hybrid-lossless restoration has
-conformance coverage for stereo PCM16 only.
+Cross-channel correction, other multichannel layouts, and DSD decoding remain
+unsupported. Hybrid-lossless restoration has conformance coverage for stereo
+PCM16 only.
 The float32 conformance fixture checks exact IEEE-754 bit patterns including
 signed zero, subnormals, infinities, and NaNs. The crate uses only Rust's
 standard library and ``zemer-core``; no external codec implementation is linked.

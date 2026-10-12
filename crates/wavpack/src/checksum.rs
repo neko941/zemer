@@ -7,6 +7,87 @@ use crate::{WavPackBlockHeader, metadata::WavPackMetadataSubBlockHeader};
 const HAS_CHECKSUM: u32 = 1 << 28;
 const BLOCK_CHECKSUM_ID: u8 = 0x2f;
 
+pub(crate) fn verify_wvx_integer_checksum(wvx: &[u8], samples: &[i32]) -> Result<(), AudioError> {
+    let expected = wvx_checksum_header(wvx)?;
+    let mut checksum = u32::MAX;
+    for &sample in samples {
+        let sample = sample as u32;
+        checksum = checksum
+            .wrapping_mul(9)
+            .wrapping_add((sample & 0xffff).wrapping_mul(3))
+            .wrapping_add(sample >> 16);
+    }
+    verify_wvx_checksum(expected, checksum)
+}
+
+pub(crate) fn verify_wvx_float_checksum(wvx: &[u8], samples: &[f32]) -> Result<(), AudioError> {
+    let expected = wvx_checksum_header(wvx)?;
+    let mut checksum = u32::MAX;
+    for sample in samples {
+        let bits = sample.to_bits();
+        checksum = checksum
+            .wrapping_mul(27)
+            .wrapping_add((bits & 0x7f_ffff).wrapping_mul(9))
+            .wrapping_add(((bits >> 23) & 0xff).wrapping_mul(3))
+            .wrapping_add(bits >> 31);
+    }
+    verify_wvx_checksum(expected, checksum)
+}
+
+fn wvx_checksum_header(wvx: &[u8]) -> Result<u32, AudioError> {
+    let bytes: [u8; 4] = wvx
+        .get(..4)
+        .ok_or(AudioError::InvalidData("truncated WavPack WVX checksum"))?
+        .try_into()
+        .unwrap();
+    Ok(u32::from_le_bytes(bytes))
+}
+
+fn verify_wvx_checksum(expected: u32, actual: u32) -> Result<(), AudioError> {
+    if expected != actual {
+        return Err(AudioError::InvalidData("WavPack WVX checksum mismatch"));
+    }
+    Ok(())
+}
+
+pub(crate) fn verify_sample_checksum(
+    header: &WavPackBlockHeader,
+    channels: usize,
+    samples: &[i32],
+) -> Result<(), AudioError> {
+    if channels == 0 || samples.len() % channels != 0 {
+        return Err(AudioError::InvalidData(
+            "invalid decoded WavPack checksum sample count",
+        ));
+    }
+
+    let mut checksum = u32::MAX;
+    if channels == 1 {
+        for sample in samples {
+            checksum = checksum.wrapping_mul(3).wrapping_add(*sample as u32);
+        }
+    } else if channels == 2 {
+        for pair in samples.chunks_exact(2) {
+            checksum = checksum
+                .wrapping_add(checksum.wrapping_shl(3))
+                .wrapping_add((pair[0] as u32).wrapping_shl(1))
+                .wrapping_add(pair[0] as u32)
+                .wrapping_add(pair[1] as u32);
+        }
+    } else {
+        return Err(AudioError::InvalidData(
+            "WavPack block checksum requires a mono or stereo channel stream",
+        ));
+    }
+
+    if checksum != header.crc {
+        return Err(AudioError::InvalidData(
+            "WavPack decoded-sample checksum mismatch",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn verify_block_checksum(
     header: &WavPackBlockHeader,
     payload: &[u8],

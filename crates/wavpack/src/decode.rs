@@ -5,7 +5,10 @@ use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, Sampl
 use crate::{
     WavPackBlockHeader,
     bitstream::BitReader,
-    checksum::verify_block_checksum,
+    checksum::{
+        verify_block_checksum, verify_sample_checksum, verify_wvx_float_checksum,
+        verify_wvx_integer_checksum,
+    },
     entropy::EntropyDecoder,
     float::FloatInfo,
     hybrid::{HybridState, ShapingState},
@@ -115,7 +118,9 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
             }
             let payload = read_payload(&mut self.reader, &current)?;
             verify_block_checksum(&current, &payload)?;
-            let correction_payload = if let Some(reader) = self.correction_reader.as_mut() {
+            let (correction_payload, correction_header) = if let Some(reader) =
+                self.correction_reader.as_mut()
+            {
                 let correction_header = WavPackBlockHeader::read_from(reader)?.ok_or(
                     AudioError::InvalidData("WavPack correction stream ended before audio stream"),
                 )?;
@@ -130,12 +135,16 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
                 }
                 let correction_payload = read_payload(reader, &correction_header)?;
                 verify_block_checksum(&correction_header, &correction_payload)?;
-                Some(correction_payload)
+                (Some(correction_payload), Some(correction_header))
             } else {
-                None
+                (None, None)
             };
-            let (block_spec, samples, info) =
-                decode_lossless_pcm(&current, &payload, correction_payload.as_deref())?;
+            let (block_spec, samples, info) = decode_lossless_pcm(
+                &current,
+                &payload,
+                correction_payload.as_deref(),
+                correction_header.as_ref(),
+            )?;
             if self.has_audio_block
                 && (block_spec.sample_rate() != self.spec.sample_rate()
                     || block_spec.sample_format() != self.spec.sample_format())
@@ -399,6 +408,7 @@ fn decode_lossless_pcm(
     header: &WavPackBlockHeader,
     payload: &[u8],
     correction_payload: Option<&[u8]>,
+    correction_header: Option<&WavPackBlockHeader>,
 ) -> Result<(AudioSpec, Samples, Option<ChannelInfo>), AudioError> {
     let flags = header.flags;
     if flags & DSD_DATA != 0 {
@@ -653,6 +663,7 @@ fn decode_lossless_pcm(
     if channels == 2 && flags & JOINT_STEREO != 0 && !shaped_joint_stereo {
         apply_inverse_joint_stereo(&mut decoded)?;
     }
+    verify_sample_checksum(correction_header.unwrap_or(header), channels, &decoded)?;
     let samples = if flags & FLOAT_DATA != 0 {
         if flags & INT32_DATA != 0 {
             return Err(AudioError::InvalidData(
@@ -668,6 +679,9 @@ fn decode_lossless_pcm(
             parts.wvx_bitstream.as_deref(),
             parts.new_wvx,
         )?;
+        if let Some(wvx) = parts.wvx_bitstream.as_deref() {
+            verify_wvx_float_checksum(wvx, &floats)?;
+        }
         if output_channels != channels {
             let mut stereo = Vec::new();
             stereo
@@ -709,6 +723,9 @@ fn decode_lossless_pcm(
                 };
                 *sample =
                     restore_extended_integer(*sample, low_bits, zeros, ones, duplicates, sent_bits);
+            }
+            if let Some(wvx) = parts.wvx_bitstream.as_deref() {
+                verify_wvx_integer_checksum(wvx, &decoded)?;
             }
         }
         let shift = (flags & SHIFT_MASK) >> 13;
