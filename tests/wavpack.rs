@@ -1,6 +1,8 @@
 use std::io::{self, Cursor, Seek, SeekFrom, Write};
 
-use wavpack::{WavPackDecoder, WavPackDsdDecoder, WavPackDsdEncoder, WavPackEncoder};
+use wavpack::{
+    WavPackDecoder, WavPackDsdDecoder, WavPackDsdEncoder, WavPackEncoder, WavPackHybridEncoder,
+};
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioSpec, DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, PcmBuffer,
     SampleFormat, Samples,
@@ -199,4 +201,190 @@ fn pcm_and_dsd_writers_cannot_finish_after_a_partial_write_failure() {
         .unwrap();
     assert!(encoder.finish().is_err());
     assert!(encoder.finish().is_err());
+}
+
+#[test]
+fn hybrid_writers_cannot_finish_after_a_partial_pair_write_failure() {
+    let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![123])).unwrap();
+
+    for fail_correction in [false, true] {
+        let main = FailOnceWriter {
+            inner: Cursor::new(Vec::new()),
+            bytes_before_failure: (!fail_correction).then_some(16),
+        };
+        let correction = FailOnceWriter {
+            inner: Cursor::new(Vec::new()),
+            bytes_before_failure: fail_correction.then_some(16),
+        };
+        let mut encoder = WavPackHybridEncoder::new(main, correction, spec, 320).unwrap();
+        encoder.write_block(&audio).unwrap();
+        assert!(encoder.finish().is_err());
+        assert!(encoder.finish().is_err());
+    }
+}
+
+#[test]
+fn wavpack_hybrid_pair_restores_integer_pcm_exactly() {
+    let spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap();
+    let expected = (0..4096)
+        .flat_map(|frame| {
+            let left = ((frame * 7919) % 65_536) as i16;
+            let right = left.wrapping_neg();
+            [left, right]
+        })
+        .collect::<Vec<_>>();
+    let source = PcmBuffer::new(spec, Samples::I16(expected.clone())).unwrap();
+    let mut encoder =
+        WavPackHybridEncoder::new(Cursor::new(Vec::new()), Cursor::new(Vec::new()), spec, 320)
+            .unwrap();
+    encoder.write_block(&source).unwrap();
+    encoder.finish().unwrap();
+    let (wv, wvc) = encoder.into_inner();
+    let wv = wv.into_inner();
+    let wvc = wvc.into_inner();
+
+    let mut lossy = WavPackDecoder::new(Cursor::new(wv.clone())).unwrap();
+    assert!(lossy.read_frames(8192).unwrap().is_some());
+
+    let mut corrected =
+        WavPackDecoder::new_with_correction(Cursor::new(wv), Cursor::new(wvc)).unwrap();
+    assert_eq!(corrected.read_frames(8192).unwrap().unwrap(), source);
+    assert!(corrected.read_frames(8192).unwrap().is_none());
+}
+
+#[test]
+fn wavpack_hybrid_restores_all_integer_widths_and_multichannel_groups() {
+    let cases = [
+        PcmBuffer::new(
+            AudioSpec::new(44_100, 1, SampleFormat::PcmU8).unwrap(),
+            Samples::U8((0..=u8::MAX).collect()),
+        )
+        .unwrap(),
+        PcmBuffer::new(
+            AudioSpec::new(48_000, 3, SampleFormat::PcmI24).unwrap(),
+            Samples::I24(vec![
+                -8_388_608, 0, 8_388_607, -1, 1, 2_345_678, 7_654_321, -7_654_321, 123,
+            ]),
+        )
+        .unwrap(),
+        PcmBuffer::new(
+            AudioSpec::new(96_000, 5, SampleFormat::PcmI32).unwrap(),
+            Samples::I32(vec![
+                i32::MIN,
+                i32::MAX,
+                -1,
+                1,
+                0x1234_5678,
+                i32::MAX - 1,
+                i32::MIN + 1,
+                -257,
+                255,
+                0x7654_3210,
+            ]),
+        )
+        .unwrap(),
+    ];
+
+    for (audio, bitrate) in cases.into_iter().zip([96, 320, 640]) {
+        let frames = audio.frames();
+        let spec = audio.spec();
+        let mut encoder = WavPackHybridEncoder::new(
+            Cursor::new(Vec::new()),
+            Cursor::new(Vec::new()),
+            spec,
+            bitrate,
+        )
+        .unwrap();
+        encoder.write_block(&audio).unwrap();
+        encoder.finish().unwrap();
+        let (wv, wvc) = encoder.into_inner();
+        let wv = wv.into_inner();
+        let mut lossy = WavPackDecoder::new(Cursor::new(wv.clone())).unwrap();
+        assert_eq!(lossy.read_frames(frames).unwrap().unwrap().frames(), frames);
+        assert!(lossy.read_frames(1).unwrap().is_none());
+        let mut decoder =
+            WavPackDecoder::new_with_correction(Cursor::new(wv), Cursor::new(wvc.into_inner()))
+                .unwrap();
+        assert_eq!(decoder.read_frames(frames).unwrap().unwrap(), audio);
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+}
+
+#[test]
+fn wavpack_hybrid_pair_patches_totals_across_encoder_blocks() {
+    let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
+    let frame_count = 131_073;
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![0; frame_count])).unwrap();
+    let mut encoder =
+        WavPackHybridEncoder::new(Cursor::new(Vec::new()), Cursor::new(Vec::new()), spec, 320)
+            .unwrap();
+    encoder.write_block(&audio).unwrap();
+    encoder.finish().unwrap();
+    let (wv, wvc) = encoder.into_inner();
+    let mut decoder = WavPackDecoder::new_with_correction(
+        Cursor::new(wv.into_inner()),
+        Cursor::new(wvc.into_inner()),
+    )
+    .unwrap();
+    let mut decoded_frames = 0;
+    while let Some(block) = decoder.read_frames(8192).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("unexpected WavPack sample type")
+        };
+        assert!(samples.iter().all(|&sample| sample == 0));
+        decoded_frames += block.frames();
+    }
+    assert_eq!(decoded_frames, frame_count);
+}
+
+#[test]
+fn wavpack_hybrid_u8_emits_correction_data_at_target_bitrate() {
+    let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmU8).unwrap();
+    let audio = PcmBuffer::new(
+        spec,
+        Samples::U8((0..257).map(|frame| (frame * 41) as u8).collect()),
+    )
+    .unwrap();
+    let mut encoder = WavPackHybridEncoder::new(
+        Cursor::new(Vec::new()),
+        Cursor::new(Vec::new()),
+        spec,
+        64,
+    )
+    .unwrap();
+    encoder.write_block(&audio).unwrap();
+    encoder.finish().unwrap();
+    let (_, correction) = encoder.into_inner();
+    assert!(correction.into_inner().len() > 40);
+}
+
+#[test]
+fn wavpack_hybrid_allows_checksum_only_correction_blocks_when_no_loss_occurs() {
+    let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmU8).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::U8((0..=u8::MAX).collect())).unwrap();
+    let mut encoder = WavPackHybridEncoder::new(
+        Cursor::new(Vec::new()),
+        Cursor::new(Vec::new()),
+        spec,
+        9_600,
+    )
+    .unwrap();
+    encoder.write_block(&audio).unwrap();
+    encoder.finish().unwrap();
+    let (wv, wvc) = encoder.into_inner();
+    let mut decoder =
+        WavPackDecoder::new_with_correction(Cursor::new(wv.into_inner()), Cursor::new(wvc.into_inner()))
+            .unwrap();
+    assert_eq!(decoder.read_frames(256).unwrap().unwrap(), audio);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+}
+
+#[test]
+fn wavpack_hybrid_rejects_nonstandard_bitrates() {
+    let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
+    assert!(
+        WavPackHybridEncoder::new(Cursor::new(Vec::new()), Cursor::new(Vec::new()), spec, 23,)
+            .is_err()
+    );
 }

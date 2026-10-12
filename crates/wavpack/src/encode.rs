@@ -5,10 +5,10 @@ use zemer_metadata::apev2::ApeTag;
 
 pub(crate) const BLOCK_FRAMES: usize = 131_072;
 const FLOAT_BLOCK_FRAMES: usize = 32_768;
-const FILE_VERSION: u16 = 0x410;
-const MONO_DATA: u32 = 1 << 2;
+pub(crate) const FILE_VERSION: u16 = 0x410;
+pub(crate) const MONO_DATA: u32 = 1 << 2;
 const FLOAT_DATA: u32 = 1 << 7;
-const INT32_DATA: u32 = 1 << 8;
+pub(crate) const INT32_DATA: u32 = 1 << 8;
 pub(crate) const INITIAL_BLOCK: u32 = 1 << 11;
 pub(crate) const FINAL_BLOCK: u32 = 1 << 12;
 pub(crate) const HAS_CHECKSUM: u32 = 1 << 28;
@@ -16,7 +16,7 @@ pub(crate) const SAMPLE_RATES: [u32; 15] = [
     6_000, 8_000, 9_600, 11_025, 12_000, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 64_000,
     88_200, 96_000, 192_000,
 ];
-const MEDIAN_DIVISORS: [u64; 3] = [128, 64, 32];
+pub(crate) const MEDIAN_DIVISORS: [u64; 3] = [128, 64, 32];
 
 /// Writes lossless integer PCM and IEEE float32 as WavPack v5 blocks.
 pub struct WavPackEncoder<W> {
@@ -510,7 +510,7 @@ fn wvx_float_checksum(samples: &[f32]) -> u32 {
     })
 }
 
-fn encode_words(samples: &[i32], channels: usize) -> Result<Vec<u8>, AudioError> {
+pub(crate) fn encode_words(samples: &[i32], channels: usize) -> Result<Vec<u8>, AudioError> {
     let mut writer = BitWriter::default();
     let mut medians = [[32_768_u32; 3]; 2];
     let mut holding_zero = false;
@@ -620,11 +620,15 @@ fn sample_bits(format: SampleFormat) -> u8 {
     }
 }
 
-fn get_median(value: u32) -> u32 {
+pub(crate) fn get_median(value: u32) -> u32 {
     (value >> 4) + 1
 }
 
-fn update_median(value: &mut u32, index: usize, increment: bool) -> Result<(), AudioError> {
+pub(crate) fn update_median(
+    value: &mut u32,
+    index: usize,
+    increment: bool,
+) -> Result<(), AudioError> {
     let divisor = MEDIAN_DIVISORS[index];
     let value64 = u64::from(*value);
     let delta = if increment {
@@ -642,13 +646,13 @@ fn update_median(value: &mut u32, index: usize, increment: bool) -> Result<(), A
 }
 
 #[derive(Default)]
-struct BitWriter {
+pub(crate) struct BitWriter {
     bytes: Vec<u8>,
     offset: u8,
 }
 
 impl BitWriter {
-    fn write_bit(&mut self, bit: bool) {
+    pub(crate) fn write_bit(&mut self, bit: bool) {
         if self.offset == 0 {
             self.bytes.push(0);
         }
@@ -658,7 +662,7 @@ impl BitWriter {
         self.offset = (self.offset + 1) & 7;
     }
 
-    fn write_zero_run(&mut self, run: u32) {
+    pub(crate) fn write_zero_run(&mut self, run: u32) {
         if run < 2 {
             self.write_bit(run == 1);
             if run == 1 {
@@ -676,7 +680,7 @@ impl BitWriter {
         }
     }
 
-    fn write_magnitude_prefix(&mut self, value: u32) {
+    pub(crate) fn write_magnitude_prefix(&mut self, value: u32) {
         let ones = value.min(16);
         for _ in 0..ones {
             self.write_bit(true);
@@ -687,7 +691,7 @@ impl BitWriter {
         }
     }
 
-    fn write_code(&mut self, max_code: u32, value: u32) -> Result<(), AudioError> {
+    pub(crate) fn write_code(&mut self, max_code: u32, value: u32) -> Result<(), AudioError> {
         if value > max_code {
             return Err(AudioError::InvalidData(
                 "invalid WavPack adjusted-binary code",
@@ -716,7 +720,7 @@ impl BitWriter {
         Ok(())
     }
 
-    fn finish(self) -> Vec<u8> {
+    pub(crate) fn finish(self) -> Vec<u8> {
         self.bytes
     }
 }
@@ -771,7 +775,7 @@ pub(crate) fn make_header(
     Ok(header)
 }
 
-fn sample_checksum(samples: &[i32], channels: usize) -> u32 {
+pub(crate) fn sample_checksum(samples: &[i32], channels: usize) -> u32 {
     let mut checksum = u32::MAX;
     if channels == 1 {
         for &sample in samples {
@@ -789,7 +793,7 @@ fn sample_checksum(samples: &[i32], channels: usize) -> u32 {
     checksum
 }
 
-fn wvx_integer_checksum(samples: &[i32]) -> u32 {
+pub(crate) fn wvx_integer_checksum(samples: &[i32]) -> u32 {
     samples.iter().fold(u32::MAX, |checksum, sample| {
         let sample = *sample as u32;
         checksum

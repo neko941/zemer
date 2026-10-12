@@ -688,6 +688,86 @@ fn convert_encodes_wavpack_pcm_and_metadata() {
 }
 
 #[test]
+fn convert_wavpack_hybrid_writes_and_reports_lossless_correction_pair() {
+    let input_path = temporary_path();
+    let output_path = temporary_path().with_extension("wv");
+    let correction_path = output_path.with_extension("wvc");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(22_050, 2, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(
+            (0..4096)
+                .map(|value| (value * 47 - 30_000) as i16)
+                .collect(),
+        ),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    let output = Command::new(cli_path())
+        .args([
+            "convert",
+            "--format",
+            "wavpack",
+            "--bitrate",
+            "128",
+            "--json",
+        ])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = String::from_utf8(output.stdout).unwrap();
+    assert!(json.contains("\"correction_output\":"));
+    assert!(correction_path.is_file());
+    let mut decoder = WavPackDecoder::new_with_correction(
+        File::open(&output_path).unwrap(),
+        File::open(&correction_path).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(decoder.read_frames(4096).unwrap().unwrap(), audio);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+    let _ = fs::remove_file(correction_path);
+}
+
+#[test]
+fn hybrid_convert_does_not_overwrite_an_existing_correction_file() {
+    let input_path = temporary_path();
+    let output_path = temporary_path().with_extension("wv");
+    let correction_path = output_path.with_extension("wvc");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(vec![0; 32]),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+    fs::write(&correction_path, b"keep existing correction").unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "wavpack", "--bitrate", "128"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!output_path.exists());
+    assert_eq!(
+        fs::read(&correction_path).unwrap(),
+        b"keep existing correction"
+    );
+
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(correction_path);
+}
+
+#[test]
 fn convert_encodes_native_flac_with_metadata_and_predictive_frames() {
     let input_path = temporary_path();
     let output_path = input_path.with_extension("flac");

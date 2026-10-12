@@ -635,13 +635,7 @@ fn decode_lossless_pcm(
             } else {
                 None
             };
-            (
-                Some(correction.ok_or(AudioError::InvalidData(
-                    "missing WavPack correction bitstream",
-                ))?),
-                shaping,
-                correction_wvx,
-            )
+            (correction, shaping, correction_wvx)
         } else {
             (None, None, None)
         };
@@ -721,26 +715,27 @@ fn decode_lossless_pcm(
         apply_stereo_decorrelation(&mut decoded, corrections, &mut passes)?;
     }
     let shaped_joint_stereo = shaping.is_some() && channels == 2 && flags & JOINT_STEREO != 0;
-    if let Some(offsets) = correction_offsets {
-        if let Some(shaping) = shaping.as_mut() {
-            restore_shaped_correction(
-                &mut decoded,
-                &offsets,
-                shaping,
-                channels,
-                flags & JOINT_STEREO != 0,
-            )?;
-        } else {
-            for (sample, correction) in decoded.iter_mut().zip(offsets) {
-                *sample = i32::try_from(i64::from(*sample) + i64::from(correction))
-                    .map_err(|_| AudioError::InvalidData("WavPack corrected sample overflow"))?;
-            }
+    if let Some(shaping) = shaping.as_mut() {
+        restore_shaped_correction(
+            &mut decoded,
+            correction_offsets.as_deref(),
+            shaping,
+            channels,
+            flags & JOINT_STEREO != 0,
+        )?;
+    } else if let Some(offsets) = correction_offsets {
+        for (sample, correction) in decoded.iter_mut().zip(offsets) {
+            *sample = i32::try_from(i64::from(*sample) + i64::from(correction))
+                .map_err(|_| AudioError::InvalidData("WavPack corrected sample overflow"))?;
         }
     }
     if channels == 2 && flags & JOINT_STEREO != 0 && !shaped_joint_stereo {
         apply_inverse_joint_stereo(&mut decoded)?;
     }
-    verify_sample_checksum(correction_header.unwrap_or(header), channels, &decoded)?;
+    let verify_sample_crc = !hybrid_mode || correction_bitstream.is_some();
+    if verify_sample_crc {
+        verify_sample_checksum(correction_header.unwrap_or(header), channels, &decoded)?;
+    }
     let samples = if flags & FLOAT_DATA != 0 {
         if flags & INT32_DATA != 0 {
             return Err(AudioError::InvalidData(
@@ -790,6 +785,7 @@ fn decode_lossless_pcm(
             let new_wvx = correction_new_wvx || parts.new_wvx;
             let mut extra_bits = match (sent_bits, wvx) {
                 (0, _) => None,
+                (_, None) if hybrid_mode && correction_bitstream.is_none() => None,
                 (_, Some(bytes)) if bytes.len() >= 4 => {
                     let mut bits = BitReader::new(&bytes[4..]);
                     if new_wvx {
@@ -1434,13 +1430,13 @@ fn checked_add(sample: i32, correction: i32, message: &'static str) -> Result<i3
 
 fn restore_shaped_correction(
     samples: &mut [i32],
-    corrections: &[i32],
+    corrections: Option<&[i32]>,
     shaping: &mut ShapingState,
     channels: usize,
     joint_stereo: bool,
 ) -> Result<(), AudioError> {
     if !(channels == 1 || channels == 2)
-        || samples.len() != corrections.len()
+        || corrections.is_some_and(|corrections| samples.len() != corrections.len())
         || samples.len() % channels != 0
     {
         return Err(AudioError::InvalidData(
@@ -1448,15 +1444,19 @@ fn restore_shaped_correction(
         ));
     }
     if channels == 1 {
-        for (sample, correction) in samples.iter_mut().zip(corrections) {
-            let corrected = i32::try_from(i64::from(*sample) + i64::from(*correction))
+        for (index, sample) in samples.iter_mut().enumerate() {
+            let correction = corrections.map_or(0, |corrections| corrections[index]);
+            let corrected = i32::try_from(i64::from(*sample) + i64::from(correction))
                 .map_err(|_| AudioError::InvalidData("WavPack corrected sample overflow"))?;
-            *sample = shaping.restore_sample(corrected, *correction, 0)?;
+            *sample = shaping.restore_sample(corrected, correction, 0)?;
         }
         return Ok(());
     }
 
-    for (pair, correction) in samples.chunks_exact_mut(2).zip(corrections.chunks_exact(2)) {
+    for (index, pair) in samples.chunks_exact_mut(2).enumerate() {
+        let correction = corrections.map_or([0; 2], |corrections| {
+            [corrections[index * 2], corrections[index * 2 + 1]]
+        });
         let baseline = [pair[0], pair[1]];
         let corrected = [
             i32::try_from(i64::from(pair[0]) + i64::from(correction[0]))

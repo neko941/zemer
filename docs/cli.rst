@@ -49,11 +49,14 @@ sample format, native FLAC, or Ogg-FLAC:
    cargo run -p zemer -- convert --format pcm_i16 input.flac output.wav
    cargo run -p zemer -- convert --format pcm_i16 input.wv output.wav
    cargo run -p zemer -- convert --format wavpack input.wav output.wv
+   cargo run -p zemer -- convert --format wavpack --bitrate 128 input.wav output.wv
    cargo run -p zemer -- convert --format flac input.wav output.flac
    cargo run -p zemer -- convert --format ogg_flac input.wav output.oga
    cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
 
 WAVE output defaults to classic RIFF; choose RF64 explicitly when needed.
+With WavPack, ``--bitrate`` writes a hybrid ``.wv`` file and a companion
+``.wvc`` correction file. JSON output reports the correction path.
 
 The same command can explicitly select G.711 output:
 

@@ -148,6 +148,9 @@ fn decode_high(data: &[u8], output_len: usize, channels: usize) -> Result<Vec<u8
                 output[frame * channels + channel] |= bit << (7 - bit_index);
             }
         }
+        for filter in &mut filters {
+            filter.factor -= (filter.factor + 512) >> 10;
+        }
     }
     Ok(output)
 }

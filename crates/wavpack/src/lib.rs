@@ -13,12 +13,14 @@ mod encode;
 mod entropy;
 mod float;
 mod hybrid;
+mod hybrid_encode;
 pub mod metadata;
 mod tags;
 pub use decode::WavPackDecoder;
 pub use dsd_decode::WavPackDsdDecoder;
 pub use dsd_encode::WavPackDsdEncoder;
 pub use encode::WavPackEncoder;
+pub use hybrid_encode::WavPackHybridEncoder;
 pub use metadata::{WavPackMetadataSubBlockHeader, visit_metadata_sub_blocks};
 pub use tags::{read_apev2_tag, rewrite_metadata};
 

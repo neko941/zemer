@@ -139,6 +139,9 @@ Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
 * ``WavPackEncoder`` — implements ``AudioEncoder`` for lossless integer PCM at
   8/16/24/32 bits and up to 32 channels, plus bit-exact float32 encoding. The
   float path carries sample bits uncompressed in WVX.
+* ``WavPackHybridEncoder`` — implements ``AudioEncoder`` for integer PCM hybrid
+  output at 8/16/24/32 bits. It writes a bitrate-targeted ``.wv`` stream and
+  its lossless ``.wvc`` correction stream; valid target rates are 24–9600 kbps.
 * ``WavPackDsdEncoder`` — implements ``DsdEncoder`` for raw native DSD octets
   for up to 32 channels.
 

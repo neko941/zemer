@@ -10,7 +10,7 @@ use std::{
 
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
 use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
-use wavpack::{WavPackDecoder, WavPackEncoder};
+use wavpack::{WavPackDecoder, WavPackEncoder, WavPackHybridEncoder};
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioError, AudioSpec, Metadata, SampleFormat,
     convert_sample_format,
@@ -26,6 +26,7 @@ struct Report {
     metadata: Metadata,
     output_encoding: Option<&'static str>,
     container: Option<WavContainer>,
+    companion_output: Option<PathBuf>,
 }
 
 struct AudioInput {
@@ -102,6 +103,9 @@ fn main() -> ExitCode {
             } else {
                 println!("converted_frames: {}", report.frames);
                 println!("output: {}", output.display());
+                if let Some(companion) = &report.companion_output {
+                    println!("correction_output: {}", companion.display());
+                }
                 if let Some(container) = report.container {
                     println!("container: {}", container_name(container));
                 }
@@ -337,6 +341,7 @@ fn inspect_args(args: &[std::ffi::OsString]) -> Result<Report, CliError> {
 fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliError> {
     let mut format = None;
     let mut container = None;
+    let mut bitrate = None;
     let mut paths = Vec::new();
     let mut index = 1;
     while index < args.len() {
@@ -366,6 +371,19 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliErr
                 return Err(usage_error());
             }
             index += 1;
+        } else if args[index] == "--bitrate" {
+            index += 1;
+            let Some(value) = args
+                .get(index)
+                .and_then(|arg| arg.to_str())
+                .and_then(|value| value.parse::<u32>().ok())
+            else {
+                return Err(usage_error());
+            };
+            if bitrate.replace(value).is_some() {
+                return Err(usage_error());
+            }
+            index += 1;
         } else {
             paths.push(PathBuf::from(&args[index]));
             index += 1;
@@ -377,6 +395,9 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliErr
     let input = paths.remove(0);
     let output = paths.remove(0);
     let format = format.ok_or_else(usage_error)?;
+    if bitrate.is_some() && !matches!(format, OutputFormat::WavPack) {
+        return Err(usage_error());
+    }
     if matches!(
         format,
         OutputFormat::Flac | OutputFormat::OggFlac | OutputFormat::WavPack
@@ -389,6 +410,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliErr
         output.clone(),
         format,
         container.unwrap_or(WavContainer::Riff),
+        bitrate,
     )
     .map(|report| (report, output))
 }
@@ -423,6 +445,7 @@ fn convert_wav(
     output: PathBuf,
     format: OutputFormat,
     container: WavContainer,
+    bitrate_kbps: Option<u32>,
 ) -> Result<Report, CliError> {
     let AudioInput { mut decoder, .. } = open_decoder(&input)?;
     let input_spec = decoder.spec();
@@ -445,6 +468,24 @@ fn convert_wav(
             kind: "io",
             message: format!("{}: {error}", output.display()),
         })?;
+    let correction_output = bitrate_kbps.map(|_| output.with_extension("wvc"));
+    if correction_output.as_deref() == Some(output.as_path()) {
+        let _ = fs::remove_file(&output);
+        return Err(usage_error());
+    }
+    let correction_file = match correction_output.as_deref() {
+        Some(path) => match OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                let _ = fs::remove_file(&output);
+                return Err(CliError {
+                    kind: "io",
+                    message: format!("{}: {error}", path.display()),
+                });
+            }
+        },
+        None => None,
+    };
 
     let result = (|| {
         let mut encoder: Box<dyn AudioEncoder> = match format {
@@ -484,12 +525,28 @@ fn convert_wav(
                 Box::new(encoder)
             }
             OutputFormat::WavPack => {
-                let mut encoder = WavPackEncoder::new(output_file, spec)
-                    .map_err(|error| cli_audio_error(error, &output))?;
-                encoder
-                    .set_metadata(decoder.metadata())
-                    .map_err(|error| cli_audio_error(error, &output))?;
-                Box::new(encoder)
+                if let Some(bitrate_kbps) = bitrate_kbps {
+                    let correction_file = correction_file.ok_or_else(|| {
+                        cli_audio_error(
+                            AudioError::InvalidData("missing WavPack correction output"),
+                            &output,
+                        )
+                    })?;
+                    let mut encoder =
+                        WavPackHybridEncoder::new(output_file, correction_file, spec, bitrate_kbps)
+                            .map_err(|error| cli_audio_error(error, &output))?;
+                    encoder
+                        .set_metadata(decoder.metadata())
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                    Box::new(encoder)
+                } else {
+                    let mut encoder = WavPackEncoder::new(output_file, spec)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                    encoder
+                        .set_metadata(decoder.metadata())
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                    Box::new(encoder)
+                }
             }
         };
         let mut frames = 0_u64;
@@ -531,11 +588,15 @@ fn convert_wav(
                 OutputFormat::Flac | OutputFormat::OggFlac | OutputFormat::WavPack
             ))
             .then_some(container),
+            companion_output: correction_output.clone(),
         })
     })();
 
     if result.is_err() {
         let _ = fs::remove_file(&output);
+        if let Some(path) = &correction_output {
+            let _ = fs::remove_file(path);
+        }
     }
     result
 }
@@ -626,6 +687,7 @@ fn inspect_audio(path: PathBuf) -> Result<Report, CliError> {
         metadata: decoder.metadata().clone(),
         output_encoding: None,
         container,
+        companion_output: None,
     })
 }
 
@@ -645,7 +707,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|flac|ogg_flac|wavpack> [--container <riff|rf64>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> <output.wav|output.flac|output.oga|output.wv> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|flac|ogg_flac|wavpack> [--container <riff|rf64>] [--bitrate <24..9600>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> <output.wav|output.flac|output.oga|output.wv> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 
@@ -718,6 +780,15 @@ fn conversion_json(report: &Report, output: &Path) -> String {
         1,
         &format!("\"output\":{},", json_string(&output.display().to_string())),
     );
+    if let Some(companion) = &report.companion_output {
+        json.insert_str(
+            1,
+            &format!(
+                "\"correction_output\":{},",
+                json_string(&companion.display().to_string())
+            ),
+        );
+    }
     if let Some(encoding) = report.output_encoding {
         json.insert_str(
             1,
