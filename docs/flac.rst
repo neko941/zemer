@@ -78,7 +78,7 @@ checks reserved fields, track layout, lead-out, ISRC, and CD-DA sector-alignment
 rules. ``rewrite_metadata()`` replaces or adds the Vorbis comment block while
 preserving all other metadata block payloads and copying the encoded audio
 bytes unchanged. It writes a new stream; callers should use a temporary output
-file before replacing a source file. Retained metadata is limited to 64 MiB
+file before replacing a source file. Retained metadata is limited to 128 MiB
 per stream.
 It rejects streams that change sample rate, channel count,
 or bit depth between frames because the shared decoder interface has one fixed

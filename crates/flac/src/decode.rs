@@ -25,6 +25,7 @@ pub struct FlacDecoder<R> {
     audio_start: Option<u64>,
     seek_skip_frames: u64,
     seek_frame_sample: Option<u64>,
+    variable_blocking: Option<bool>,
     verify_md5: bool,
 }
 
@@ -60,6 +61,7 @@ impl<R: Read> FlacDecoder<R> {
             audio_start: None,
             seek_skip_frames: 0,
             seek_frame_sample: None,
+            variable_blocking: None,
             verify_md5: true,
         })
     }
@@ -76,7 +78,9 @@ impl<R: Read> FlacDecoder<R> {
         if self.ended {
             return Ok(false);
         }
-        let Some((samples, frames, frame_start)) = read_frame(&mut self.reader, &self.info)? else {
+        let Some((samples, frames, frame_start, variable_blocking, coded_number)) =
+            read_frame(&mut self.reader, &self.info)?
+        else {
             if self
                 .info
                 .total_samples()
@@ -99,11 +103,27 @@ impl<R: Read> FlacDecoder<R> {
             return Ok(false);
         };
         if self
-            .seek_frame_sample
-            .is_some_and(|expected| expected != frame_start)
+            .variable_blocking
+            .is_some_and(|previous| previous != variable_blocking)
         {
             return Err(AudioError::InvalidData(
-                "FLAC seekpoint targets the wrong frame",
+                "FLAC blocking strategy changed within the stream",
+            ));
+        }
+        self.variable_blocking = Some(variable_blocking);
+        let expected_frame_start = self.seek_frame_sample.unwrap_or(self.decoded_frames);
+        // Before FLAC 1.2, variable-block files used sample numbers with the strategy bit unset.
+        let legacy_variable = !variable_blocking
+            && self.info.min_block_size() != self.info.max_block_size()
+            && coded_number == expected_frame_start;
+        if frame_start != expected_frame_start && !legacy_variable {
+            if self.seek_frame_sample.is_some() {
+                return Err(AudioError::InvalidData(
+                    "FLAC seekpoint targets the wrong frame",
+                ));
+            }
+            return Err(AudioError::InvalidData(
+                "FLAC frame sequence is not contiguous",
             ));
         }
         self.seek_frame_sample = None;
@@ -373,7 +393,7 @@ fn sample_container_bits(format: SampleFormat) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, ops::Range};
 
     use super::parse_channel_mask;
     use crate::{FlacDecoder, FlacEncoder};
@@ -411,6 +431,78 @@ mod tests {
         seektable.extend_from_slice(&frame_samples.to_be_bytes());
         bytes.splice(comment_header..comment_header, seektable);
         bytes
+    }
+
+    fn frame_ranges(bytes: &[u8]) -> Vec<Range<usize>> {
+        let decoder = FlacDecoder::new_seekable(Cursor::new(bytes.to_vec())).unwrap();
+        let mut reader = crate::bitstream::BitReader::new(
+            Cursor::new(bytes[decoder.audio_start.unwrap() as usize..].to_vec()),
+            1 << 20,
+        );
+        let audio_start = decoder.audio_start.unwrap() as usize;
+        let mut ranges = Vec::new();
+        while crate::frame::read_frame(&mut reader, &decoder.info)
+            .unwrap()
+            .is_some()
+        {
+            let end = audio_start + reader.get_mut().position() as usize;
+            let start = ranges
+                .last()
+                .map_or(audio_start, |frame: &Range<usize>| frame.end);
+            ranges.push(start..end);
+        }
+        ranges
+    }
+
+    fn rechecksum_frame_header_and_body(bytes: &mut [u8], frame: &Range<usize>) {
+        let header_crc = frame.start + 7;
+        bytes[header_crc] = bytes[frame.start..header_crc]
+            .iter()
+            .copied()
+            .fold(0, crate::bitstream::crc8_update);
+        let frame_crc = bytes[frame.start..frame.end - 2]
+            .iter()
+            .copied()
+            .fold(0, crate::bitstream::crc16_update);
+        bytes[frame.end - 2..frame.end].copy_from_slice(&frame_crc.to_be_bytes());
+    }
+
+    #[test]
+    fn rejects_a_gap_in_fixed_block_frame_numbers() {
+        let (mut bytes, _) = encoded_test_audio();
+        let frames = frame_ranges(&bytes);
+        let repeated_first = bytes[frames[0].clone()].to_vec();
+        bytes.splice(frames[1].clone(), repeated_first);
+
+        let mut decoder = FlacDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.read_frames(4096).unwrap().unwrap().frames(), 4096);
+        assert!(matches!(
+            decoder.read_frames(4096),
+            Err(zemer_core::AudioError::InvalidData(
+                "FLAC frame sequence is not contiguous"
+            ))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_change_in_frame_blocking_strategy() {
+        let (mut bytes, _) = encoded_test_audio();
+        let frames = frame_ranges(&bytes);
+        let second = &frames[1];
+        bytes[second.start + 1] |= 1;
+        rechecksum_frame_header_and_body(&mut bytes, second);
+        let mut decoder = FlacDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.read_frames(4096).unwrap().unwrap().frames(), 4096);
+        let result = decoder.read_frames(4096);
+        assert!(
+            matches!(
+                result,
+                Err(zemer_core::AudioError::InvalidData(
+                    "FLAC blocking strategy changed within the stream"
+                ))
+            ),
+            "unexpected second frame result: {result:?}"
+        );
     }
 
     #[test]

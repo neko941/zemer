@@ -2,10 +2,12 @@ use zemer_core::AudioError;
 
 use crate::{bitstream::BitReader, metadata::FlacStreamInfo};
 
+type DecodedFrame = (Vec<i64>, usize, u64, bool, u64);
+
 pub(crate) fn read_frame<R: std::io::Read>(
     reader: &mut BitReader<R>,
     stream: &FlacStreamInfo,
-) -> Result<Option<(Vec<i64>, usize, u64)>, AudioError> {
+) -> Result<Option<DecodedFrame>, AudioError> {
     reader.begin_frame()?;
     let Some(sync) = reader.read_bits_or_eof(16)? else {
         return Ok(None);
@@ -138,7 +140,13 @@ pub(crate) fn read_frame<R: std::io::Read>(
             interleaved.push(value);
         }
     }
-    Ok(Some((interleaved, block_size, frame_start)))
+    Ok(Some((
+        interleaved,
+        block_size,
+        frame_start,
+        variable_blocking,
+        coded_number,
+    )))
 }
 
 fn read_utf8_number<R: std::io::Read>(reader: &mut BitReader<R>) -> Result<u64, AudioError> {

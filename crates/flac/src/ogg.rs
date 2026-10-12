@@ -281,7 +281,7 @@ impl<R: Read> OggFlacReader<R> {
 
         if output.len() > MAX_METADATA_BYTES + 4 {
             return Err(AudioError::InvalidData(
-                "FLAC metadata exceeds the 64 MiB limit",
+                "FLAC metadata exceeds the 128 MiB limit",
             ));
         }
         Ok(Self {
@@ -373,7 +373,7 @@ fn append_metadata_packet(
         .checked_add(bytes.len())
         .filter(|len| *len <= MAX_METADATA_BYTES + 4)
         .ok_or(AudioError::InvalidData(
-            "FLAC metadata exceeds the 64 MiB limit",
+            "FLAC metadata exceeds the 128 MiB limit",
         ))?;
     let start = output.len();
     output.reserve(new_len - output.len());

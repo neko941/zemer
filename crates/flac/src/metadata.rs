@@ -2,7 +2,7 @@ use std::io::Read;
 
 use zemer_core::{AudioError, Metadata};
 
-pub(crate) const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_METADATA_BYTES: usize = 128 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FlacMetadataBlock {
@@ -445,13 +445,13 @@ pub(crate) fn checked_metadata_size(current: usize, next: usize) -> Result<usize
     let retained_size = std::mem::size_of::<FlacMetadataBlock>()
         .checked_add(next)
         .ok_or(AudioError::InvalidData(
-            "FLAC metadata exceeds the 64 MiB limit",
+            "FLAC metadata exceeds the 128 MiB limit",
         ))?;
     current
         .checked_add(retained_size)
         .filter(|&total| total <= MAX_METADATA_BYTES)
         .ok_or(AudioError::InvalidData(
-            "FLAC metadata exceeds the 64 MiB limit",
+            "FLAC metadata exceeds the 128 MiB limit",
         ))
 }
 
