@@ -29,6 +29,6 @@ seeking and metadata must be available before decoding.
 the writers through the shared PCM and DSD interfaces. Native DSD remains available through
 ``WavPackDsdDecoder`` and is not converted implicitly to PCM. Hybrid encoding
 accepts 24–9600 kbps and is available through the library and CLI. The official
-suite decoded all 31 supported files, skipped 13 legacy files, and rejected all
+suite decoded all 35 supported files, skipped 9 legacy files, and rejected all
 4 malformed files. Binary cover-art editing through the shared ``Metadata``
 model remains open.

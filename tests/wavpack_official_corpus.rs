@@ -29,10 +29,6 @@ fn decodes_supported_wavpack_official_corpus() {
 
     for path in files {
         let is_legacy = path.components().any(|part| part.as_os_str() == "legacy");
-        if is_legacy {
-            skipped_legacy += 1;
-            continue;
-        }
         let is_corruption = path
             .components()
             .any(|part| part.as_os_str() == "corruption");
@@ -41,6 +37,10 @@ fn decodes_supported_wavpack_official_corpus() {
             Ok(Some(header)) => header,
             Ok(None) | Err(_) if is_corruption => {
                 corruption_cases += 1;
+                continue;
+            }
+            Ok(None) | Err(_) if is_legacy => {
+                skipped_legacy += 1;
                 continue;
             }
             Ok(None) => panic!("empty WavPack file: {}", path.display()),

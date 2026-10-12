@@ -13,8 +13,8 @@ paired ``.wvc`` correction, and native DSD profiles. It writes lossless integer
 PCM at 8/16/24/32 bits for up to 32 channels, preserves float32 bits through
 uncompressed WVX, writes raw native DSD for up to 32 channels, and emits
 standard-bitrate integer PCM hybrid pairs. APEv2 UTF-8 text tags can be edited
-while retaining non-text items. The official suite decoded all 31 supported
-files, skipped 13 legacy files, and rejected all 4 malformed files.
+while retaining non-text items. The official suite decoded all 35 supported
+files, skipped 9 legacy files, and rejected all 4 malformed files.
 
 .. toctree::
    :maxdepth: 2
