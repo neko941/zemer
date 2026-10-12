@@ -1,7 +1,7 @@
 use std::{fs::File, io::Cursor};
 
-use dsf::DsfDecoder;
-use zemer_core::{DsdDecoder, DsdSpec};
+use dsf::{DsfDecoder, DsfEncoder};
+use zemer_core::{DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata};
 
 fn dsf(channels: u32, channel_type: u32, sample_count: u64, data: &[Vec<u8>]) -> Vec<u8> {
     assert_eq!(channels as usize, data.len());
@@ -153,6 +153,47 @@ fn rejects_invalid_chunk_bounds_and_zero_read_size() {
     let mut bytes = bytes;
     bytes[4..12].copy_from_slice(&27_u64.to_le_bytes());
     assert!(DsfDecoder::new(Cursor::new(bytes)).is_err());
+}
+
+#[test]
+fn encodes_and_decodes_channel_blocks_and_id3_text() {
+    let spec = DsdSpec::new_with_speaker_mask(2_822_400, 2, Some(3)).unwrap();
+    let expected: Vec<u8> = (0..4097 * 2).map(|sample| (sample * 37) as u8).collect();
+    let input = DsdBuffer::new(spec, expected.clone()).unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "DSF round trip");
+    metadata.insert("ARTIST", "One");
+    metadata.insert("ARTIST", "Two");
+    metadata.insert("REPLAYGAIN_GAIN", "-3 dB");
+
+    let mut encoder = DsfEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_metadata(&metadata).unwrap();
+    encoder.write_dsd_octets(&input).unwrap();
+    encoder.finish().unwrap();
+    let bytes = encoder.into_inner().into_inner();
+
+    let mut decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(decoder.sample_count(), 4097 * 8);
+    assert_eq!(decoder.metadata(), &metadata);
+    let first = decoder.read_dsd_octets(8192).unwrap().unwrap();
+    let second = decoder.read_dsd_octets(8192).unwrap().unwrap();
+    assert_eq!(first.frames(), 4096);
+    assert_eq!(second.frames(), 1);
+    assert_eq!([first.bytes(), second.bytes()].concat(), expected);
+    assert!(decoder.read_dsd_octets(1).unwrap().is_none());
+}
+
+#[test]
+fn rejects_unsupported_dsf_layouts_and_empty_streams() {
+    assert!(DsfEncoder::new(
+        Cursor::new(Vec::new()),
+        DsdSpec::new_with_speaker_mask(2_822_400, 4, Some(0x3f)).unwrap(),
+    )
+    .is_err());
+    let spec = DsdSpec::new(2_822_400, 1).unwrap();
+    let mut encoder = DsfEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    assert!(encoder.finish().is_err());
+    assert!(encoder.write_dsd_octets(&DsdBuffer::new(spec, vec![0]).unwrap()).is_err());
 }
 
 #[test]

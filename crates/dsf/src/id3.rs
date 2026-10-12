@@ -4,6 +4,125 @@ use zemer_core::{AudioError, Metadata};
 
 const MAX_ID3_TAG_BYTES: usize = 64 * 1024 * 1024;
 
+pub(super) fn encode_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError> {
+    let mut body = Vec::new();
+    for (key, values) in metadata.iter() {
+        if values.is_empty() {
+            continue;
+        }
+        if key.is_empty()
+            || key.as_bytes().contains(&0)
+            || values.iter().any(|value| value.as_bytes().contains(&0))
+        {
+            return Err(AudioError::InvalidData("ID3 text cannot contain NUL bytes"));
+        }
+        let frame_id = mapped_frame_id(key);
+        let text_size = values.iter().try_fold(0_usize, |size, value| {
+            size.checked_add(value.len())
+                .ok_or(AudioError::InvalidData("ID3 text frame size overflow"))
+        })?;
+        let payload_size = 1_usize
+            .checked_add(usize::from(frame_id.is_none()) * (key.len() + 1))
+            .and_then(|size| size.checked_add(text_size))
+            .and_then(|size| size.checked_add(values.len().saturating_sub(1)))
+            .ok_or(AudioError::InvalidData("ID3 text frame size overflow"))?;
+        if payload_size
+            .checked_add(10)
+            .filter(|&size| size <= MAX_ID3_TAG_BYTES.saturating_sub(body.len()))
+            .is_none()
+        {
+            return Err(AudioError::InvalidData(
+                "DSF ID3 metadata exceeds its size limit",
+            ));
+        }
+        let mut payload = Vec::new();
+        payload
+            .try_reserve_exact(payload_size)
+            .map_err(|_| AudioError::InvalidData("ID3 text frame is too large"))?;
+        payload.push(3);
+        if frame_id.is_none() {
+            payload.extend_from_slice(key.as_bytes());
+            payload.push(0);
+        }
+        for (index, value) in values.iter().enumerate() {
+            if index != 0 {
+                payload.push(0);
+            }
+            payload.extend_from_slice(value.as_bytes());
+        }
+        append_frame(&mut body, frame_id.unwrap_or(*b"TXXX"), &payload)?;
+    }
+    if body.len() > MAX_ID3_TAG_BYTES {
+        return Err(AudioError::InvalidData("DSF ID3 metadata exceeds its size limit"));
+    }
+    let size = u32::try_from(body.len())
+        .ok()
+        .filter(|&size| size < (1 << 28))
+        .ok_or(AudioError::InvalidData("DSF ID3 metadata exceeds its size limit"))?;
+    let mut tag = Vec::new();
+    tag.try_reserve_exact(10 + body.len())
+        .map_err(|_| AudioError::InvalidData("DSF ID3 metadata is too large"))?;
+    tag.extend_from_slice(b"ID3\x04\x00\x00");
+    tag.extend_from_slice(&[
+        ((size >> 21) & 0x7f) as u8,
+        ((size >> 14) & 0x7f) as u8,
+        ((size >> 7) & 0x7f) as u8,
+        (size & 0x7f) as u8,
+    ]);
+    tag.extend_from_slice(&body);
+    Ok(tag)
+}
+
+fn append_frame(body: &mut Vec<u8>, id: [u8; 4], payload: &[u8]) -> Result<(), AudioError> {
+    let size = u32::try_from(payload.len())
+        .ok()
+        .filter(|&size| size < (1 << 28))
+        .ok_or(AudioError::InvalidData("ID3 text frame is too large"))?;
+    let frame_size = payload
+        .len()
+        .checked_add(10)
+        .filter(|&size| size <= MAX_ID3_TAG_BYTES.saturating_sub(body.len()))
+        .ok_or(AudioError::InvalidData(
+            "DSF ID3 metadata exceeds its size limit",
+        ))?;
+    body.try_reserve(frame_size)
+        .map_err(|_| AudioError::InvalidData("DSF ID3 metadata is too large"))?;
+    body.extend_from_slice(&id);
+    body.extend_from_slice(&[
+        ((size >> 21) & 0x7f) as u8,
+        ((size >> 14) & 0x7f) as u8,
+        ((size >> 7) & 0x7f) as u8,
+        (size & 0x7f) as u8,
+        0,
+        0,
+    ]);
+    body.extend_from_slice(payload);
+    if body.len() > MAX_ID3_TAG_BYTES {
+        return Err(AudioError::InvalidData("DSF ID3 metadata exceeds its size limit"));
+    }
+    Ok(())
+}
+
+fn mapped_frame_id(key: &str) -> Option<[u8; 4]> {
+    Some(*match key {
+        "TITLE" => b"TIT2",
+        "ARTIST" => b"TPE1",
+        "ALBUM" => b"TALB",
+        "TRACKNUMBER" => b"TRCK",
+        "DISCNUMBER" => b"TPOS",
+        "GENRE" => b"TCON",
+        "DATE" => b"TDRC",
+        "COMPOSER" => b"TCOM",
+        "ALBUMARTIST" => b"TPE2",
+        "COPYRIGHT" => b"TCOP",
+        "LYRICIST" => b"TEXT",
+        "ENCODEDBY" => b"TENC",
+        "BPM" => b"TBPM",
+        "ISRC" => b"TSRC",
+        _ => return None,
+    })
+}
+
 pub(super) fn read_metadata<R: Read + Seek>(
     reader: &mut R,
     offset: u64,
@@ -467,5 +586,25 @@ mod tests {
         let file_size = 10 + (MAX_ID3_TAG_BYTES + 1) as u64;
         let mut reader = Cursor::new(header);
         assert!(read_metadata(&mut reader, 0, file_size).is_err());
+    }
+
+    #[test]
+    fn writes_standard_and_custom_text_for_the_existing_reader() {
+        let mut expected = Metadata::default();
+        expected.insert("TITLE", "A title");
+        expected.insert("ARTIST", "One");
+        expected.insert("ARTIST", "Two");
+        expected.insert("REPLAYGAIN_GAIN", "-3 dB");
+        let tag = super::encode_metadata(&expected).unwrap();
+        let mut reader = Cursor::new(tag.clone());
+        let actual = read_metadata(&mut reader, 0, tag.len() as u64).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn rejects_nul_in_metadata_values() {
+        let mut metadata = Metadata::default();
+        metadata.insert("TITLE", "bad\0value");
+        assert!(super::encode_metadata(&metadata).is_err());
     }
 }
