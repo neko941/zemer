@@ -20,16 +20,16 @@ const MULAW_GUID: [u8; 16] = [
 ];
 const MAX_FORMAT_CHUNK: u32 = 64 * 1024;
 const MAX_INFO_VALUE: u32 = 1024 * 1024;
-const MAX_DS64_CHUNK: u32 = 1024 * 1024;
+pub(super) const MAX_DS64_CHUNK: u32 = 1024 * 1024;
 
-struct Ds64 {
-    riff_size: u64,
-    data_size: u64,
+pub(super) struct Ds64 {
+    pub(super) riff_size: u64,
+    pub(super) data_size: u64,
     table: HashMap<[u8; 4], VecDeque<u64>>,
 }
 
 impl Ds64 {
-    fn take_table_size(&mut self, chunk_id: &[u8]) -> Option<u64> {
+    pub(super) fn take_table_size(&mut self, chunk_id: &[u8]) -> Option<u64> {
         let id: [u8; 4] = chunk_id.try_into().ok()?;
         let sizes = self.table.get_mut(&id)?;
         let size = sizes.pop_front();
@@ -40,7 +40,7 @@ impl Ds64 {
     }
 }
 
-fn parse_ds64(bytes: &[u8]) -> Result<Ds64, AudioError> {
+pub(super) fn parse_ds64(bytes: &[u8]) -> Result<Ds64, AudioError> {
     if bytes.len() < 28 {
         return Err(AudioError::InvalidFormat("RF64 ds64 chunk is too short"));
     }

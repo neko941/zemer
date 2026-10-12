@@ -13,13 +13,14 @@ The workspace separates format-independent audio types from each format implemen
 
 ## Current support
 
-| Format | Read | Write | Metadata | Status |
-|---|---:|---:|---:|---|
-| RIFF/WAVE PCM 8/16/24/32-bit | Yes | Yes | RIFF INFO read/write | Extensible PCM accepts 1..=container valid bits, preserves container-width sample values and optional channel masks |
-| RIFF/WAVE IEEE float 32/64-bit | Yes | Yes | RIFF INFO read/write | WAVE_FORMAT_EXTENSIBLE float and optional channel masks are preserved |
-| RIFF/WAVE G.711 A-law and μ-law | Yes | Yes | RIFF INFO read/write | Decodes to signed 16-bit PCM; writing requires explicit G.711 selection |
-| RF64/WAVE | Yes | Yes | RIFF INFO read/write | 64-bit file and data sizes; select explicitly for output |
-| CUE sheets for WAVE/AUDIO tracks | Yes | Yes | Track title and performer | Split referenced WAV audio into track WAVs; create CUE sheets for WAV tracks |
+| Format | Status | Capabilities |
+|---|---|---|
+| RIFF/WAVE PCM 8/16/24/32-bit | Supported | Read and write; RIFF INFO metadata read/write. Extensible PCM accepts 1..=container valid bits, preserves container-width sample values and optional channel masks. |
+| RIFF/WAVE IEEE float 32/64-bit | Supported | Read and write; RIFF INFO metadata read/write. WAVE_FORMAT_EXTENSIBLE float and optional channel masks are preserved. |
+| RIFF/WAVE G.711 A-law and μ-law | Supported | Read and write; RIFF INFO metadata read/write. Decodes to signed 16-bit PCM; writing requires explicit G.711 selection. |
+| RF64/WAVE | Supported | Read and write; RIFF INFO metadata read/write. Supports 64-bit file and data sizes; select explicitly for output. |
+| CUE sheets for WAVE/AUDIO tracks | Supported | Read and write; track title and performer fields. Split referenced WAV audio into track WAVs and create CUE sheets for WAV tracks. |
+| Native FLAC | Partial | Streaming read with frame CRC and STREAMINFO MD5 verification when the checksum is present and the stream is fully consumed; Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE, and comment editing are available; FLAC audio encoding is not implemented. |
 
 ## Roadmap
 
@@ -29,12 +30,15 @@ The WAV reader handles the first `data` chunk and skips unknown RIFF/RF64 chunks
 
 ## Workspace crates
 
+- [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata and PCM types for convenience.
+- [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
+- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming decoder and metadata rewriter with raw metadata-block access and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
+- [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
-- [`zemer-core`](crates/core/): audio metadata and shared decoder/encoder interfaces; re-exports PCM types for convenience.
-- [`wav`](crates/wav/): RIFF/WAVE library crate (`zemer-wav` Cargo package).
-- [`cue`](crates/cue/): CUE sheet types and checked sector/sample-frame conversion.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, and CUE/WAV workflows.
-- `tests/`: workspace-level integration tests; codec parser unit tests stay with their format crate.
+- [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE reader and writer.
+- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded WavPack block and streaming metadata sub-block inspection (no audio decoding yet).
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, metadata editing, and CUE/WAV workflows.
+- [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 ## Documentation
 
@@ -82,6 +86,16 @@ cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
 cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
 cargo run -p zemer -- convert --format g711_alaw input.wav voice-alaw.wav
 cargo run -p zemer -- convert --format g711_mulaw input.wav voice-mulaw.wav
+```
+
+Edit RIFF INFO tags in WAVE or Vorbis comments in native FLAC while keeping
+unmentioned tags. Repeated `--set` values for the same key create repeated
+fields; `--remove` removes all values for a key. The output path must be new.
+Metadata editing copies encoded audio without decoding or re-encoding it:
+
+```sh
+zemer metadata edit --set "TITLE=New title" --set "ARTIST=Artist" --remove COMMENT input.flac updated.flac --json
+zemer metadata edit --set "TITLE=New title" input.wav updated.wav --json
 ```
 
 Split a WAVE-backed CUE sheet to numbered track WAVs, or create a CUE for WAV

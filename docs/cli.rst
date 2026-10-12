@@ -14,30 +14,34 @@ installed):
 This installs ``zemer`` in Cargo's binary directory, usually ``~/.cargo/bin``.
 Alternatively, run it from a source checkout with ``cargo run -p zemer --``.
 
-Inspect a WAVE file:
+Inspect a WAVE or native FLAC file:
 
 .. code-block:: console
 
    cargo run -p zemer -- inspect input.wav
+   cargo run -p zemer -- inspect input.flac
 
 For scripts and agents, request JSON:
 
 .. code-block:: console
 
    cargo run -p zemer -- inspect --json input.wav
+   cargo run -p zemer -- inspect --json input.flac
 
-The JSON report contains the WAVE container (``riff`` or ``rf64``), sample rate,
-channel count, optional speaker mask,
-decoded sample format, frame count, exact duration as a frame-count/sample-rate
-fraction, and RIFF INFO metadata. It streams audio in bounded blocks to
-validate and count frames. ``speaker_mask`` is a numeric WAVE mask or JSON
-``null`` when no speaker mask was supplied.
-Convert between supported WAVE sample formats. Output defaults to classic
-RIFF; choose RF64 explicitly when needed:
+The JSON report contains the detected format, a WAVE container (``riff`` or
+``rf64``) or ``null`` for FLAC, sample rate, channel count, optional speaker
+mask, decoded sample format, frame count, exact duration as a
+frame-count/sample-rate fraction, and supported metadata. It streams audio in
+bounded blocks to validate and count frames. ``speaker_mask`` is a numeric WAVE
+mask or JSON ``null`` when no speaker mask was supplied.
+
+Convert WAVE or native FLAC input to a supported WAVE sample format. Output
+defaults to classic RIFF; choose RF64 explicitly when needed:
 
 .. code-block:: console
 
    cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
+   cargo run -p zemer -- convert --format pcm_i16 input.flac output.wav
    cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
 
 The same command can explicitly select G.711 output:
@@ -55,6 +59,25 @@ G.711 output accepts the same explicit format choices and converts to 16-bit
 PCM before companding. Its JSON report includes ``output_encoding``. With
 ``--json``, failures are JSON objects on stderr with a stable ``kind`` field
 and the process exits with status 2.
+
+Metadata editing
+----------------
+
+Update RIFF INFO tags in WAVE or Vorbis comments in native FLAC while
+preserving tags that are not named. Repeated ``--set`` options for one key
+replace its existing values with the provided repeated values. ``--remove``
+removes all values for a key. The output file must not already exist; encoded
+audio bytes are copied without decoding or re-encoding.
+
+.. code-block:: console
+
+   zemer metadata edit --set "TITLE=New title" --set "ARTIST=Artist" --remove COMMENT input.flac updated.flac --json
+   zemer metadata edit --set "TITLE=New title" input.wav updated.wav --json
+
+FLAC keys may use printable ASCII other than ``=``; WAVE supports TITLE,
+ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO. Values are UTF-8.
+WAVE edits preserve unrecognized chunks and INFO subchunks. If editing fails,
+the partial output file created by the command is removed.
 
 CUE/WAV workflows
 -----------------

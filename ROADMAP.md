@@ -47,6 +47,8 @@ identified from file contents.
 ## 2. Shared audio, conversion, and metadata
 
 - Keep streaming decoder and encoder APIs independent of format-specific crates.
+- [x] Extract the format-independent tag collection into the standalone
+  ``zemer-metadata`` crate; ``zemer-core`` re-exports it for convenience.
 - Establish common metadata fields and map them to each format's native tags;
   retain format-specific fields when they do not fit the shared model.
 - Support metadata inspection and editing, including artwork and chapters when
@@ -69,11 +71,11 @@ support for every file with that extension.
 
 | Format | Intended read/decode work | Intended write/encode work | Priority |
 |---|---|---|---|
-| RIFF/WAVE and RF64 | Inspect, stream PCM/float/G.711, read metadata | Write PCM/float/G.711, metadata, large RF64 files | Foundation |
-| FLAC | Native and Ogg-FLAC inspection/decode, Vorbis comments | FLAC encode and comment editing | First codec after WAV |
+| RIFF/WAVE and RF64 | Inspect, stream PCM/float/G.711, read metadata | Write PCM/float/G.711; edit RIFF INFO while preserving audio, unknown chunks, and RF64 sizes | Foundation |
+| FLAC | Partial native FLAC streaming decode with frame CRC and STREAMINFO MD5 verification; Vorbis comments, raw metadata-block preservation, and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION reads | Metadata rewrite and CLI tag edits implemented; FLAC audio encoding remains planned | CLI inspect/WAVE conversion implemented; Ogg-FLAC and seeking remain open |
 | AIFF / AIFF-C | Parse chunks, decode supported PCM/float and declared codecs | Write supported PCM/float, metadata | Lossless |
 | AU / CAF / raw PCM | Decode supported encodings; raw PCM requires caller-supplied parameters | Encode supported encodings and raw PCM | Lossless / utility |
-| WavPack (`.wv`) | Inspect/decode lossless, lossy, and hybrid files; use a matching `.wvc` correction file when present | Encode lossless and explicitly selected lossy or hybrid modes; read/write APEv2 tags | Evaluate after FLAC |
+| WavPack (`.wv`) | Started: block and metadata sub-block header inspection. Next: lossless integer PCM decode. Later: float PCM, hybrid/lossy modes, and DSD; hybrid lossless requires its matching `.wvc` correction file | Planned after decode: lossless integer PCM. Later: float, lossy/hybrid, DSD, and APEv2 tags | Clean-room specification path confirmed; implementation uses Rust `std` and Zemer crates only |
 | MP3, AAC | Inspect, decode, metadata, and seek where supported | Encode with explicit profile/quality options | Licensing and build review first |
 | DTS Coherent Acoustics (`.dts`) | Inspect and decode DTS core; evaluate DTS-HD and embedded/container streams separately | Evaluate clean-room encoding scope and licensing before promising a writer | Spec-based feasibility review ([ETSI TS 102 114](https://www.etsi.org/deliver/etsi_ts/102100_102199/102114/01.06.01_60/ts_102114v010601p.pdf)) |
 | Ogg with Vorbis / Opus | Parse streams and decode each supported codec | Encode each codec and write stream metadata | Separate codec support |
@@ -153,6 +155,7 @@ discard layout or audio information.
 ## Current status
 
 See the [README support matrix](README.md#current-support) for implemented
-formats and exact read/write support. The implemented foundation is WAV, with
-WAVE-backed CUE track splitting and CUE creation; other codecs, track types,
-and archive/disc workflows remain planned until code and tests land.
+formats and exact read/write support. WAVE/RF64 and native FLAC decoding are
+implemented, with WAVE-backed CUE track splitting and CUE creation. FLAC
+writing, Ogg-FLAC, other codecs, track types, and archive/disc workflows remain
+planned until code and tests land.

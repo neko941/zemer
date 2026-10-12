@@ -1,32 +1,7 @@
-use std::{collections::BTreeMap, error::Error, fmt, io};
+use std::{error::Error, fmt, io};
 
+pub use zemer_metadata::Metadata;
 pub use zemer_pcm::{AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, convert_sample_format};
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Metadata {
-    tags: BTreeMap<String, Vec<String>>,
-}
-
-impl Metadata {
-    pub fn insert(&mut self, key: impl AsRef<str>, value: impl Into<String>) {
-        self.tags
-            .entry(key.as_ref().trim().to_ascii_uppercase())
-            .or_default()
-            .push(value.into());
-    }
-
-    pub fn values(&self, key: &str) -> &[String] {
-        self.tags
-            .get(&key.trim().to_ascii_uppercase())
-            .map_or(&[], Vec::as_slice)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &[String])> {
-        self.tags
-            .iter()
-            .map(|(key, values)| (key.as_str(), values.as_slice()))
-    }
-}
 
 pub trait AudioDecoder {
     fn spec(&self) -> AudioSpec;
@@ -37,6 +12,10 @@ pub trait AudioDecoder {
 pub trait AudioEncoder {
     fn spec(&self) -> AudioSpec;
     fn write_block(&mut self, block: &PcmBuffer) -> Result<(), AudioError>;
+
+    fn finish(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
         if metadata.iter().next().is_some() {
@@ -71,6 +50,7 @@ pub fn transcode<D: AudioDecoder, E: AudioEncoder>(
             .checked_add(block.frames() as u64)
             .ok_or(AudioError::InvalidData("transcoded frame count overflow"))?;
     }
+    encoder.finish()?;
     Ok(frames)
 }
 

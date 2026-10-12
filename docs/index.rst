@@ -5,8 +5,12 @@ Zemer is a clean-room Rust library for reading, writing, and converting audio
 files. Its design keeps shared audio types independent from format-specific
 crates, so applications can use only the pieces they need.
 
-The project currently implements RIFF/WAVE PCM, IEEE float, and G.711 reading
-and writing, plus CUE sheets for WAVE audio tracks.
+The project implements RIFF/WAVE PCM, IEEE float, and G.711 reading and
+writing, plus CUE sheets for WAVE tracks. A native FLAC streaming decoder is
+available through its Rust crate.
+The ``zemer-wavpack`` crate currently inspects bounded WavPack block headers
+and streams metadata sub-block payloads to callers; audio decoding is not
+implemented yet.
 
 .. toctree::
    :maxdepth: 2
@@ -14,6 +18,7 @@ and writing, plus CUE sheets for WAVE audio tracks.
 
    getting-started
    wav
+   flac
    cue
    cli
    architecture

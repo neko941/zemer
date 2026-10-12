@@ -1,20 +1,20 @@
 //! Shared PCM sample representations and exact sample-format conversion.
 
 mod buffer;
+mod conversion;
 mod f32;
 mod f64;
 mod i16;
 mod i24;
 mod i32;
 mod sample;
-mod sample_conversion;
 mod samples;
 mod spec;
 mod u8;
 
 pub use crate::buffer::PcmBuffer;
+pub use crate::conversion::convert_sample_format;
 pub use crate::sample::SampleFormat;
-pub use crate::sample_conversion::convert_sample_format;
 pub use crate::samples::Samples;
 pub use crate::spec::AudioSpec;
 

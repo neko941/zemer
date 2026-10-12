@@ -22,6 +22,51 @@ fn temporary_path() -> PathBuf {
     ))
 }
 
+fn flac_comment_block(vendor: &[u8], fields: &[(&[u8], &[u8])]) -> Vec<u8> {
+    let mut data = Vec::from((vendor.len() as u32).to_le_bytes());
+    data.extend_from_slice(vendor);
+    data.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+    for (key, value) in fields {
+        let mut field = Vec::from(*key);
+        field.push(b'=');
+        field.extend_from_slice(value);
+        data.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        data.extend_from_slice(&field);
+    }
+    let length = data.len();
+    let mut block = vec![
+        0x84,
+        (length >> 16) as u8,
+        (length >> 8) as u8,
+        length as u8,
+    ];
+    block.extend_from_slice(&data);
+    block
+}
+
+fn flac_with_comments() -> Vec<u8> {
+    let mut data = vec![
+        0x66, 0x4c, 0x61, 0x43, 0x80, 0x00, 0x00, 0x22, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00, 0x0f,
+        0x00, 0x00, 0x0f, 0x0a, 0xc4, 0x42, 0xf0, 0x00, 0x00, 0x00, 0x01, 0x3e, 0x84, 0xb4, 0x18,
+        0x07, 0xdc, 0x69, 0x03, 0x07, 0x58, 0x6a, 0x3d, 0xad, 0x1a, 0x2e, 0x0f, 0xff, 0xf8, 0x69,
+        0x18, 0x00, 0x00, 0xbf, 0x03, 0x58, 0xfd, 0x03, 0x12, 0x8b, 0xaa, 0x9a,
+    ];
+    data[4] = 0;
+    let frame = data.split_off(42);
+    data.extend(flac_comment_block(
+        b"test encoder",
+        &[
+            (b"TITLE", b"Old title"),
+            (b"ALBUM", b"Keep this"),
+            (b"ARTIST", b"Original artist"),
+            (b"ARTIST", b"Guest artist"),
+            (b"COMMENT", b"Remove this"),
+        ],
+    ));
+    data.extend(frame);
+    data
+}
+
 fn temporary_directory() -> PathBuf {
     std::env::temp_dir().join(format!(
         "zemer-cli-dir-{}-{}",
@@ -46,7 +91,6 @@ fn inspect_json_reports_pcm_properties_and_exact_duration() {
         .output()
         .unwrap();
     let _ = fs::remove_file(&path);
-
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
@@ -56,11 +100,172 @@ fn inspect_json_reports_pcm_properties_and_exact_duration() {
 }
 
 #[test]
+fn inspect_and_convert_native_flac_by_stream_marker() {
+    let input_path = temporary_path();
+    let output_path = temporary_path();
+    fs::write(
+        &input_path,
+        [
+            0x66, 0x4c, 0x61, 0x43, 0x80, 0x00, 0x00, 0x22, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00,
+            0x0f, 0x00, 0x00, 0x0f, 0x0a, 0xc4, 0x42, 0xf0, 0x00, 0x00, 0x00, 0x01, 0x3e, 0x84,
+            0xb4, 0x18, 0x07, 0xdc, 0x69, 0x03, 0x07, 0x58, 0x6a, 0x3d, 0xad, 0x1a, 0x2e, 0x0f,
+            0xff, 0xf8, 0x69, 0x18, 0x00, 0x00, 0xbf, 0x03, 0x58, 0xfd, 0x03, 0x12, 0x8b, 0xaa,
+            0x9a,
+        ],
+    )
+    .unwrap();
+
+    let inspected = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&input_path)
+        .output()
+        .unwrap();
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(inspected.stdout).unwrap().trim(),
+        r#"{"format":"flac","container":null,"sample_rate":44100,"channels":2,"speaker_mask":null,"sample_format":"pcm_i16","frames":1,"duration_frames":{"numerator":1,"denominator":44100},"metadata":{}}"#
+    );
+
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "pcm_i16", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(
+        decoder.read_frames(1).unwrap().unwrap().samples(),
+        &Samples::I16(vec![25_588, 10_416])
+    );
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn metadata_edit_updates_and_removes_tags_without_changing_audio() {
+    let input_path = temporary_path().with_extension("flac");
+    let output_path = temporary_path().with_extension("flac");
+    fs::write(&input_path, flac_with_comments()).unwrap();
+
+    let output = Command::new(cli_path())
+        .args([
+            "metadata",
+            "edit",
+            "--set",
+            "TITLE=New title",
+            "--set",
+            "ARTIST=New artist",
+            "--set",
+            "ARTIST=Featured artist",
+            "--remove",
+            "COMMENT",
+            "--json",
+        ])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = String::from_utf8(output.stdout).unwrap();
+    assert!(json.contains("\"operation\":\"metadata_edit\""));
+    assert!(json.contains("\"updated_fields\":3"));
+    let escaped_output_path = output_path.to_string_lossy().replace('\\', "\\\\");
+    assert!(json.contains(&escaped_output_path));
+
+    let mut decoder = flac::FlacDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata().values("TITLE"), ["New title"]);
+    assert_eq!(
+        decoder.metadata().values("ARTIST"),
+        ["New artist", "Featured artist"]
+    );
+    assert_eq!(decoder.metadata().values("ALBUM"), ["Keep this"]);
+    assert!(decoder.metadata().values("COMMENT").is_empty());
+    assert_eq!(
+        decoder.read_frames(1).unwrap().unwrap().samples(),
+        &Samples::I16(vec![25_588, 10_416])
+    );
+    drop(decoder);
+
+    let original_output = fs::read(&output_path).unwrap();
+    let overwrite = Command::new(cli_path())
+        .args(["metadata", "edit", "--set", "TITLE=overwrite"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert_eq!(overwrite.status.code(), Some(2));
+    assert_eq!(fs::read(&output_path).unwrap(), original_output);
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn metadata_edit_updates_wave_info_without_reencoding_audio() {
+    let input_path = temporary_path();
+    let output_path = temporary_path();
+    let audio = PcmBuffer::new(
+        AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap(),
+        Samples::U8(vec![0, 128, 255]),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "Old title");
+    metadata.insert("ALBUM", "Remove me");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    let output = Command::new(cli_path())
+        .args([
+            "metadata",
+            "edit",
+            "--set",
+            "TITLE=New title",
+            "--set",
+            "ARTIST=Artist",
+            "--remove",
+            "ALBUM",
+            "--json",
+        ])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json = String::from_utf8(output.stdout).unwrap();
+    assert!(json.contains("\"format\":\"wav\""));
+
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata().values("TITLE"), ["New title"]);
+    assert_eq!(decoder.metadata().values("ARTIST"), ["Artist"]);
+    assert!(decoder.metadata().values("ALBUM").is_empty());
+    assert_eq!(decoder.read_frames(3).unwrap().unwrap(), audio);
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
 fn inspect_json_reports_extensible_speaker_mask() {
     let path = temporary_path();
+    let converted_path = temporary_path();
     let spec =
         AudioSpec::new_with_speaker_mask(48_000, 2, SampleFormat::PcmI16, Some(0x3)).unwrap();
-    let audio = PcmBuffer::new(spec, Samples::I16(vec![0, 0])).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![0, 0, 1, -1])).unwrap();
     write_wav(File::create(&path).unwrap(), &audio).unwrap();
 
     let output = Command::new(cli_path())
@@ -68,7 +273,6 @@ fn inspect_json_reports_extensible_speaker_mask() {
         .arg(&path)
         .output()
         .unwrap();
-    let _ = fs::remove_file(&path);
 
     assert!(output.status.success());
     assert!(
@@ -76,6 +280,22 @@ fn inspect_json_reports_extensible_speaker_mask() {
             .unwrap()
             .contains("\"speaker_mask\":3")
     );
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "float32"])
+        .arg(&path)
+        .arg(&converted_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let decoder = wav::WavDecoder::new(File::open(&converted_path).unwrap()).unwrap();
+    assert_eq!(decoder.spec().speaker_mask(), Some(0x3));
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(converted_path);
 }
 
 #[test]

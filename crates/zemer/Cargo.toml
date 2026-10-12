@@ -14,3 +14,4 @@ path = "src/main.rs"
 zemer-core.workspace = true
 wav.workspace = true
 cue.workspace = true
+flac.workspace = true
