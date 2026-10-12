@@ -71,7 +71,7 @@ fn reads_channel_blocks_in_order_across_dsf_block_boundaries() {
     left[4095] = 0x01;
     right[4095] = 0x80;
     left.push(0x01);
-    right.push(0x80);
+    right.push(0x01);
     let bytes = dsf(2, 2, 4096 * 8 + 1, &[left, right]);
     let mut decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
     loop {
@@ -83,7 +83,7 @@ fn reads_channel_blocks_in_order_across_dsf_block_boundaries() {
     }
     assert_eq!(
         decoder.read_dsd_octets(1).unwrap().unwrap().bytes(),
-        [0x80, 0x01]
+        [0x80, 0x80]
     );
     assert!(decoder.read_dsd_octets(1).unwrap().is_none());
 }
@@ -102,8 +102,7 @@ fn rejects_nonzero_dsf_padding_and_unsupported_sample_packing() {
 
     let mut bytes = dsf(1, 1, 8, &[vec![0x80]]);
     bytes[28 + 32..28 + 36].copy_from_slice(&8_u32.to_le_bytes());
-    let mut decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
-    assert!(decoder.read_dsd_octets(1).is_err());
+    assert!(DsfDecoder::new(Cursor::new(bytes)).is_err());
 }
 
 #[test]
