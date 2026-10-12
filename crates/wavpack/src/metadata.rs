@@ -7,7 +7,7 @@ use zemer_core::AudioError;
 /// A WavPack metadata sub-block header and its declared data lengths.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WavPackMetadataSubBlockHeader {
-    /// Metadata function ID with the flag bits removed.
+    /// Metadata function ID, including the optional-ID range, with size flags removed.
     pub id: u8,
     /// Whether a decoder may skip this sub-block when it does not understand it.
     pub decoder_optional: bool,
@@ -72,7 +72,7 @@ impl WavPackMetadataSubBlockHeader {
         *block_bytes_remaining -= sub_block_size;
 
         Ok(Some(Self {
-            id: prefix[0] & 0x1f,
+            id: prefix[0] & 0x3f,
             decoder_optional: prefix[0] & 0x20 != 0,
             data_size,
             padded_data_size,
@@ -125,7 +125,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(header.id, 0x0a);
+        assert_eq!(header.id, 0x2a);
         assert!(header.decoder_optional);
         assert_eq!(header.data_size, 4);
         assert_eq!(header.padded_data_size, 4);
@@ -219,7 +219,7 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(visited, [(0x0a, 3), (0x0a, 2)]);
+        assert_eq!(visited, [(0x0a, 3), (0x2a, 2)]);
         assert_eq!(input.position(), 10);
     }
 

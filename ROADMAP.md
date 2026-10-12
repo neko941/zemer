@@ -75,13 +75,13 @@ support for every file with that extension.
 | FLAC | Partial native FLAC streaming decode with frame CRC and STREAMINFO MD5 verification; Vorbis comments, raw metadata-block preservation, and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION reads | Metadata rewrite and CLI tag edits implemented; FLAC audio encoding remains planned | CLI inspect/WAVE conversion implemented; Ogg-FLAC and seeking remain open |
 | AIFF / AIFF-C | Parse chunks, decode supported PCM/float and declared codecs | Write supported PCM/float, metadata | Lossless |
 | AU / CAF / raw PCM | Decode supported encodings; raw PCM requires caller-supplied parameters | Encode supported encodings and raw PCM | Lossless / utility |
-| WavPack (`.wv`) | Started: block and metadata sub-block header inspection. Next: lossless integer PCM decode. Later: float PCM, hybrid/lossy modes, and DSD; hybrid lossless requires its matching `.wvc` correction file | Planned after decode: lossless integer PCM. Later: float, lossy/hybrid, DSD, and APEv2 tags | Clean-room specification path confirmed; implementation uses Rust `std` and Zemer crates only |
+| WavPack (`.wv`) | Partial: mono/stereo lossless integer PCM at 8/16/24/32 bits, stereo lossless IEEE float32, custom sample rates, false stereo, tested PCM16 groups with 3–8 channels and 5.1 PCM24/32, hybrid-lossy PCM16/float32, tested `.wvc` restoration for PCM16/24/32 and float32 including 3-channel PCM16 and shaped/cross-channel stereo PCM16, and native DSD direct/fast/adaptive stereo plus adaptive 5.1; block, decoded-sample, WVX, and DSD checksums are verified | PCM/DSD encoding, APEv2 tags, and broader profile/corpus conformance remain planned; DSD has no hybrid `.wvc` mode | Clean-room specification path confirmed; implementation uses Rust `std` and Zemer crates only |
 | MP3, AAC | Inspect, decode, metadata, and seek where supported | Encode with explicit profile/quality options | Licensing and build review first |
 | DTS Coherent Acoustics (`.dts`) | Inspect and decode DTS core; evaluate DTS-HD and embedded/container streams separately | Evaluate clean-room encoding scope and licensing before promising a writer | Spec-based feasibility review ([ETSI TS 102 114](https://www.etsi.org/deliver/etsi_ts/102100_102199/102114/01.06.01_60/ts_102114v010601p.pdf)) |
 | Ogg with Vorbis / Opus | Parse streams and decode each supported codec | Encode each codec and write stream metadata | Separate codec support |
 | WMA and other legacy formats | Evaluate supported variants and dependencies | Encode only where clean-room scope and licensing permit | Evaluate separately |
 | DSF / DSDIFF | Inspect, decode DSD, read format metadata | Write DSD and metadata where specified | DSD |
-| SACD DSD ISO | Inspect areas/tracks, extract DSD or DST tracks and metadata | Create images only if specification-based workflows and tests are practical | DSD / disc |
+| SACD DSD ISO | Evaluate TOC/area inspection and extraction of readable DSD tracks from user-supplied images | Image creation only if specification-based workflows and tests are practical | Deferred pending a lawful normative source, usable test-image rights, and an explicit image/sector model; no DRM circumvention, DST is a separate codec |
 
 Read and write are separate capabilities: a format may be readable before an
 encoder is ready. Formats that depend on restricted, undocumented, or
@@ -92,8 +92,10 @@ platform-specific implementations may remain unsupported.
 - Read DSF and DSDIFF/DFF metadata and audio; add writing where the
   specifications allow it.
 - Inspect SACD/DSD ISO navigation, stereo and multichannel areas, track
-  boundaries, timing, and metadata; extract supported tracks without loading an
-  entire image into memory.
+  boundaries, timing, and metadata only after normative documentation and
+  fixture rights are established. Any future extraction must stream readable,
+  unencrypted content and reject protected or undocumented paths; see the
+  internal feasibility notes.
 - Evaluate DST decoding as a separate codec with its own tests and documented
   limits.
 - Preserve track, index, timing, and channel information when exporting tracks

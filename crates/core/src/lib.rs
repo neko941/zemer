@@ -1,5 +1,6 @@
 use std::{error::Error, fmt, io};
 
+pub use zemer_dsd::{DsdBuffer, DsdError, DsdSpec};
 pub use zemer_metadata::Metadata;
 pub use zemer_pcm::{AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, convert_sample_format};
 
@@ -7,6 +8,16 @@ pub trait AudioDecoder {
     fn spec(&self) -> AudioSpec;
     fn metadata(&self) -> &Metadata;
     fn read_frames(&mut self, max_frames: usize) -> Result<Option<PcmBuffer>, AudioError>;
+}
+
+/// Decodes native one-bit DSD without converting it to PCM.
+pub trait DsdDecoder {
+    fn dsd_spec(&self) -> DsdSpec;
+    fn metadata(&self) -> &Metadata;
+    /// Reads at most `max_octet_frames` frames, where each frame contains one
+    /// packed DSD octet for every channel.
+    fn read_dsd_octets(&mut self, max_octet_frames: usize)
+    -> Result<Option<DsdBuffer>, AudioError>;
 }
 
 pub trait AudioEncoder {

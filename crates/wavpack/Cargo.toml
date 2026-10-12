@@ -1,6 +1,6 @@
 [package]
 name = "zemer-wavpack"
-description = "Clean-room WavPack block inspection for Zemer"
+description = "Clean-room WavPack block inspection and PCM/DSD decoding for Zemer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
