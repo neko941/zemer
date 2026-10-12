@@ -3,8 +3,10 @@ WavPack
 
 The ``zemer-wavpack`` crate decodes WavPack PCM, hybrid ``.wvc`` correction
 streams, and native DSD without linking an external codec implementation. It
-encodes lossless integer PCM for 1–32 channels at 8/16/24/32 bits and raw native
-DSD for 1–32 channels. It also reads and rewrites trailing APEv2 tags. The CLI can
+encodes lossless integer PCM for 1–32 channels at 8/16/24/32 bits, preserves
+float32 sample bits through WVX, and writes raw native DSD for 1–32 channels.
+The float path stores each IEEE value uncompressed in WVX. The crate also reads
+and rewrites trailing APEv2 tags. The CLI can
 inspect WavPack streams, convert PCM output to WAVE or WavPack, and edit APEv2
 text metadata.
 
@@ -24,6 +26,6 @@ seeking and metadata must be available before decoding.
 
 ``WavPackEncoder`` and ``WavPackDsdEncoder`` expose the writers through the
 shared PCM and DSD interfaces. Native DSD remains available through
-``WavPackDsdDecoder`` and is not converted implicitly to PCM. Float encoding,
-hybrid ``.wvc`` writing, and binary cover-art editing
-through the shared ``Metadata`` model remain unsupported.
+``WavPackDsdDecoder`` and is not converted implicitly to PCM. Hybrid ``.wvc``
+writing and binary cover-art editing through the shared ``Metadata`` model
+remain unsupported.

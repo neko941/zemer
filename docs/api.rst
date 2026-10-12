@@ -132,7 +132,8 @@ Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
   and adaptive profiles, verifying each decoded block checksum. Oracle tests
   cover all three profiles in stereo and adaptive DSD in 5.1.
 * ``WavPackEncoder`` — implements ``AudioEncoder`` for lossless integer PCM at
-  8/16/24/32 bits and up to 32 channels.
+  8/16/24/32 bits and up to 32 channels, plus bit-exact float32 encoding. The
+  float path carries sample bits uncompressed in WVX.
 * ``WavPackDsdEncoder`` — implements ``DsdEncoder`` for raw native DSD octets
   for up to 32 channels.
 

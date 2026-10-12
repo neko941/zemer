@@ -10,9 +10,10 @@ writing, plus CUE sheets for WAVE tracks. Its FLAC crate streams integer PCM
 to and from native FLAC files and decodes Ogg-FLAC.
 The ``zemer-wavpack`` crate decodes lossless PCM, float32, hybrid PCM/float with
 paired ``.wvc`` correction, and native DSD profiles. It writes lossless integer
-PCM at 8/16/24/32 bits for up to 32 channels and raw native DSD for up to 32 channels.
-APEv2 UTF-8 text tags can be edited while retaining non-text items. Float and
-hybrid encoding and broader profile conformance remain open.
+PCM at 8/16/24/32 bits for up to 32 channels, preserves float32 bits through
+uncompressed WVX, and writes raw native DSD for up to 32 channels. APEv2 UTF-8
+text tags can be edited while retaining non-text items. Hybrid encoding and
+broader profile conformance remain open.
 
 .. toctree::
    :maxdepth: 2

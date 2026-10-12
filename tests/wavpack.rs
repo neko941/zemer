@@ -64,3 +64,79 @@ fn wavpack_encoder_round_trips_multichannel_pcm_and_speaker_mask() {
     assert_eq!(decoder.read_frames(16).unwrap().unwrap(), source);
     assert!(decoder.read_frames(16).unwrap().is_none());
 }
+
+#[test]
+fn wavpack_encoder_preserves_float32_bits_and_custom_rate() {
+    let expected = [
+        0x0000_0000,
+        0x8000_0000,
+        0x0000_0001,
+        0x007f_ffff,
+        0x3f80_0000,
+        0xbf80_0000,
+        0x7f80_0000,
+        0xff80_0000,
+        0x7fc1_2345,
+        0xff80_0001,
+        0x7f7f_ffff,
+        0xffc5_4321,
+    ];
+    for channels in [2, 3] {
+        let spec = if channels == 2 {
+            AudioSpec::new(123_456, channels, SampleFormat::Float32).unwrap()
+        } else {
+            AudioSpec::new_with_speaker_mask(123_456, channels, SampleFormat::Float32, Some(0x7))
+                .unwrap()
+        };
+        let source =
+            PcmBuffer::new(spec, Samples::F32(expected.map(f32::from_bits).to_vec())).unwrap();
+        let mut encoder = WavPackEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_block(&source).unwrap();
+        encoder.finish().unwrap();
+
+        let bytes = encoder.into_inner().into_inner();
+        let mut decoder = WavPackDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.spec(), spec);
+        let Samples::F32(decoded) = decoder.read_frames(16).unwrap().unwrap().samples().clone()
+        else {
+            panic!("WavPack float encoder decoded to a non-float format");
+        };
+        assert_eq!(
+            decoded
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(decoder.read_frames(16).unwrap().is_none());
+    }
+}
+
+#[test]
+fn wavpack_encoder_splits_float32_at_the_block_boundary() {
+    let spec = AudioSpec::new(48_000, 2, SampleFormat::Float32).unwrap();
+    let frame_count = 32_769;
+    let pattern = [0x0000_0000, 0x8000_0000, 0x3f80_0000, 0x7fc1_2345];
+    let expected = (0..frame_count * 2)
+        .map(|index| pattern[index % pattern.len()])
+        .collect::<Vec<_>>();
+    let source = PcmBuffer::new(
+        spec,
+        Samples::F32(expected.iter().copied().map(f32::from_bits).collect()),
+    )
+    .unwrap();
+    let mut encoder = WavPackEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.write_block(&source).unwrap();
+    encoder.finish().unwrap();
+
+    let bytes = encoder.into_inner().into_inner();
+    let mut decoder = WavPackDecoder::new(Cursor::new(bytes)).unwrap();
+    let mut actual = Vec::with_capacity(expected.len());
+    while let Some(block) = decoder.read_frames(8192).unwrap() {
+        let Samples::F32(samples) = block.samples() else {
+            panic!("WavPack float encoder decoded to a non-float format");
+        };
+        actual.extend(samples.iter().map(|sample| sample.to_bits()));
+    }
+    assert_eq!(actual, expected);
+}

@@ -687,6 +687,52 @@ fn convert_encodes_wavpack_pcm_and_metadata() {
 }
 
 #[test]
+fn convert_encodes_wavpack_float32_without_changing_sample_bits() {
+    let input_path = temporary_path();
+    let output_path = temporary_path().with_extension("wv");
+    let bits = [
+        0x8000_0000,
+        0x0000_0001,
+        0x3f80_0000,
+        0xbf80_0000,
+        0x7f80_0000,
+        0x7fc1_2345,
+    ];
+    let audio = PcmBuffer::new(
+        AudioSpec::new(48_000, 2, SampleFormat::Float32).unwrap(),
+        Samples::F32(bits.map(f32::from_bits).to_vec()),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "wavpack", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut decoder = WavPackDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    let Samples::F32(decoded) = decoder.read_frames(16).unwrap().unwrap().samples().clone() else {
+        panic!("WavPack output changed the float sample format");
+    };
+    assert_eq!(
+        decoded
+            .iter()
+            .map(|sample| sample.to_bits())
+            .collect::<Vec<_>>(),
+        bits
+    );
+    assert!(decoder.read_frames(16).unwrap().is_none());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
 fn cue_split_and_create_preserve_track_samples_and_metadata() {
     let audio_path = temporary_path();
     let cue_path = audio_path.with_extension("cue");

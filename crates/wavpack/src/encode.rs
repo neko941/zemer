@@ -4,8 +4,10 @@ use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, Sampl
 use zemer_metadata::apev2::ApeTag;
 
 pub(crate) const BLOCK_FRAMES: usize = 131_072;
+const FLOAT_BLOCK_FRAMES: usize = 32_768;
 const FILE_VERSION: u16 = 0x410;
 const MONO_DATA: u32 = 1 << 2;
+const FLOAT_DATA: u32 = 1 << 7;
 const INT32_DATA: u32 = 1 << 8;
 pub(crate) const INITIAL_BLOCK: u32 = 1 << 11;
 pub(crate) const FINAL_BLOCK: u32 = 1 << 12;
@@ -16,12 +18,13 @@ pub(crate) const SAMPLE_RATES: [u32; 15] = [
 ];
 const MEDIAN_DIVISORS: [u64; 3] = [128, 64, 32];
 
-/// Writes lossless integer PCM as WavPack v5 blocks.
+/// Writes lossless integer PCM and IEEE float32 as WavPack v5 blocks.
 pub struct WavPackEncoder<W> {
     writer: W,
     spec: AudioSpec,
     metadata: Metadata,
     samples: Vec<i32>,
+    float_samples: Vec<f32>,
     frames: u64,
     encoded_frames: u64,
     blocks: Vec<BlockPatch>,
@@ -48,20 +51,30 @@ impl<W: Write + Seek> WavPackEncoder<W> {
                 | SampleFormat::PcmI16
                 | SampleFormat::PcmI24
                 | SampleFormat::PcmI32
+                | SampleFormat::Float32
         ) {
             return Err(AudioError::Unsupported(
-                "WavPack encoding currently supports integer PCM only",
+                "WavPack encoding supports integer PCM and float32",
             ));
         }
+        let sample_capacity = BLOCK_FRAMES * usize::from(spec.channels());
         let mut samples = Vec::new();
-        samples
-            .try_reserve_exact(BLOCK_FRAMES * usize::from(spec.channels()))
-            .map_err(|_| AudioError::InvalidData("WavPack encoder buffer is too large"))?;
+        let mut float_samples = Vec::new();
+        if spec.sample_format() == SampleFormat::Float32 {
+            float_samples
+                .try_reserve_exact(FLOAT_BLOCK_FRAMES * usize::from(spec.channels()))
+                .map_err(|_| AudioError::InvalidData("WavPack encoder buffer is too large"))?;
+        } else {
+            samples
+                .try_reserve_exact(sample_capacity)
+                .map_err(|_| AudioError::InvalidData("WavPack encoder buffer is too large"))?;
+        }
         Ok(Self {
             writer,
             spec,
             metadata: Metadata::default(),
             samples,
+            float_samples,
             frames: 0,
             encoded_frames: 0,
             blocks: Vec::new(),
@@ -74,6 +87,9 @@ impl<W: Write + Seek> WavPackEncoder<W> {
     }
 
     fn flush_block(&mut self) -> Result<(), AudioError> {
+        if self.spec.sample_format() == SampleFormat::Float32 {
+            return self.flush_float_block();
+        }
         if self.samples.is_empty() {
             return Ok(());
         }
@@ -108,6 +124,136 @@ impl<W: Write + Seek> WavPackEncoder<W> {
         self.encoded_frames += u64::from(frames);
         self.samples = samples;
         self.samples.clear();
+        Ok(())
+    }
+
+    fn flush_float_block(&mut self) -> Result<(), AudioError> {
+        if self.float_samples.is_empty() {
+            return Ok(());
+        }
+        let block_index = self.encoded_frames;
+        let channels = usize::from(self.spec.channels());
+        let frames = u32::try_from(self.float_samples.len() / channels)
+            .map_err(|_| AudioError::InvalidData("WavPack block is too large"))?;
+        let samples = std::mem::take(&mut self.float_samples);
+        if channels <= 2 {
+            self.write_float_sample_block(&samples, channels, block_index, true, true, None)?;
+        } else {
+            let mask = self.spec.speaker_mask().unwrap_or_default();
+            let mut channel_info = vec![self.spec.channels() as u8];
+            channel_info.extend_from_slice(&mask.to_le_bytes());
+            let samples_ref = samples.as_slice();
+            for first_channel in (0..channels).step_by(2) {
+                let block_channels = (channels - first_channel).min(2);
+                let channel_samples = (0..frames as usize)
+                    .flat_map(|frame| {
+                        (first_channel..first_channel + block_channels)
+                            .map(move |channel| samples_ref[frame * channels + channel])
+                    })
+                    .collect::<Vec<_>>();
+                self.write_float_sample_block(
+                    &channel_samples,
+                    block_channels,
+                    block_index,
+                    first_channel == 0,
+                    first_channel + block_channels == channels,
+                    (first_channel == 0).then_some(&channel_info),
+                )?;
+            }
+        }
+        self.encoded_frames += u64::from(frames);
+        self.float_samples = samples;
+        self.float_samples.clear();
+        Ok(())
+    }
+
+    fn write_float_sample_block(
+        &mut self,
+        samples: &[f32],
+        channels: usize,
+        block_index: u64,
+        initial: bool,
+        final_block: bool,
+        channel_info: Option<&[u8]>,
+    ) -> Result<(), AudioError> {
+        let mut flags = 3 | (23 << 18) | FLOAT_DATA | HAS_CHECKSUM;
+        if channels == 1 {
+            flags |= MONO_DATA;
+        }
+        if initial {
+            flags |= INITIAL_BLOCK;
+        }
+        if final_block {
+            flags |= FINAL_BLOCK;
+        }
+        let rate_index = SAMPLE_RATES
+            .iter()
+            .position(|&rate| rate == self.spec.sample_rate());
+        if let Some(index) = rate_index {
+            flags |= (index as u32) << 23;
+        } else {
+            flags |= 15 << 23;
+        }
+        let mut payload = Vec::new();
+        write_sub_block(&mut payload, 0x02, &[22])?;
+        let mut entropy = Vec::with_capacity(channels * 6);
+        for _ in 0..channels * 3 {
+            entropy.extend_from_slice(&4096_u16.to_le_bytes());
+        }
+        write_sub_block(&mut payload, 0x05, &entropy)?;
+        if let Some(channel_info) = channel_info {
+            write_sub_block(&mut payload, 0x0d, channel_info)?;
+        }
+        if rate_index.is_none() {
+            write_sub_block(&mut payload, 0x27, &self.spec.sample_rate().to_le_bytes())?;
+        }
+        write_sub_block(&mut payload, 0x08, &[0x08, 0, 127, 127])?;
+        let sample_words = vec![0; samples.len()];
+        let mut bitstream = encode_words(&sample_words, channels)?;
+        if bitstream.len() % 2 != 0 {
+            bitstream.push(0);
+        }
+        write_sub_block(&mut payload, 0x0a, &bitstream)?;
+        let mut wvx = Vec::with_capacity(4 + (samples.len() * 33).div_ceil(8));
+        wvx.extend_from_slice(&wvx_float_checksum(samples).to_le_bytes());
+        // shortcut: stores float bits uncompressed in WVX until blockwise normalization is implemented.
+        let mut float_bits = BitWriter::default();
+        for sample in samples {
+            let bits = sample.to_bits();
+            float_bits.write_bit(true);
+            for bit in 0..23 {
+                float_bits.write_bit(bits & (1 << bit) != 0);
+            }
+            for bit in 0..8 {
+                float_bits.write_bit(bits & (1 << (bit + 23)) != 0);
+            }
+            float_bits.write_bit(bits & (1 << 31) != 0);
+        }
+        wvx.extend_from_slice(&float_bits.finish());
+        if wvx.len() % 2 != 0 {
+            wvx.push(0);
+        }
+        write_sub_block(&mut payload, 0x0c, &wvx)?;
+        let frame_count = u32::try_from(samples.len() / channels)
+            .map_err(|_| AudioError::InvalidData("WavPack block is too large"))?;
+        let crc = sample_checksum(&sample_words, channels);
+        let block_size = 32_usize
+            .checked_add(payload.len())
+            .and_then(|size| size.checked_add(6))
+            .ok_or(AudioError::InvalidData("WavPack block size overflow"))?;
+        let header = make_header(block_size, block_index, frame_count, flags, crc)?;
+        let check = block_checksum(&header, &payload);
+        let offset = self.writer.stream_position()?;
+        self.blocks.push(BlockPatch {
+            offset,
+            payload_words: payload.len() / 2,
+            checksum: check,
+            header,
+        });
+        payload.extend_from_slice(&[0x2f, 2]);
+        payload.extend_from_slice(&check.to_le_bytes());
+        self.writer.write_all(&header)?;
+        self.writer.write_all(&payload)?;
         Ok(())
     }
 
@@ -250,6 +396,7 @@ impl<W: Write + Seek> AudioEncoder for WavPackEncoder<W> {
                 "WavPack sample count exceeds 40 bits",
             ))?;
         match block.samples() {
+            Samples::F32(values) => append_float_samples(self, values.iter().copied(), channels)?,
             Samples::U8(values) => append_samples(
                 self,
                 values.iter().map(|&value| i32::from(value) - 128),
@@ -314,6 +461,31 @@ fn append_samples<W: Write + Seek>(
         }
     }
     Ok(())
+}
+
+fn append_float_samples<W: Write + Seek>(
+    encoder: &mut WavPackEncoder<W>,
+    values: impl Iterator<Item = f32>,
+    channels: usize,
+) -> Result<(), AudioError> {
+    for sample in values {
+        encoder.float_samples.push(sample);
+        if encoder.float_samples.len() == FLOAT_BLOCK_FRAMES * channels {
+            encoder.flush_block()?;
+        }
+    }
+    Ok(())
+}
+
+fn wvx_float_checksum(samples: &[f32]) -> u32 {
+    samples.iter().fold(u32::MAX, |checksum, sample| {
+        let bits = sample.to_bits();
+        checksum
+            .wrapping_mul(27)
+            .wrapping_add((bits & 0x7f_ffff).wrapping_mul(9))
+            .wrapping_add(((bits >> 23) & 0xff).wrapping_mul(3))
+            .wrapping_add(bits >> 31)
+    })
 }
 
 fn encode_words(samples: &[i32], channels: usize) -> Result<Vec<u8>, AudioError> {
@@ -779,7 +951,7 @@ mod tests {
         let empty_spec = AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap();
         let mut encoder = WavPackEncoder::new(Cursor::new(Vec::new()), empty_spec).unwrap();
         assert!(encoder.finish().is_err());
-        let float_spec = AudioSpec::new(44_100, 1, SampleFormat::Float32).unwrap();
-        assert!(WavPackEncoder::new(Cursor::new(Vec::new()), float_spec).is_err());
+        let double_spec = AudioSpec::new(44_100, 1, SampleFormat::Float64).unwrap();
+        assert!(WavPackEncoder::new(Cursor::new(Vec::new()), double_spec).is_err());
     }
 }
