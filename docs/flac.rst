@@ -26,6 +26,29 @@ streamable subset.
    }
    # Ok::<(), zemer_core::AudioError>(())
 
+For random access, construct the decoder with ``new_seekable()`` and seek to a
+zero-based sample frame. A valid SEEKTABLE is used to jump near the target;
+without one, the decoder seeks to the first audio frame and decodes forward.
+
+.. code-block:: rust
+
+   use std::{fs::File, io::BufReader};
+   use flac::FlacDecoder;
+   use zemer_core::AudioDecoder;
+
+   let mut decoder = FlacDecoder::new_seekable(BufReader::new(File::open("input.flac")?))?;
+   decoder.seek_to_sample(44_100)?;
+   if let Some(block) = decoder.read_frames(4096)? {
+       println!("{} frames starting at 1 second", block.frames());
+   }
+   # Ok::<(), zemer_core::AudioError>(())
+
+Seeking from sample zero allows normal full-stream MD5 verification. Resuming
+from a later SEEKTABLE point skips the prefix, so the full-stream MD5 cannot be
+verified. The regular
+``new()`` constructor remains available for readers that only implement
+``Read``.
+
 The ``FlacEncoder<W>`` accepts integer PCM at 8, 16, 24, and 32 bits, streams
 4096-sample verbatim frames, writes Vorbis comments, and patches STREAMINFO
 sample totals and MD5 when ``finish()`` succeeds. It requires a seekable output
@@ -36,7 +59,7 @@ raw type and payload through ``metadata_blocks()``, handles constant, verbatim,
 fixed-predictor, and linear-predictor subframes, Rice residuals, wasted bits,
 and stereo decorrelation. It verifies frame header and frame CRCs. It supports
 native FLAC and single-logical-stream Ogg-FLAC decoding; chained logical streams
-and seeking are not implemented. Ogg-FLAC validates page framing and checks the
+and Ogg-FLAC seeking are not implemented. Ogg-FLAC validates page framing and checks the
 terminal granule against the decoded sample count, including when STREAMINFO's
 total is unknown, and trims trailing samples from the final decoded block as
 required. The CLI can inspect either
