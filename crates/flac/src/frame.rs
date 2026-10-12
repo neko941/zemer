@@ -1,6 +1,6 @@
 use zemer_core::AudioError;
 
-use crate::{bit_reader::BitReader, metadata::FlacStreamInfo};
+use crate::{bitstream::BitReader, metadata::FlacStreamInfo};
 
 pub(crate) fn read_frame<R: std::io::Read>(
     reader: &mut BitReader<R>,

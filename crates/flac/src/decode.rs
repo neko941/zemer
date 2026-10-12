@@ -6,7 +6,7 @@ use std::{
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::{
-    bit_reader::BitReader,
+    bitstream::BitReader,
     frame::read_frame,
     md5::Md5,
     metadata::{FlacMetadataBlock, FlacStreamInfo, read_metadata},

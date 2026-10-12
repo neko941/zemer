@@ -1,4 +1,4 @@
-mod bit_reader;
+mod bitstream;
 mod decode;
 mod frame;
 mod md5;
