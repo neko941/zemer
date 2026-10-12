@@ -53,12 +53,16 @@ pub(super) fn encode_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError
         append_frame(&mut body, frame_id.unwrap_or(*b"TXXX"), &payload)?;
     }
     if body.len() > MAX_ID3_TAG_BYTES {
-        return Err(AudioError::InvalidData("DSF ID3 metadata exceeds its size limit"));
+        return Err(AudioError::InvalidData(
+            "DSF ID3 metadata exceeds its size limit",
+        ));
     }
     let size = u32::try_from(body.len())
         .ok()
         .filter(|&size| size < (1 << 28))
-        .ok_or(AudioError::InvalidData("DSF ID3 metadata exceeds its size limit"))?;
+        .ok_or(AudioError::InvalidData(
+            "DSF ID3 metadata exceeds its size limit",
+        ))?;
     let mut tag = Vec::new();
     tag.try_reserve_exact(10 + body.len())
         .map_err(|_| AudioError::InvalidData("DSF ID3 metadata is too large"))?;
@@ -98,7 +102,9 @@ fn append_frame(body: &mut Vec<u8>, id: [u8; 4], payload: &[u8]) -> Result<(), A
     ]);
     body.extend_from_slice(payload);
     if body.len() > MAX_ID3_TAG_BYTES {
-        return Err(AudioError::InvalidData("DSF ID3 metadata exceeds its size limit"));
+        return Err(AudioError::InvalidData(
+            "DSF ID3 metadata exceeds its size limit",
+        ));
     }
     Ok(())
 }

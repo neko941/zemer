@@ -185,15 +185,21 @@ fn encodes_and_decodes_channel_blocks_and_id3_text() {
 
 #[test]
 fn rejects_unsupported_dsf_layouts_and_empty_streams() {
-    assert!(DsfEncoder::new(
-        Cursor::new(Vec::new()),
-        DsdSpec::new_with_speaker_mask(2_822_400, 4, Some(0x3f)).unwrap(),
-    )
-    .is_err());
+    assert!(
+        DsfEncoder::new(
+            Cursor::new(Vec::new()),
+            DsdSpec::new_with_speaker_mask(2_822_400, 4, Some(0x3f)).unwrap(),
+        )
+        .is_err()
+    );
     let spec = DsdSpec::new(2_822_400, 1).unwrap();
     let mut encoder = DsfEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
     assert!(encoder.finish().is_err());
-    assert!(encoder.write_dsd_octets(&DsdBuffer::new(spec, vec![0]).unwrap()).is_err());
+    assert!(
+        encoder
+            .write_dsd_octets(&DsdBuffer::new(spec, vec![0]).unwrap())
+            .is_err()
+    );
 }
 
 #[test]

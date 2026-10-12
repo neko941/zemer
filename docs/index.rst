@@ -15,6 +15,8 @@ uncompressed WVX, writes raw native DSD for up to 32 channels, and emits
 standard-bitrate integer PCM hybrid pairs. APEv2 UTF-8 text tags can be edited
 while retaining non-text items. The official suite decoded all 35 supported
 files, skipped 9 legacy files, and rejected all 4 malformed files.
+The ``zemer-dsf`` crate reads and writes raw DSF 1.01 DSD streams for its
+documented channel/rate profile and maps common ID3 text fields.
 
 .. toctree::
    :maxdepth: 2
@@ -24,6 +26,7 @@ files, skipped 9 legacy files, and rejected all 4 malformed files.
    wav
    flac
    wavpack
+   dsf
    ogg
    cue
    cli

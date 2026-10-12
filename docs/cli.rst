@@ -22,8 +22,8 @@ Inspect a WAVE, native FLAC, Ogg-FLAC, or WavPack file:
    cargo run -p zemer -- inspect input.flac
    cargo run -p zemer -- inspect input.wv
 
-WavPack native DSD is exposed through the library API and is not decoded by the
-PCM CLI workflows.
+Native DSD decoding/encoding is currently exposed through the library APIs and
+is not yet available through the CLI.
 
 For scripts and agents, request JSON:
 

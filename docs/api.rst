@@ -38,8 +38,9 @@ Streaming decoder and encoder interfaces. It re-exports metadata and PCM types
 for convenience and compatibility:
 
 * ``AudioDecoder`` and ``AudioEncoder`` — block-based read and write traits;
-  ``AudioEncoder::finish`` finalizes streaming output. ``DsdDecoder`` exposes
-  native one-bit audio without passing it through the PCM API.
+  ``AudioEncoder::finish`` finalizes streaming output. ``DsdDecoder`` and
+  ``DsdEncoder`` expose native one-bit audio without passing it through the PCM
+  API.
 * ``transcode`` — bounded block copying between matching PCM specifications,
   preserving metadata when the encoder supports it and finalizing the encoder
   after successful copying.
@@ -55,6 +56,16 @@ Crate ``zemer-dsd``
 
 The DSD stream interface is in ``zemer-core``; this crate owns its format-neutral
 specification and buffer types.
+
+Crate ``zemer-dsf``
+-------------------
+
+* ``DsfDecoder<R>`` and ``DsfEncoder<W>`` — streaming DSF 1.01 raw DSD for the
+  documented channel layouts at 2.8224/5.6448 MHz. Encoder input uses
+  channel-interleaved, MSB-first octets; the writer serializes DSF's required
+  per-channel blocks and LSB-first bytes.
+* The decoder reads common ID3v2.3/v2.4 text fields. The encoder writes ID3v2.4
+  UTF-8 text frames and stores unknown metadata keys in ``TXXX`` frames.
 
 Rust library crate ``cue`` (Cargo package ``zemer-cue``)
 --------------------------------------------------------

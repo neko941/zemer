@@ -1,6 +1,6 @@
 [package]
 name = "zemer-dsf"
-description = "DSF container reader for native DSD audio"
+description = "DSF container reader and writer for native DSD audio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

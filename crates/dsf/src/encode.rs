@@ -115,8 +115,7 @@ impl<W: Write + Seek> DsfEncoder<W> {
             .ok_or(AudioError::InvalidData("DSF data size underflow"))?;
         self.writer.seek(SeekFrom::Start(12))?;
         self.writer.write_all(&file_size.to_le_bytes())?;
-        self.writer
-            .write_all(&metadata_offset.to_le_bytes())?;
+        self.writer.write_all(&metadata_offset.to_le_bytes())?;
         self.writer.seek(SeekFrom::Start(64))?;
         self.writer.write_all(&sample_count.to_le_bytes())?;
         self.writer.seek(SeekFrom::Start(84))?;
