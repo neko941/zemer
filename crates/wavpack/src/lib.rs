@@ -1,15 +1,16 @@
-//! Clean-room WavPack block and metadata-sub-block inspection.
-//!
-//! This crate currently reads and validates fixed block and metadata sub-block
-//! headers. It does not decode WavPack audio or interpret metadata payloads.
+//! Clean-room WavPack block inspection and decoding.
 
 use std::io::{self, Read};
 
 use zemer_core::AudioError;
 
-#[cfg(test)]
 mod bitstream;
+mod decode;
+mod entropy;
+mod float;
+mod hybrid;
 pub mod metadata;
+pub use decode::WavPackDecoder;
 pub use metadata::{WavPackMetadataSubBlockHeader, visit_metadata_sub_blocks};
 
 const HEADER_SIZE: usize = 32;

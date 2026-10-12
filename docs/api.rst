@@ -88,10 +88,15 @@ Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
 * ``visit_metadata_sub_blocks`` — visits each bounded sub-block in a block
   payload without buffering it; the visitor sees unpadded data, and unread
   bytes are drained before parsing the next header.
+* ``WavPackDecoder`` — implements ``AudioDecoder`` for mono and stereo lossless
+  integer PCM at 8, 16, 24, and 32 bits, stereo lossless IEEE float32, and 5.1
+  lossless PCM16, plus mono and stereo unshaped hybrid-lossy PCM16.
 
-Audio decoding and metadata payload interpretation are not implemented yet.
-The crate uses only Rust's standard library and ``zemer-core``; no external
-codec implementation is linked.
+Noise-shaped hybrid audio, ``.wvc`` lossless restoration, other multichannel
+layouts, and DSD decoding remain unsupported.
+The float32 conformance fixture checks exact IEEE-754 bit patterns including
+signed zero, subnormals, infinities, and NaNs. The crate uses only Rust's
+standard library and ``zemer-core``; no external codec implementation is linked.
 
 Generate complete local Rust API documentation from the repository root:
 

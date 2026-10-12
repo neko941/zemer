@@ -13,7 +13,7 @@ impl<'a> BitReader<'a> {
         }
     }
 
-    fn read_bit(&mut self) -> Result<bool, AudioError> {
+    pub(crate) fn read_bit(&mut self) -> Result<bool, AudioError> {
         let byte = self
             .bytes
             .get(self.bit_offset / 8)
@@ -23,12 +23,34 @@ impl<'a> BitReader<'a> {
         Ok(bit)
     }
 
-    fn read_bits(&mut self, count: u32) -> Result<u32, AudioError> {
+    pub(crate) fn read_bits(&mut self, count: u32) -> Result<u32, AudioError> {
+        if count > u32::BITS {
+            return Err(AudioError::InvalidData("WavPack bit read exceeds 32 bits"));
+        }
         let mut bits = 0;
         for bit in 0..count {
             bits |= u32::from(self.read_bit()?) << bit;
         }
         Ok(bits)
+    }
+
+    pub(crate) fn read_code(&mut self, max_code: u32) -> Result<u32, AudioError> {
+        if max_code < 2 {
+            return if max_code == 0 {
+                Ok(0)
+            } else {
+                Ok(u32::from(self.read_bit()?))
+            };
+        }
+
+        let bit_count = u32::BITS - max_code.leading_zeros();
+        let extras = (1_u64 << bit_count) - u64::from(max_code) - 1;
+        let prefix = u64::from(self.read_bits(bit_count - 1)?);
+        if prefix < extras {
+            Ok(prefix as u32)
+        } else {
+            Ok(((prefix << 1) - extras + u64::from(self.read_bit()?)) as u32)
+        }
     }
 
     pub(crate) fn read_zero_run(&mut self) -> Result<Option<u32>, AudioError> {
@@ -89,5 +111,38 @@ mod tests {
             BitReader::new(&[0xff, 0x01]).read_zero_run(),
             Err(AudioError::InvalidData(_))
         ));
+        assert!(BitReader::new(&[0; 8]).read_bits(33).is_err());
+    }
+
+    #[test]
+    fn adjusted_binary_codes_cover_non_power_of_two_ranges() {
+        // LSB-first encodings for values 0..=5 with max_code = 5.
+        let values = [0, 1, 2, 3, 4, 5];
+        let mut bits = Vec::new();
+        for value in values {
+            let code = match value {
+                0 => vec![false, false],
+                1 => vec![true, false],
+                2 => vec![false, true, false],
+                3 => vec![false, true, true],
+                4 => vec![true, true, false],
+                5 => vec![true, true, true],
+                _ => unreachable!(),
+            };
+            bits.extend(code);
+        }
+        let bytes: Vec<u8> = bits
+            .chunks(8)
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .enumerate()
+                    .fold(0, |byte, (index, bit)| byte | (u8::from(*bit) << index))
+            })
+            .collect();
+        let mut reader = BitReader::new(&bytes);
+        for expected in values {
+            assert_eq!(reader.read_code(5).unwrap(), expected);
+        }
     }
 }
