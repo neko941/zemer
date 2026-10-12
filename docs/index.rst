@@ -5,8 +5,8 @@ Zemer is a clean-room Rust library for reading, writing, and converting audio
 files. Its design keeps shared audio types independent from format-specific
 crates, so applications can use only the pieces they need.
 
-The project is in early development. The first implemented format is RIFF/WAVE
-PCM, IEEE float, and G.711 decoding and encoding.
+The project currently implements RIFF/WAVE PCM, IEEE float, and G.711 reading
+and writing, plus CUE sheets for WAVE audio tracks.
 
 .. toctree::
    :maxdepth: 2
@@ -14,6 +14,7 @@ PCM, IEEE float, and G.711 decoding and encoding.
 
    getting-started
    wav
+   cue
    cli
    architecture
    api

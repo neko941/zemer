@@ -10,6 +10,8 @@ Format-independent audio types and streaming interfaces:
   speaker-position mask.
 * ``Samples`` and ``PcmBuffer`` — interleaved PCM data with validated frame
   counts.
+* ``convert_sample_format`` — sample representation conversion without
+  resampling or channel remixing.
 * ``Metadata`` — case-insensitive text tag names with support for repeated
   values.
 * ``AudioDecoder`` and ``AudioEncoder`` — block-based read and write traits.
@@ -19,8 +21,15 @@ Format-independent audio types and streaming interfaces:
   preserving metadata when the encoder supports it and returning an error if
   it cannot.
 
+Rust library crate ``cue`` (Cargo package ``zemer-cue``)
+--------------------------------------------------------
+
+* CUE track/file models and checked conversion from 75 Hz cue frames to sample
+  frame positions.
+* UTF-8 and Shift-JIS CUE text parsing for WAVE files and AUDIO tracks.
+
 Rust library crate ``wav`` (Cargo package ``zemer-wav``)
-------------------------------------------------------------
+-------------------------------------------------------
 
 * ``WavDecoder<R>`` — seekable RIFF/WAVE and RF64 reader implementing
   ``AudioDecoder``; ``container()`` identifies which one was read.

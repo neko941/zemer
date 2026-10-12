@@ -55,3 +55,27 @@ G.711 output accepts the same explicit format choices and converts to 16-bit
 PCM before companding. Its JSON report includes ``output_encoding``. With
 ``--json``, failures are JSON objects on stderr with a stable ``kind`` field
 and the process exits with status 2.
+
+CUE/WAV workflows
+-----------------
+
+Split a CUE sheet that references WAVE files into numbered WAV tracks. The
+destination directory must not already exist; the command also writes a CUE
+sheet for the generated tracks, preserving track titles, performers, and
+indexes.
+
+.. code-block:: console
+
+   zemer cue split --json album.cue album-tracks
+
+Create a CUE sheet for one or more WAV tracks. File paths are stored relative
+to the output CUE file, and the output file must not already exist.
+
+.. code-block:: console
+
+   zemer cue create --json album.cue track-01.wav track-02.wav
+
+This workflow currently accepts UTF-8 or Shift-JIS CUE text, WAVE file entries,
+and AUDIO tracks. Track boundaries must map exactly to sample frames; the
+command errors rather than rounding timestamps. It reads and writes audio
+through Zemer's WAVE crate.

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/zemer-core", "crates/wav", "crates/zemer-cli"]
+members = ["crates/zemer-core", "crates/wav", "crates/cue", "crates/zemer-cli"]
 resolver = "2"
 
 [package]
@@ -22,8 +22,11 @@ wav.workspace = true
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
-version = "0.1.0"
+version = "0.2.0"
 
 [workspace.dependencies]
-zemer-core = { path = "crates/zemer-core", version = "0.1.0" }
-wav = { package = "zemer-wav", path = "crates/wav", version = "0.1.0" }
+zemer-core = { path = "crates/zemer-core", version = "0.2.0" }
+wav = { package = "zemer-wav", path = "crates/wav", version = "0.2.0" }
+cue = { package = "zemer-cue", path = "crates/cue", version = "0.2.0" }
+cue-rw = "0.3.0"
+encoding_rs = "=0.8.35"

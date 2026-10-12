@@ -3,10 +3,8 @@
 <p align="center">
   <a href="#supported-platforms"><img alt="Windows" src="https://img.shields.io/badge/Windows-supported-blue.svg" /></a>
   <a href="#supported-platforms"><img alt="Linux" src="https://img.shields.io/badge/Linux-supported-blue.svg" /></a>
-  <a href="#agent-and-cli-support"><img alt="Claude Code" src="https://img.shields.io/badge/Claude_Code-CLI--friendly-blueviolet.svg" /></a>
-  <a href="#agent-and-cli-support"><img alt="Codex" src="https://img.shields.io/badge/Codex-CLI--friendly-blueviolet.svg" /></a>
-  <a href="#agent-and-cli-support"><img alt="Cursor" src="https://img.shields.io/badge/Cursor-CLI--friendly-blueviolet.svg" /></a>
-  <a href="#agent-and-cli-support"><img alt="Kimi Code" src="https://img.shields.io/badge/Kimi_Code-CLI--friendly-blueviolet.svg" /></a>
+  <a href="#cli"><img alt="Agent-friendly CLI" src="https://img.shields.io/badge/CLI-agent--friendly-blueviolet.svg" /></a>
+  <a href="https://github.com/neko941/zemer/tags"><img alt="Version" src="https://img.shields.io/github/v/tag/neko941/zemer?sort=semver&amp;label=version" /></a>
 </p>
 
 Zemer is a clean-room Rust library for reading, writing, inspecting, and converting music files. Its target platforms are Windows and Linux. The code is developed from published format specifications and original tests; proprietary application binaries are not used as implementation sources, and GPL implementation code is not copied or linked.
@@ -21,17 +19,20 @@ The workspace separates format-independent audio types from each format implemen
 | RIFF/WAVE IEEE float 32/64-bit | Yes | Yes | RIFF INFO read/write | WAVE_FORMAT_EXTENSIBLE float and optional channel masks are preserved |
 | RIFF/WAVE G.711 A-law and μ-law | Yes | Yes | RIFF INFO read/write | Decodes to signed 16-bit PCM; writing requires explicit G.711 selection |
 | RF64/WAVE | Yes | Yes | RIFF INFO read/write | 64-bit file and data sizes; select explicitly for output |
+| CUE sheets for WAVE/AUDIO tracks | Yes | Yes | Track title and performer | Split referenced WAV audio into track WAVs; create CUE sheets for WAV tracks |
 
-Planned formats and workflows are listed in the [roadmap](ROADMAP.md). They
-will appear here only after implementation and conformance tests land.
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for planned formats and workflows.
 
 The WAV reader handles the first `data` chunk and skips unknown RIFF/RF64 chunks, including RF64 `ds64` size-table entries. `wavl`/`slnt` and non-G.711 compressed codecs inside WAV are not implemented. The writer defaults to classic RIFF/WAVE (using WAVE_FORMAT_EXTENSIBLE when a channel mask is provided); select `WavContainer::Rf64` or CLI `--container rf64` for 64-bit sizes. Classic RIFF reports an explicit error before exceeding its 4 GiB size limit.
 
 ## Workspace crates
 
-- `zemer-core`: format-independent PCM buffers, metadata tags, and the decoder interface.
-- `wav`: RIFF/WAVE library crate (`zemer-wav` package in `crates/wav`).
-- `zemer-cli`: optional `zemer` executable for inspection and explicit sample-format conversion; library crates do not depend on it.
+- [`zemer-core`](crates/zemer-core/): reusable PCM buffers and conversion, audio metadata, and shared decoder/encoder interfaces.
+- [`wav`](crates/wav/): RIFF/WAVE library crate (`zemer-wav` Cargo package).
+- [`cue`](crates/cue/): CUE sheet types and checked sector/sample-frame conversion.
+- [`zemer-cli`](crates/zemer-cli/): optional `zemer` executable for inspection, conversion, and CUE/WAV workflows.
 - `tests/`: workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 ## Documentation
@@ -82,6 +83,15 @@ cargo run -p zemer-cli -- convert --format g711_alaw input.wav voice-alaw.wav
 cargo run -p zemer-cli -- convert --format g711_mulaw input.wav voice-mulaw.wav
 ```
 
+Split a WAVE-backed CUE sheet to numbered track WAVs, or create a CUE for WAV
+tracks. The split command creates a new output directory and refuses to
+overwrite existing files.
+
+```sh
+zemer cue split album.cue album-tracks
+zemer cue create album.cue "album-tracks/01 - Intro.wav" "album-tracks/02 - Song.wav"
+```
+
 Conversion preserves supported RIFF INFO tags. It refuses to overwrite an existing output file, rounds integer quantization to the nearest sample, and errors when float samples are non-finite or outside `[-1, 1]` for integer output. No dither is applied.
 
 ## Supported platforms
@@ -90,7 +100,7 @@ Windows and Linux are the supported targets. CI runs tests on both platforms.
 
 ## Agent and CLI support
 
-The `zemer` command is scriptable and provides stable JSON for inspection and conversion reports, with JSON errors on stderr and a non-zero exit code. Agents that can run shell commands can use it, including Claude Code, Codex, Cursor, and Kimi Code. The badges describe CLI compatibility; dedicated agent plugins are not included.
+The `zemer` command is scriptable and provides stable JSON reports and errors on stderr with a non-zero exit code. Any agent that can run shell commands can use it.
 
 ## Development
 

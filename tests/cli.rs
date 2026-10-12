@@ -22,6 +22,14 @@ fn temporary_path() -> PathBuf {
     ))
 }
 
+fn temporary_directory() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "zemer-cli-dir-{}-{}",
+        std::process::id(),
+        NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 #[test]
 fn inspect_json_reports_pcm_properties_and_exact_duration() {
     let path = temporary_path();
@@ -252,4 +260,65 @@ fn convert_encodes_g711_only_when_explicitly_selected() {
         let _ = fs::remove_file(output_path);
     }
     let _ = fs::remove_file(input_path);
+}
+
+#[test]
+fn cue_split_and_create_preserve_track_samples_and_metadata() {
+    let audio_path = temporary_path();
+    let cue_path = audio_path.with_extension("cue");
+    let output_dir = temporary_directory();
+    let output_cue = output_dir.join("rebuilt.cue");
+    let samples = (0..1176).map(|sample| sample as i16 - 588).collect::<Vec<_>>();
+    let audio = PcmBuffer::new(
+        AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(samples.clone()),
+    )
+    .unwrap();
+    write_wav(File::create(&audio_path).unwrap(), &audio).unwrap();
+    fs::write(
+        &cue_path,
+        format!(
+            "FILE \"{}\" WAVE\n  TRACK 01 AUDIO\n    TITLE \"First\"\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    TITLE \"Second\"\n    INDEX 01 00:00:01\n",
+            audio_path.file_name().unwrap().to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["cue", "split", "--json"])
+        .arg(&cue_path)
+        .arg(&output_dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8(output.stdout).unwrap().contains("\"tracks\":2"));
+    for (number, expected) in [("01 - First.wav", &samples[..588]), ("02 - Second.wav", &samples[588..])] {
+        let mut decoder = wav::WavDecoder::new(File::open(output_dir.join(number)).unwrap()).unwrap();
+        assert_eq!(decoder.read_frames(588).unwrap().unwrap().samples(), &Samples::I16(expected.to_vec()));
+        assert_eq!(decoder.metadata().values("TITLE").len(), 1);
+    }
+
+    let output = Command::new(cli_path())
+        .args(["cue", "create", "--json"])
+        .arg(&output_cue)
+        .arg(output_dir.join("01 - First.wav"))
+        .arg(output_dir.join("02 - Second.wav"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let generated = fs::read_to_string(&output_cue).unwrap();
+    assert!(generated.contains("FILE \"01 - First.wav\" WAVE"));
+    assert!(generated.contains("TITLE \"Second\""));
+
+    let _ = fs::remove_file(audio_path);
+    let _ = fs::remove_file(cue_path);
+    let _ = fs::remove_dir_all(output_dir);
 }

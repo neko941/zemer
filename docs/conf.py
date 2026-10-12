@@ -1,7 +1,11 @@
+import tomllib
+from pathlib import Path
+
 project = "Zemer"
 copyright = "2026, Zemer contributors"
 author = "Zemer contributors"
-release = "0.1.0"
+workspace_manifest = tomllib.loads((Path(__file__).parent.parent / "Cargo.toml").read_text())
+release = workspace_manifest["workspace"]["package"]["version"]
 
 extensions = []
 templates_path = ["_templates"]

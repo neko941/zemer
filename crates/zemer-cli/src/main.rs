@@ -12,6 +12,8 @@ use zemer_core::{
     convert_sample_format,
 };
 
+mod cue;
+
 struct Report {
     spec: AudioSpec,
     frames: u64,
@@ -46,6 +48,7 @@ impl OutputFormat {
 enum CommandReport {
     Inspect(Report),
     Convert(Report, PathBuf),
+    Cue(cue::CueReport),
 }
 
 struct CliError {
@@ -82,6 +85,21 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Ok(CommandReport::Cue(report)) => {
+            if json {
+                println!(
+                    "{{\"operation\":{},\"cue\":{},\"tracks\":{}}}",
+                    json_string(report.action),
+                    json_string(&report.cue_path.display().to_string()),
+                    report.tracks
+                );
+            } else {
+                println!("operation: {}", report.action);
+                println!("tracks: {}", report.tracks);
+                println!("cue: {}", report.cue_path.display());
+            }
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             if json {
                 eprintln!(
@@ -104,6 +122,12 @@ fn command_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
     match command {
         "inspect" => inspect_args(args).map(CommandReport::Inspect),
         "convert" => convert_args(args).map(|(report, path)| CommandReport::Convert(report, path)),
+        "cue" => cue::run(&args[1..])
+            .map(CommandReport::Cue)
+            .map_err(|message| CliError {
+                kind: "invalid_data",
+                message,
+            }),
         _ => Err(usage_error()),
     }
 }
@@ -317,7 +341,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw> [--container <riff|rf64>] [--json] <input.wav> <output.wav>".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw> [--container <riff|rf64>] [--json] <input.wav> <output.wav> | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 

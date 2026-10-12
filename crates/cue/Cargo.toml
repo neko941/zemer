@@ -1,0 +1,14 @@
+[package]
+name = "zemer-cue"
+description = "CUE sheet parsing and writing for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "cue"
+
+[dependencies]
+cue-rw.workspace = true
+encoding_rs.workspace = true

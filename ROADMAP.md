@@ -109,7 +109,9 @@ These are related tools, not interchangeable audio formats:
   Prevent path traversal, make overwrite behavior explicit, and support large
   collections without unnecessary memory use.
 - **CUE:** parse, validate, edit, and write track/index layouts and referenced
-  file paths; report missing files and invalid offsets.
+  file paths; report missing files and invalid offsets. The current WAVE/AUDIO
+  split and create workflows are listed in the README support matrix; other
+  track types and disc-image layouts remain planned.
 - **BIN/CUE:** inspect and extract supported tracks; create images and cue
   sheets from supported source layouts while preserving track type, pregap, and
   index information where representable.
@@ -151,6 +153,6 @@ discard layout or audio information.
 ## Current status
 
 See the [README support matrix](README.md#current-support) for implemented
-formats and exact read/write support. The implemented foundation is WAV; all
-other formats and archive/disc workflows above remain planned until code and
-tests land.
+formats and exact read/write support. The implemented foundation is WAV, with
+WAVE-backed CUE track splitting and CUE creation; other codecs, track types,
+and archive/disc workflows remain planned until code and tests land.
