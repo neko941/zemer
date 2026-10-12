@@ -1,4 +1,4 @@
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Seek};
 
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
@@ -264,6 +264,13 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
             self.finished = end == header.total_samples();
         }
         Ok(true)
+    }
+}
+
+impl<R: Read + Seek> WavPackDecoder<R> {
+    pub(crate) fn load_trailing_metadata(&mut self) -> Result<(), AudioError> {
+        self.metadata = crate::tags::read_tag_metadata(&mut self.reader)?;
+        Ok(())
     }
 }
 

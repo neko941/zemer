@@ -16,7 +16,6 @@ mod tags;
 pub use decode::WavPackDecoder;
 pub use dsd_decode::WavPackDsdDecoder;
 pub use metadata::{WavPackMetadataSubBlockHeader, visit_metadata_sub_blocks};
-use tags::read_tag_metadata;
 pub use tags::{read_apev2_tag, rewrite_metadata};
 
 const HEADER_SIZE: usize = 32;
@@ -114,7 +113,7 @@ impl<R: io::Read + io::Seek> WavPackDecoder<R> {
     /// before audio decoding reaches the end of the stream.
     pub fn new_seekable(reader: R) -> Result<Self, AudioError> {
         let mut decoder = Self::new(reader)?;
-        decoder.metadata = read_tag_metadata(&mut decoder.reader)?;
+        decoder.load_trailing_metadata()?;
         Ok(decoder)
     }
 }
