@@ -51,24 +51,21 @@ verified. The regular
 
 The ``FlacEncoder<W>`` accepts integer PCM at 8, 16, 24, and 32 bits, streams
 4096-sample verbatim or fixed-predictor/Rice frames, writes Vorbis comments,
-and patches STREAMINFO sample totals and MD5 when ``finish()`` succeeds. It requires a seekable output
-and has no floating-point path. Optional channel masks are written as the
-RFC-defined hexadecimal Vorbis comment. The decoder reads STREAMINFO and
+and patches STREAMINFO sample totals and MD5 when ``finish()`` succeeds. It
+requires a seekable output and has no floating-point path. Optional channel
+masks are written as the RFC-defined hexadecimal Vorbis comment. The decoder reads STREAMINFO and
 Vorbis comments, retains each metadata block's
 raw type and payload through ``metadata_blocks()``, handles constant, verbatim,
 fixed-predictor, and linear-predictor subframes, Rice residuals, wasted bits,
 and stereo decorrelation. It verifies frame header and frame CRCs. It supports
-native FLAC and single-logical-stream Ogg-FLAC decoding; chained logical streams
-and Ogg-FLAC seeking are not implemented. Ogg-FLAC validates page framing and checks the
-terminal granule against the decoded sample count, including when STREAMINFO's
-total is unknown, and trims trailing samples from the final decoded block as
-required. The CLI can inspect either
-FLAC mapping and convert them to WAVE, native FLAC, or Ogg-FLAC. The
-``OggFlacEncoder<W>`` writes one packet per page, with bounded page sizes,
-terminal granules, and an EOS page. Chained logical streams and Ogg-FLAC
-seeking are not implemented.
-Support is partial: valid uncommon streams outside the decoder's current
-capabilities may be rejected. Vorbis comments are exposed as shared text
+native FLAC and one-logical-stream Ogg-FLAC decoding; Ogg seeking and chained
+logical streams are not included. Ogg-FLAC validates page framing and checks
+the terminal granule against the decoded sample count, including when
+STREAMINFO's total is unknown, and trims trailing samples from the final
+decoded block as required. The CLI can inspect either FLAC mapping and convert
+them to WAVE, native FLAC, or Ogg-FLAC. The ``OggFlacEncoder<W>`` writes one
+packet per page, with bounded page sizes, terminal granules, and an EOS page.
+The encoder supports integer PCM at 8, 16, 24, and 32 bits. Vorbis comments are exposed as shared text
 metadata. Every block is preserved as its original type and payload. Picture
 blocks can additionally be parsed with ``FlacMetadataBlock::picture()`` into
 borrowed fields and image/URI bytes; URI values are reported but never fetched.

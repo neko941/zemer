@@ -26,6 +26,8 @@ Crate ``zemer-ogg``
 
 * ``OggPacketReader<R>`` — validates Ogg pages and yields bounded packets from
   one logical stream.
+* ``OggPacketWriter<W>`` — writes bounded pages for one logical stream with
+  packet granules and BOS/EOS flags; call ``finish()`` to write the EOS page.
 * ``OggPacket`` — packet bytes plus page sequence, granule position, named BOS,
   EOS, and continuation flags, and packet/page boundary information.
 

@@ -158,8 +158,7 @@ discard layout or audio information.
 ## Current status
 
 See the [README support matrix](README.md#current-support) for implemented
-formats and exact read/write support. WAVE/RF64 and native FLAC decoding are
-implemented, with library-level native FLAC integer PCM encoding, WAVE-backed
-CUE track splitting, and CUE creation. Ogg-FLAC encoding/seeking, chained logical
-streams, other codecs, track types, and archive/disc workflows remain planned until code and
-tests land.
+formats and exact read/write support. WAVE/RF64, native FLAC, single-stream
+Ogg-FLAC, WAVE-backed CUE splitting, and CUE creation are implemented. Ogg-FLAC
+seeking and chaining, other codecs, track types, and archive/disc workflows
+remain planned until code and tests land.

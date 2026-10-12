@@ -21,7 +21,7 @@ The workspace separates format-independent audio types from each format implemen
 | RF64/WAVE | Supported | Read and write; RIFF INFO metadata read/write. Supports 64-bit file and data sizes; select explicitly for output. |
 | CUE sheets for WAVE/AUDIO tracks | Supported | Read and write; track title and performer fields. Split referenced WAV audio into track WAVs and create CUE sheets for WAV tracks. |
 | Native FLAC | Supported | Streaming integer PCM encode (8/16/24/32-bit, verbatim or fixed-predictor Rice-coded frames) and decode with frame CRC and STREAMINFO MD5 verification; sample seeking for seekable readers (SEEKTABLE accelerated, forward-scan fallback); Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE/FLAC, and comment editing are available. |
-| Ogg-FLAC | Partial | Streaming decode and encode through the reusable `zemer-ogg` page/packet reader/writer; validates terminal granules, trims final-frame samples, and supports CLI inspection and conversion to WAVE/Ogg-FLAC. Single logical stream only; seeking and broad independent corpus validation remain open. |
+| Ogg-FLAC | Supported | Streaming decode and encode through the reusable `zemer-ogg` page/packet reader/writer; validates terminal granules, trims final-frame samples, and supports CLI inspection and conversion to WAVE/Ogg-FLAC. One logical stream per file; Ogg seeking and chained logical streams are not included. |
 | WavPack | Supported | Streaming decode covers lossless PCM, IEEE float32, hybrid `.wvc` restoration, and native DSD profiles. Lossless integer PCM encoding supports 1–32 channels at 8/16/24/32 bits; float32 is bit-exact but stored uncompressed in WVX; raw native DSD encoding supports 1–32 channels. Custom rates, APEv2 text tags, CLI inspect, PCM conversion, and metadata editing are supported. Encoding is lossless only; hybrid `.wvc` writing and the full official stress corpus are not covered. |
 
 ## Roadmap
@@ -37,7 +37,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
 - [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming integer PCM encoder, decoder, seek API, and metadata rewriter with raw metadata-block access and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
-- [`zemer-ogg`](crates/ogg/): bounded Ogg page and packet reader with page CRC, sequence, and continuation validation.
+- [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer with page CRC, sequence, and continuation validation.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE reader and writer.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/native DSD decoding, lossless integer PCM, bit-exact float32, and raw native DSD encoding, APEv2 text metadata reading and rewriting, and checksum validation.

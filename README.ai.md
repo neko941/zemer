@@ -9,7 +9,7 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
 - [`zemer-flac`](crates/flac/) (Rust crate `flac`): native and Ogg-FLAC integer-PCM encoders, native/Ogg-FLAC decoders, native seekable decoding, Vorbis-comment rewriting, and preserved typed metadata blocks. The CLI can encode both mappings. Ogg-FLAC chained-stream decoding and seeking remain open.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
-- [`zemer-ogg`](crates/ogg/): bounded Ogg page and packet reader reused by Ogg-FLAC.
+- [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer reused by Ogg-FLAC.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/float32, hybrid `.wvc`, and native DSD decoding; lossless integer PCM encoding for 1–32 channels at 8/16/24/32 bits; bit-exact float32 encoding through uncompressed WVX; raw native DSD encoding for 1–32 channels; APEv2 UTF-8 text tags preserve non-text items. Hybrid `.wvc` encoding and broader profile conformance remain open.
