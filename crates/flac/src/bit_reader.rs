@@ -101,7 +101,7 @@ impl<R: Read> BitReader<R> {
                     self.frame_bytes = self.frame_bytes.saturating_add(1);
                 }
             }
-            let unread = self.byte >> (8 - self.remaining);
+            let unread = self.byte & (u8::MAX >> (8 - self.remaining));
             if unread == 0 {
                 zeroes += u64::from(self.remaining);
                 self.remaining = 0;
@@ -110,12 +110,16 @@ impl<R: Read> BitReader<R> {
                 zeroes += u64::from(in_byte);
                 self.remaining -= in_byte + 1;
                 if zeroes > maximum {
-                    return Err(AudioError::InvalidData("FLAC Rice code exceeds sample bounds"));
+                    return Err(AudioError::InvalidData(
+                        "FLAC Rice code exceeds sample bounds",
+                    ));
                 }
                 return Ok(zeroes);
             }
             if zeroes > maximum {
-                return Err(AudioError::InvalidData("FLAC Rice code exceeds sample bounds"));
+                return Err(AudioError::InvalidData(
+                    "FLAC Rice code exceeds sample bounds",
+                ));
             }
         }
     }
@@ -167,7 +171,9 @@ impl<R: Read> BitReader<R> {
             }
             if self.check_frame {
                 if self.frame_bytes >= self.frame_limit {
-                    return Err(AudioError::InvalidData("FLAC frame exceeds the configured size limit"));
+                    return Err(AudioError::InvalidData(
+                        "FLAC frame exceeds the configured size limit",
+                    ));
                 }
                 self.crc16 = crc16_update(self.crc16, self.byte);
                 self.frame_bytes = self.frame_bytes.saturating_add(1);
@@ -213,5 +219,12 @@ mod tests {
         });
         assert_eq!(crc8, 0xf4);
         assert_eq!(crc16, 0xfee8);
+    }
+
+    #[test]
+    fn unary_reads_only_bits_not_yet_consumed_from_the_current_byte() {
+        let mut reader = BitReader::new(&[0b1110_0010][..], 8);
+        assert_eq!(reader.read_bits(3).unwrap(), 0b111);
+        assert_eq!(reader.read_unary(4).unwrap(), 3);
     }
 }

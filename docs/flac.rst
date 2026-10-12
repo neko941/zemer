@@ -22,7 +22,10 @@ The decoder reads STREAMINFO and Vorbis comments, handles constant, verbatim,
 fixed-predictor, and linear-predictor subframes, Rice residuals, wasted bits,
 and stereo decorrelation. It verifies frame header and frame CRCs. It currently
 supports native FLAC streams only; Ogg-FLAC, encoding, seeking, and CLI input
-are not implemented.
+are not implemented. It rejects streams that change sample rate, channel count,
+or bit depth between frames because the shared decoder interface has one fixed
+``AudioSpec`` per stream. It exposes the STREAMINFO MD5 value but does not yet
+verify the decoded audio against it.
 
 When STREAMINFO does not specify a maximum frame size, a frame is limited to
 16,777,215 bytes to bound decoder memory. A valid file exceeding that limit

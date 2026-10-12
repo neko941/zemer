@@ -22,14 +22,13 @@ impl<R: Read> FlacDecoder<R> {
     pub fn new(mut reader: R) -> Result<Self, AudioError> {
         let (info, metadata) = read_metadata(&mut reader)?;
         let format = output_format(info.bits_per_sample());
-        let spec = AudioSpec::new(
-            info.sample_rate(),
-            u16::from(info.channels()),
-            format,
-        )?;
+        let spec = AudioSpec::new(info.sample_rate(), u16::from(info.channels()), format)?;
         Ok(Self {
             // shortcut: unknown-size frames are capped at 16 MiB, upgrade when supporting unusually large valid frames.
-            reader: BitReader::new(reader, info.max_frame_size().unwrap_or(0x00ff_ffff) as usize),
+            reader: BitReader::new(
+                reader,
+                info.max_frame_size().unwrap_or(0x00ff_ffff) as usize,
+            ),
             info,
             spec,
             metadata,
@@ -60,10 +59,12 @@ impl<R: Read> FlacDecoder<R> {
             self.ended = true;
             return Ok(false);
         };
-        self.decoded_frames = self
-            .decoded_frames
-            .checked_add(frames as u64)
-            .ok_or(AudioError::InvalidData("FLAC decoded sample count overflow"))?;
+        self.decoded_frames =
+            self.decoded_frames
+                .checked_add(frames as u64)
+                .ok_or(AudioError::InvalidData(
+                    "FLAC decoded sample count overflow",
+                ))?;
         if self
             .info
             .total_samples()
@@ -75,18 +76,21 @@ impl<R: Read> FlacDecoder<R> {
         }
         let channels = usize::from(self.info.channels());
         if samples.len() != frames * channels {
-            return Err(AudioError::InvalidData("FLAC decoded frame has invalid sample count"));
+            return Err(AudioError::InvalidData(
+                "FLAC decoded frame has invalid sample count",
+            ));
         }
         let shift = sample_container_bits(self.spec.sample_format()) - self.info.bits_per_sample();
         for sample in samples {
             let sample = sample
                 .checked_mul(1_i64 << shift)
                 .ok_or(AudioError::InvalidData("FLAC sample alignment overflow"))?;
-            self.pending.push_back(if self.spec.sample_format() == SampleFormat::PcmU8 {
-                sample + 128
-            } else {
-                sample
-            });
+            self.pending
+                .push_back(if self.spec.sample_format() == SampleFormat::PcmU8 {
+                    sample + 128
+                } else {
+                    sample
+                });
         }
         Ok(true)
     }
@@ -134,7 +138,9 @@ impl<R: Read> FlacDecoder<R> {
                     .collect::<Result<_, _>>()?,
             ),
             SampleFormat::Float32 | SampleFormat::Float64 => {
-                return Err(AudioError::InvalidData("FLAC selected a floating-point output"));
+                return Err(AudioError::InvalidData(
+                    "FLAC selected a floating-point output",
+                ));
             }
         };
         Ok(PcmBuffer::new(self.spec, samples)?)

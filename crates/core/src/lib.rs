@@ -1,7 +1,7 @@
 use std::{error::Error, fmt, io};
 
-pub use zemer_pcm::{AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, convert_sample_format};
 pub use zemer_metadata::Metadata;
+pub use zemer_pcm::{AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, convert_sample_format};
 
 pub trait AudioDecoder {
     fn spec(&self) -> AudioSpec;
