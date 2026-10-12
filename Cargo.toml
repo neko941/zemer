@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core", "crates/pcm", "crates/wav", "crates/cue", "crates/zemer"]
+members = ["crates/core", "crates/metadata", "crates/pcm", "crates/wav", "crates/cue", "crates/flac", "crates/zemer"]
 resolver = "2"
 
 [package]
@@ -23,12 +23,14 @@ cue.workspace = true
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.85"
-version = "0.3.0"
+version = "0.4.0"
 
 [workspace.dependencies]
-zemer-core = { path = "crates/core", version = "0.3.0" }
-zemer-pcm = { path = "crates/pcm", version = "0.3.0" }
-wav = { package = "zemer-wav", path = "crates/wav", version = "0.3.0" }
-cue = { package = "zemer-cue", path = "crates/cue", version = "0.3.0" }
+zemer-core = { path = "crates/core", version = "0.4.0" }
+zemer-metadata = { path = "crates/metadata", version = "0.4.0" }
+zemer-pcm = { path = "crates/pcm", version = "0.4.0" }
+wav = { package = "zemer-wav", path = "crates/wav", version = "0.4.0" }
+cue = { package = "zemer-cue", path = "crates/cue", version = "0.4.0" }
+flac = { package = "zemer-flac", path = "crates/flac", version = "0.4.0" }
 cue-rw = "0.3.0"
 encoding_rs = "=0.8.35"

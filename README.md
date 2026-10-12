@@ -30,7 +30,8 @@ The WAV reader handles the first `data` chunk and skips unknown RIFF/RF64 chunks
 ## Workspace crates
 
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
-- [`zemer-core`](crates/core/): audio metadata and shared decoder/encoder interfaces; re-exports PCM types for convenience.
+- [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
+- [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata and PCM types for convenience.
 - [`wav`](crates/wav/): RIFF/WAVE library crate (`zemer-wav` Cargo package).
 - [`cue`](crates/cue/): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, and CUE/WAV workflows.

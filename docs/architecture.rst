@@ -6,8 +6,9 @@ writers:
 
 * ``zemer-pcm`` defines sample formats, audio specifications, PCM buffers, and
   sample-format conversion.
-* ``zemer-core`` defines metadata and streaming decoder/encoder traits, and
-  re-exports the PCM types for convenience.
+* ``zemer-metadata`` defines format-independent tags shared by format crates.
+* ``zemer-core`` defines streaming decoder/encoder traits and re-exports the
+  metadata and PCM types for convenience.
 * ``wav`` implements RIFF/WAVE on top of those shared interfaces.
 * ``cue`` parses and writes CUE sheet models without depending on a codec or
   audio container implementation.
@@ -21,3 +22,7 @@ separate operations. Whole-file conversion composes a source decoder, shared
 PCM blocks, and a target encoder. The current ``transcode`` helper copies
 blocks only when input and output sample specifications match; it does not
 change audio values.
+
+Each format crate parses metadata from its own container and maps it to the
+shared ``Metadata`` type. Format-specific structures such as FLAC STREAMINFO
+remain in their format crate.

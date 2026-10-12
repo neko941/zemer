@@ -1,32 +1,7 @@
-use std::{collections::BTreeMap, error::Error, fmt, io};
+use std::{error::Error, fmt, io};
 
 pub use zemer_pcm::{AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, convert_sample_format};
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct Metadata {
-    tags: BTreeMap<String, Vec<String>>,
-}
-
-impl Metadata {
-    pub fn insert(&mut self, key: impl AsRef<str>, value: impl Into<String>) {
-        self.tags
-            .entry(key.as_ref().trim().to_ascii_uppercase())
-            .or_default()
-            .push(value.into());
-    }
-
-    pub fn values(&self, key: &str) -> &[String] {
-        self.tags
-            .get(&key.trim().to_ascii_uppercase())
-            .map_or(&[], Vec::as_slice)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &[String])> {
-        self.tags
-            .iter()
-            .map(|(key, values)| (key.as_str(), values.as_slice()))
-    }
-}
+pub use zemer_metadata::Metadata;
 
 pub trait AudioDecoder {
     fn spec(&self) -> AudioSpec;

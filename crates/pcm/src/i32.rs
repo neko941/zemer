@@ -1,4 +1,4 @@
-use crate::{PcmError, sample_conversion::quantize};
+use crate::{PcmError, conversion::quantize};
 
 pub(super) fn normalize(values: &[i32], output: &mut Vec<f64>) {
     output.extend(

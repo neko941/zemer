@@ -7,14 +7,14 @@ mod i16;
 mod i24;
 mod i32;
 mod sample;
-mod sample_conversion;
+mod conversion;
 mod samples;
 mod spec;
 mod u8;
 
 pub use crate::buffer::PcmBuffer;
 pub use crate::sample::SampleFormat;
-pub use crate::sample_conversion::convert_sample_format;
+pub use crate::conversion::convert_sample_format;
 pub use crate::samples::Samples;
 pub use crate::spec::AudioSpec;
 

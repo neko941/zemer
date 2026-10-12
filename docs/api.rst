@@ -13,14 +13,18 @@ Format-independent PCM types and sample-format conversion:
 * ``convert_sample_format`` — conversion between integer PCM and IEEE float
   sample formats without resampling or channel remixing.
 
+Crate ``zemer-metadata``
+------------------------
+
+* ``Metadata`` — format-independent, case-insensitive text tags with repeated
+  values, usable without the decoder and encoder interfaces.
+
 Crate ``zemer-core``
 --------------------
 
-Format-independent metadata and streaming interfaces. It re-exports the PCM
-types for convenience and compatibility:
+Streaming decoder and encoder interfaces. It re-exports metadata and PCM types
+for convenience and compatibility:
 
-* ``Metadata`` — case-insensitive text tag names with support for repeated
-  values.
 * ``AudioDecoder`` and ``AudioEncoder`` — block-based read and write traits.
 * ``transcode`` — bounded block copying between matching PCM specifications,
   preserving metadata when the encoder supports it and returning an error if
