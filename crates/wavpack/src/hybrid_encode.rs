@@ -596,5 +596,4 @@ mod tests {
         assert_eq!(bitrate_accumulator(128, stereo).unwrap(), 175);
         assert_eq!(bitrate_accumulator(24, mono).unwrap(), 200);
     }
-
 }

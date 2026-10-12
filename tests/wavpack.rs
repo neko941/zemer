@@ -346,13 +346,9 @@ fn wavpack_hybrid_u8_emits_correction_data_at_target_bitrate() {
         Samples::U8((0..257).map(|frame| (frame * 41) as u8).collect()),
     )
     .unwrap();
-    let mut encoder = WavPackHybridEncoder::new(
-        Cursor::new(Vec::new()),
-        Cursor::new(Vec::new()),
-        spec,
-        64,
-    )
-    .unwrap();
+    let mut encoder =
+        WavPackHybridEncoder::new(Cursor::new(Vec::new()), Cursor::new(Vec::new()), spec, 64)
+            .unwrap();
     encoder.write_block(&audio).unwrap();
     encoder.finish().unwrap();
     let (_, correction) = encoder.into_inner();
@@ -373,9 +369,11 @@ fn wavpack_hybrid_allows_checksum_only_correction_blocks_when_no_loss_occurs() {
     encoder.write_block(&audio).unwrap();
     encoder.finish().unwrap();
     let (wv, wvc) = encoder.into_inner();
-    let mut decoder =
-        WavPackDecoder::new_with_correction(Cursor::new(wv.into_inner()), Cursor::new(wvc.into_inner()))
-            .unwrap();
+    let mut decoder = WavPackDecoder::new_with_correction(
+        Cursor::new(wv.into_inner()),
+        Cursor::new(wvc.into_inner()),
+    )
+    .unwrap();
     assert_eq!(decoder.read_frames(256).unwrap().unwrap(), audio);
     assert!(decoder.read_frames(1).unwrap().is_none());
 }

@@ -132,8 +132,7 @@ impl HybridState {
                 sample as u32
             };
             let channel = index % channels;
-            slow_level[channel] -=
-                (slow_level[channel] + SLOW_LEVEL_OFFSET) >> SLOW_LEVEL_SHIFT;
+            slow_level[channel] -= (slow_level[channel] + SLOW_LEVEL_OFFSET) >> SLOW_LEVEL_SHIFT;
             slow_level[channel] += i64::from(log2(magnitude));
         }
         let mut slow_level_profile = [0; 2];
