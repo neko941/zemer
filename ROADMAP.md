@@ -38,7 +38,8 @@ identified from file contents.
   them.
 - [x] Read and write RF64 with 64-bit RIFF/data sizes and `ds64` table handling
   for oversized chunks.
-- Add `wavl` and `slnt` segmented audio support.
+- [x] Decode ordered top-level `data` and `LIST/wavl` `data`/`slnt` segments
+  in RIFF and RF64, including held-sample silence and bounded streaming reads.
 - Expand metadata beyond RIFF INFO where specifications and tests justify it,
   including broadcast, cue, sampler, and embedded metadata chunks.
 - Improve malformed-file, boundary-size, unusual-header, and G.711 vector

@@ -22,6 +22,12 @@ unknown, trimming trailing samples from the final decoded block when required.
 Independent PCM-oracle validation is still limited to a generated sample; do
 not claim broad Ogg-FLAC conformance yet.
 
+The WAVE reader handles top-level `data` and ordered `LIST/wavl` `data`/`slnt`
+segments in RIFF and RF64. Silence segments hold the previous interleaved frame;
+initial silence uses neutral sample codes. The reader limits files to one
+million retained audio segments. The writer still emits one ordinary contiguous
+`data` chunk.
+
 ## Other repository paths
 
 - `crates/pcm/src/`: shared PCM types and per-representation modules (`u8.rs`, `i16.rs`, `i24.rs`, `i32.rs`, `f32.rs`, `f64.rs`).
