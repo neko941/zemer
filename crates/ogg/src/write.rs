@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use crate::{NO_GRANULE_POSITION, PAGE_FLAG_BOS, PAGE_FLAG_CONTINUED, PAGE_FLAG_EOS};
+use crate::{NO_GRANULE_POSITION, PAGE_FLAG_BOS, PAGE_FLAG_CONTINUED, PAGE_FLAG_EOS, ogg_crc};
 
 /// Writes one-packet-per-page Ogg logical streams.
 pub struct OggPacketWriter<W> {
@@ -124,21 +124,6 @@ impl<W: Write> OggPacketWriter<W> {
         }
         Ok(())
     }
-}
-
-fn ogg_crc(bytes: &[u8]) -> u32 {
-    let mut crc = 0_u32;
-    for &byte in bytes {
-        crc ^= u32::from(byte) << 24;
-        for _ in 0..8 {
-            crc = if crc & 0x8000_0000 != 0 {
-                (crc << 1) ^ 0x04c1_1db7
-            } else {
-                crc << 1
-            };
-        }
-    }
-    crc
 }
 
 #[cfg(test)]
