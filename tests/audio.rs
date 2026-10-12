@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
-use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples, transcode};
 use wav::{WavDecoder, WavWriter, write_wav_with_metadata};
+use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples, transcode};
 
 #[test]
 fn metadata_survives_wav_write_and_streaming_transcode() {
