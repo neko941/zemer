@@ -18,6 +18,8 @@ Crate ``zemer-metadata``
 
 * ``Metadata`` — format-independent, case-insensitive text tags with repeated
   values; ``remove()`` removes all values for a key.
+* ``apev2::ApeTag`` — bounded APEv2 footer parsing/writing, UTF-8 text mapping,
+  and text replacement that retains non-text items.
 
 Crate ``zemer-ogg``
 -------------------
@@ -122,6 +124,10 @@ Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
   cover 3–8 channel PCM16 groups, 3-channel hybrid PCM16, and 5.1 PCM24/32. Pair
   correction streams with ``WavPackDecoder::new_with_correction``. WavPack v5
   block, decoded-sample, and integer/float WVX checksums are verified.
+* ``WavPackDecoder::new_seekable`` loads trailing APEv2 text metadata before
+  decoding; the streaming constructor does not seek to the file end.
+* ``read_apev2_tag`` and ``rewrite_metadata`` read or rewrite trailing APEv2
+  tags while preserving non-text items, compressed audio bytes, and ID3v1 data.
 * ``WavPackDsdDecoder`` — implements ``DsdDecoder`` for native DSD direct, fast,
   and adaptive profiles, verifying each decoded block checksum. Oracle tests
   cover all three profiles in stereo and adaptive DSD in 5.1.
@@ -132,7 +138,8 @@ Hybrid-lossless restoration has conformance coverage for stereo PCM16/24/32
 and float32, including shaped and cross-channel PCM16 profiles.
 The float32 conformance fixture checks exact IEEE-754 bit patterns including
 signed zero, subnormals, infinities, and NaNs. The crate uses only Rust's
-standard library and ``zemer-core``; no external codec implementation is linked.
+standard library, ``zemer-core``, and ``zemer-metadata``; no external codec
+implementation is linked.
 
 Generate complete local Rust API documentation from the repository root:
 

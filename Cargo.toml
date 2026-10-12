@@ -30,6 +30,7 @@ zemer-core.workspace = true
 wav.workspace = true
 cue.workspace = true
 flac.workspace = true
+wavpack.workspace = true
 
 [workspace.package]
 edition = "2024"

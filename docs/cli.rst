@@ -14,12 +14,16 @@ installed):
 This installs ``zemer`` in Cargo's binary directory, usually ``~/.cargo/bin``.
 Alternatively, run it from a source checkout with ``cargo run -p zemer --``.
 
-Inspect a WAVE, native FLAC, or Ogg-FLAC file:
+Inspect a WAVE, native FLAC, Ogg-FLAC, or WavPack file:
 
 .. code-block:: console
 
    cargo run -p zemer -- inspect input.wav
    cargo run -p zemer -- inspect input.flac
+   cargo run -p zemer -- inspect input.wv
+
+WavPack native DSD is exposed through the library API and is not decoded by the
+PCM CLI workflows.
 
 For scripts and agents, request JSON:
 
@@ -27,6 +31,7 @@ For scripts and agents, request JSON:
 
    cargo run -p zemer -- inspect --json input.wav
    cargo run -p zemer -- inspect --json input.flac
+   cargo run -p zemer -- inspect --json input.wv
 
 The JSON report contains the detected format, a WAVE container (``riff`` or
 ``rf64``) or ``null`` for FLAC, sample rate, channel count, optional speaker
@@ -35,13 +40,14 @@ frame-count/sample-rate fraction, and supported metadata. It streams audio in
 bounded blocks to validate and count frames. ``speaker_mask`` is a numeric WAVE
 mask or JSON ``null`` when no speaker mask was supplied.
 
-Convert WAVE, native FLAC, or Ogg-FLAC input to a supported WAVE sample format. Output
+Convert WAVE, native FLAC, Ogg-FLAC, or WavPack input to a supported WAVE sample format. Output
 defaults to classic RIFF; choose RF64 explicitly when needed:
 
 .. code-block:: console
 
    cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
    cargo run -p zemer -- convert --format pcm_i16 input.flac output.wav
+   cargo run -p zemer -- convert --format pcm_i16 input.wv output.wav
    cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
 
 The same command can explicitly select G.711 output:
@@ -63,8 +69,8 @@ and the process exits with status 2.
 Metadata editing
 ----------------
 
-Update RIFF INFO tags in WAVE or Vorbis comments in native FLAC while
-preserving tags that are not named. Repeated ``--set`` options for one key
+Update RIFF INFO tags in WAVE, Vorbis comments in native FLAC, or APEv2 text
+items in WavPack while preserving tags that are not named. Repeated ``--set`` options for one key
 replace its existing values with the provided repeated values. ``--remove``
 removes all values for a key. The output file must not already exist; encoded
 audio bytes are copied without decoding or re-encoding.
@@ -73,11 +79,14 @@ audio bytes are copied without decoding or re-encoding.
 
    zemer metadata edit --set "TITLE=New title" --set "ARTIST=Artist" --remove COMMENT input.flac updated.flac --json
    zemer metadata edit --set "TITLE=New title" input.wav updated.wav --json
+   zemer metadata edit --set "TITLE=New title" input.wv updated.wv --json
 
 FLAC keys may use printable ASCII other than ``=``; WAVE supports TITLE,
-ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO. Values are UTF-8.
-WAVE edits preserve unrecognized chunks and INFO subchunks. If editing fails,
-the partial output file created by the command is removed.
+ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO; APEv2 keys use
+printable ASCII and text values use UTF-8. WAVE edits preserve unrecognized
+chunks and INFO subchunks. WavPack edits retain binary, external, and reserved
+APEv2 items and any trailing ID3v1 bytes. If editing fails, the partial output
+file created by the command is removed.
 
 CUE/WAV workflows
 -----------------

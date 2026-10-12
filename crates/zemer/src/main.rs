@@ -10,6 +10,7 @@ use std::{
 
 use flac::{FlacDecoder, OggFlacDecoder};
 use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
+use wavpack::WavPackDecoder;
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioError, AudioSpec, Metadata, SampleFormat,
     convert_sample_format,
@@ -242,10 +243,11 @@ fn edit_audio_metadata(
     let AudioInput {
         decoder, format, ..
     } = open_decoder(&input)?;
-    if format != "flac" && format != "wav" {
+    if format != "flac" && format != "wav" && format != "wavpack" {
         return Err(CliError {
             kind: "unsupported",
-            message: "metadata editing supports WAVE and native FLAC files only".to_owned(),
+            message: "metadata editing supports WAVE, native FLAC, and WavPack files only"
+                .to_owned(),
         });
     }
     let mut metadata = decoder.metadata().clone();
@@ -276,6 +278,9 @@ fn edit_audio_metadata(
         match format {
             "flac" => flac::rewrite_metadata(input_file, &mut output_file, &metadata),
             "wav" => wav::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
+            "wavpack" => {
+                wavpack::rewrite_metadata(input_file, &mut output_file, &metadata)
+            }
             _ => unreachable!("format was checked above"),
         }
         .map_err(|error| cli_rewrite_error(error, &input, &output))?;
@@ -487,6 +492,10 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
         has_signature(&mut file, b"OggS").map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| cli_audio_error(error.into(), path))?;
+    let is_wavpack = has_signature(&mut file, b"wvpk")
+        .map_err(|error| cli_audio_error(error.into(), path))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| cli_audio_error(error.into(), path))?;
     if is_flac {
         let decoder = FlacDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
         Ok(AudioInput {
@@ -499,6 +508,14 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
         Ok(AudioInput {
             decoder: Box::new(decoder),
             format: "ogg-flac",
+            container: None,
+        })
+    } else if is_wavpack {
+        let decoder = WavPackDecoder::new_seekable(file)
+            .map_err(|error| cli_audio_error(error, path))?;
+        Ok(AudioInput {
+            decoder: Box::new(decoder),
+            format: "wavpack",
             container: None,
         })
     } else {
@@ -566,7 +583,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw> [--container <riff|rf64>] [--json] <input.wav|input.flac|input.ogg|input.oga> <output.wav> | zemer metadata edit [--json] <input.wav|input.flac> <new-output.wav|new-output.flac> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw> [--container <riff|rf64>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv> <output.wav> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 

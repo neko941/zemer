@@ -6,6 +6,7 @@ use std::{
 };
 
 use wav::{write_wav, write_wav_with_metadata};
+use wavpack::WavPackDecoder;
 use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
@@ -154,6 +155,79 @@ fn inspect_json_reports_pcm_properties_and_exact_duration() {
         r#"{"format":"wav","container":"riff","sample_rate":8000,"channels":1,"speaker_mask":null,"sample_format":"pcm_u8","frames":1,"duration_frames":{"numerator":1,"denominator":8000},"metadata":{}}"#
     );
     assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn wavpack_inspect_convert_and_metadata_edit_use_trailing_apev2() {
+    let input_path = temporary_path();
+    let wav_path = temporary_path();
+    let tagged_path = temporary_path();
+    fs::write(
+        &input_path,
+        include_bytes!("../crates/wavpack/tests/fixtures/tagged-custom-rate-stereo.wv"),
+    )
+    .unwrap();
+
+    let inspected = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&input_path)
+        .output()
+        .unwrap();
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains("\"format\":\"wavpack\""));
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains("\"TITLE\":["));
+
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "pcm_i16", "--json"])
+        .arg(&input_path)
+        .arg(&wav_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let mut source = WavPackDecoder::new_seekable(File::open(&input_path).unwrap()).unwrap();
+    let source_audio = source.read_frames(8192).unwrap();
+    let mut converted = wav::WavDecoder::new(File::open(&wav_path).unwrap()).unwrap();
+    assert_eq!(source_audio, converted.read_frames(8192).unwrap());
+
+    let edited = Command::new(cli_path())
+        .args([
+            "metadata",
+            "edit",
+            "--set",
+            "ARTIST=Zemer",
+            "--remove",
+            "TITLE",
+            "--json",
+        ])
+        .arg(&input_path)
+        .arg(&tagged_path)
+        .output()
+        .unwrap();
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    let mut edited_decoder = WavPackDecoder::new_seekable(File::open(&tagged_path).unwrap()).unwrap();
+    assert!(edited_decoder.metadata().values("TITLE").is_empty());
+    assert_eq!(edited_decoder.metadata().values("ARTIST"), ["Zemer"]);
+    let mut source_again = WavPackDecoder::new_seekable(File::open(&input_path).unwrap()).unwrap();
+    assert_eq!(
+        source_again.read_frames(8192).unwrap(),
+        edited_decoder.read_frames(8192).unwrap()
+    );
+
+    for path in [input_path, wav_path, tagged_path] {
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[test]

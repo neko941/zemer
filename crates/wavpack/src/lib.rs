@@ -12,9 +12,12 @@ mod entropy;
 mod float;
 mod hybrid;
 pub mod metadata;
+mod tags;
 pub use decode::WavPackDecoder;
 pub use dsd_decode::WavPackDsdDecoder;
 pub use metadata::{WavPackMetadataSubBlockHeader, visit_metadata_sub_blocks};
+pub use tags::{read_apev2_tag, rewrite_metadata};
+use tags::read_tag_metadata;
 
 const HEADER_SIZE: usize = 32;
 
@@ -101,6 +104,18 @@ impl WavPackBlockHeader {
     /// Returns the bytes after this fixed header that belong to the block.
     pub fn payload_size(&self) -> u64 {
         self.block_size - HEADER_SIZE as u64
+    }
+}
+
+impl<R: io::Read + io::Seek> WavPackDecoder<R> {
+    /// Opens a seekable WavPack file and loads its trailing APEv2 text metadata.
+    ///
+    /// Streaming inputs should use [`WavPackDecoder::new`]; they cannot inspect an end tag
+    /// before audio decoding reaches the end of the stream.
+    pub fn new_seekable(reader: R) -> Result<Self, AudioError> {
+        let mut decoder = Self::new(reader)?;
+        decoder.metadata = read_tag_metadata(&mut decoder.reader)?;
+        Ok(decoder)
     }
 }
 

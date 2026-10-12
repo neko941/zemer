@@ -12,7 +12,7 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page and packet reader reused by Ogg-FLAC.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
-- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded block inspection; PCM/float32 including false stereo and custom rates; tested multichannel lossless/hybrid profiles; PCM16/24/32/float32 `.wvc` restoration; and native DSD direct/fast/adaptive decoding (stereo, plus adaptive 5.1), with block, decoded-sample, WVX, and DSD checksum validation.
+- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/float32 and native DSD decoding, APEv2 UTF-8 text tag read/write that preserves non-text items, and block/sample/WVX/DSD checksum validation. PCM/DSD encoding remains unfinished.
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, WAVE/FLAC metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
@@ -36,7 +36,7 @@ million retained audio segments. The writer still emits one ordinary contiguous
 - `docs-internal/REFERENCES.md`: local-only research links and regression notes; ignored by Git.
 - `docs`: user-facing Sphinx documentation built on Read the Docs, with `conf.py` at the source root.
 
-`README.md` lists only implemented and tested formats and workflows; planned formats belong in `ROADMAP.md`. The CLI can edit WAVE RIFF INFO and native FLAC Vorbis comments with `zemer metadata edit`; both rewrite metadata without decoding or re-encoding audio. `FlacDecoder::metadata_blocks()` retains raw payloads, and FLAC metadata-block accessors expose typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION data.
+`README.md` lists only implemented and tested formats and workflows; planned formats belong in `ROADMAP.md`. The CLI can edit WAVE RIFF INFO, native FLAC Vorbis comments, and WavPack APEv2 text tags with `zemer metadata edit`; these rewrite metadata without decoding or re-encoding audio, and WavPack non-text items are retained. `FlacDecoder::metadata_blocks()` retains raw payloads, and FLAC metadata-block accessors expose typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION data.
 
 Keep each new format in a separate crate depending on `zemer-core`. Keep format parsing and metadata mappings inside that format crate, with the common tag model in `zemer-metadata`. Shared sample types and sample-format conversion belong in `zemer-pcm`; decoder/encoder interfaces belong in `zemer-core`. Whole-format conversion should decode to `PcmBuffer` and encode through the target format crate; `transcode` finalizes the encoder after successful copying. Avoid global registries until callers need them.
 

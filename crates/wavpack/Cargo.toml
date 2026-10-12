@@ -11,3 +11,4 @@ name = "wavpack"
 
 [dependencies]
 zemer-core.workspace = true
+zemer-metadata.workspace = true

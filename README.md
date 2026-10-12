@@ -22,7 +22,7 @@ The workspace separates format-independent audio types from each format implemen
 | CUE sheets for WAVE/AUDIO tracks | Supported | Read and write; track title and performer fields. Split referenced WAV audio into track WAVs and create CUE sheets for WAV tracks. |
 | Native FLAC | Partial | Streaming integer PCM encode (8/16/24/32-bit, verbatim frames) and decode with frame CRC and STREAMINFO MD5 verification; sample seeking for seekable readers (SEEKTABLE accelerated, forward-scan fallback); Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE, and comment editing are available; encoding and seeking are library APIs. |
 | Ogg-FLAC | Partial | Streaming decode through the reusable `zemer-ogg` page/packet reader; validates the terminal granule against decoded sample count, including unknown STREAMINFO totals, and trims final-frame samples as indicated; CLI inspection and conversion to WAVE. Single logical stream only. |
-| WavPack | Partial | Streaming decode of mono/stereo lossless integer PCM at 8/16/24/32 bits, stereo lossless float32, custom rates and false stereo, PCM16 groups with 3–8 channels, and 5.1 PCM24/32; hybrid-lossy PCM16/float32; `.wvc` restoration for PCM16/24/32/float32 including 3-channel PCM16 and shaped/cross-channel stereo PCM16; native DSD direct/fast/adaptive stereo and adaptive 5.1. Block, decoded-sample, WVX, and DSD checksums are verified. |
+| WavPack | Partial | Streaming decode of mono/stereo lossless integer PCM at 8/16/24/32 bits, stereo lossless float32, custom rates and false stereo, PCM16 groups with 3–8 channels, and 5.1 PCM24/32; hybrid-lossy PCM16/float32; `.wvc` restoration for PCM16/24/32/float32 including 3-channel PCM16 and shaped/cross-channel stereo PCM16; native DSD direct/fast/adaptive stereo and adaptive 5.1. APEv2 UTF-8 text tags can be read/edited while retaining binary items. CLI inspect, WAVE conversion, and metadata editing are available. Block, decoded-sample, WVX, and DSD checksums are verified. Encoding and broader profile/corpus conformance remain incomplete. |
 
 ## Roadmap
 
@@ -40,8 +40,8 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page and packet reader with page CRC, sequence, and continuation validation.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE reader and writer.
-- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded block inspection; PCM profiles and native DSD direct, fast, and adaptive decoding through `WavPackDsdDecoder`.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, metadata editing, and CUE/WAV workflows.
+- [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM and native DSD decoding, APEv2 text metadata reading and rewriting, and checksum validation.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 ## Documentation

@@ -16,7 +16,8 @@ tested for PCM16/24/32 and float32, including noise shaping and cross-channel
 decorrelation. False stereo, a three-channel hybrid group, 5.1 PCM24/32, and
 custom sample rates are also covered. Native DSD
 direct/fast/adaptive stereo and adaptive 5.1 decode to packed, channel-interleaved
-DSD octets.
+DSD octets. WavPack APEv2 UTF-8 text tags can be inspected and edited while
+retaining non-text items.
 
 .. toctree::
    :maxdepth: 2
@@ -25,6 +26,7 @@ DSD octets.
    getting-started
    wav
    flac
+   wavpack
    ogg
    cue
    cli

@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+pub mod apev2;
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Metadata {
     tags: BTreeMap<String, Vec<String>>,
