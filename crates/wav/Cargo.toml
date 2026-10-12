@@ -1,0 +1,10 @@
+[package]
+name = "zemer-wav"
+description = "RIFF/WAVE reader and writer for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+zemer-core.workspace = true

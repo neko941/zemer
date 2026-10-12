@@ -1,0 +1,15 @@
+[package]
+name = "zemer-cli"
+description = "Command-line tools for inspecting audio with Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "zemer"
+path = "src/main.rs"
+
+[dependencies]
+zemer-core.workspace = true
+zemer-wav.workspace = true

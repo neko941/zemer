@@ -1,0 +1,29 @@
+[workspace]
+members = ["crates/zemer-core", "crates/wav", "crates/zemer-cli"]
+resolver = "2"
+
+[package]
+name = "zemer-tests"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "zemer_test_cli"
+path = "crates/zemer-cli/src/main.rs"
+
+[dependencies]
+zemer-core.workspace = true
+zemer-wav.workspace = true
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85"
+version = "0.1.0"
+
+[workspace.dependencies]
+zemer-core = { path = "crates/zemer-core", version = "0.1.0" }
+zemer-wav = { path = "crates/wav", version = "0.1.0" }
