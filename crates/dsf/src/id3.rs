@@ -457,7 +457,6 @@ mod tests {
 
     #[test]
     fn enforces_the_tag_size_limit_before_allocating() {
-        let size = (MAX_ID3_TAG_BYTES as u32 + 1).to_le_bytes();
         let mut header = b"ID3\x04\x00\x00".to_vec();
         header.extend_from_slice(&[
             ((MAX_ID3_TAG_BYTES + 1) >> 21) as u8,
@@ -465,7 +464,7 @@ mod tests {
             ((MAX_ID3_TAG_BYTES + 1) >> 7 & 0x7f) as u8,
             ((MAX_ID3_TAG_BYTES + 1) & 0x7f) as u8,
         ]);
-        let file_size = 10 + u64::from_le_bytes(size) as u64;
+        let file_size = 10 + (MAX_ID3_TAG_BYTES + 1) as u64;
         let mut reader = Cursor::new(header);
         assert!(read_metadata(&mut reader, 0, file_size).is_err());
     }
