@@ -141,7 +141,7 @@ impl<R: Read> OggPacketReader<R> {
             }
             self.sequence = Some(sequence);
         }
-        if (flags & PAGE_FLAG_CONTINUED != 0) != !self.partial.is_empty() {
+        if (flags & PAGE_FLAG_CONTINUED != 0) == self.partial.is_empty() {
             return Err(invalid_ogg("Ogg continued-packet flag mismatch"));
         }
 

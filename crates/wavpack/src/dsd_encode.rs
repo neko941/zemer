@@ -23,6 +23,7 @@ pub struct WavPackDsdEncoder<W> {
     frames: u64,
     encoded_frames: u64,
     blocks: Vec<BlockPatch>,
+    poisoned: bool,
     finished: bool,
 }
 
@@ -67,6 +68,7 @@ impl<W: Write + Seek> WavPackDsdEncoder<W> {
             frames: 0,
             encoded_frames: 0,
             blocks: Vec::new(),
+            poisoned: false,
             finished: false,
         })
     }
@@ -191,6 +193,11 @@ impl<W: Write + Seek> DsdEncoder for WavPackDsdEncoder<W> {
                 "WavPack encoder is already finished",
             ));
         }
+        if self.poisoned {
+            return Err(AudioError::InvalidData(
+                "WavPack DSD encoder is unusable after an earlier write failure",
+            ));
+        }
         if block.spec() != self.spec {
             return Err(AudioError::InvalidData(
                 "WavPack DSD specification changed while encoding",
@@ -205,38 +212,56 @@ impl<W: Write + Seek> DsdEncoder for WavPackDsdEncoder<W> {
             .ok_or(AudioError::InvalidData(
                 "WavPack DSD sample count exceeds 40 bits",
             ))?;
-        for &byte in block.bytes() {
-            self.samples.push(byte);
-            if self.samples.len() == BLOCK_FRAMES * usize::from(self.spec.channels()) {
-                self.flush_block()?;
+        let result = (|| {
+            for &byte in block.bytes() {
+                self.samples.push(byte);
+                if self.samples.len() == BLOCK_FRAMES * usize::from(self.spec.channels()) {
+                    self.flush_block()?;
+                }
             }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.poisoned = true;
         }
-        Ok(())
+        result
     }
 
     fn finish(&mut self) -> Result<(), AudioError> {
         if self.finished {
             return Ok(());
         }
+        if self.poisoned {
+            return Err(AudioError::InvalidData(
+                "WavPack DSD encoder is unusable after an earlier write failure",
+            ));
+        }
         if self.frames == 0 {
             return Err(AudioError::InvalidData(
                 "cannot encode an empty WavPack DSD stream",
             ));
         }
-        self.flush_block()?;
-        patch_total_samples(&mut self.writer, self.frames, &self.blocks)?;
-        self.writer.seek(SeekFrom::End(0))?;
-        if self.metadata.iter().next().is_some() {
-            let mut tag = ApeTag::new();
-            tag.replace_text_metadata(&self.metadata)
-                .map_err(|_| AudioError::InvalidData("invalid WavPack APEv2 metadata"))?;
-            self.writer.write_all(&tag.encode().map_err(|_| {
-                AudioError::InvalidData("WavPack APEv2 metadata exceeds the supported size")
-            })?)?;
+        let result = (|| {
+            self.flush_block()?;
+            patch_total_samples(&mut self.writer, self.frames, &self.blocks)?;
+            self.writer.seek(SeekFrom::End(0))?;
+            if self.metadata.iter().next().is_some() {
+                let mut tag = ApeTag::new();
+                tag.replace_text_metadata(&self.metadata)
+                    .map_err(|_| AudioError::InvalidData("invalid WavPack APEv2 metadata"))?;
+                self.writer.write_all(&tag.encode().map_err(|_| {
+                    AudioError::InvalidData("WavPack APEv2 metadata exceeds the supported size")
+                })?)?;
+            }
+            self.writer.flush()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+        } else {
+            self.finished = true;
         }
-        self.writer.flush()?;
-        self.finished = true;
-        Ok(())
+        result
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {

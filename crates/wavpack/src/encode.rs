@@ -28,6 +28,7 @@ pub struct WavPackEncoder<W> {
     frames: u64,
     encoded_frames: u64,
     blocks: Vec<BlockPatch>,
+    poisoned: bool,
     finished: bool,
 }
 
@@ -78,6 +79,7 @@ impl<W: Write + Seek> WavPackEncoder<W> {
             frames: 0,
             encoded_frames: 0,
             blocks: Vec::new(),
+            poisoned: false,
             finished: false,
         })
     }
@@ -380,6 +382,11 @@ impl<W: Write + Seek> AudioEncoder for WavPackEncoder<W> {
                 "WavPack encoder is already finished",
             ));
         }
+        if self.poisoned {
+            return Err(AudioError::InvalidData(
+                "WavPack encoder is unusable after an earlier write failure",
+            ));
+        }
         if block.spec() != self.spec {
             return Err(AudioError::InvalidData(
                 "WavPack input PCM specification changed",
@@ -395,47 +402,62 @@ impl<W: Write + Seek> AudioEncoder for WavPackEncoder<W> {
             .ok_or(AudioError::InvalidData(
                 "WavPack sample count exceeds 40 bits",
             ))?;
-        match block.samples() {
-            Samples::F32(values) => append_float_samples(self, values.iter().copied(), channels)?,
+        let result = match block.samples() {
+            Samples::F32(values) => append_float_samples(self, values.iter().copied(), channels),
             Samples::U8(values) => append_samples(
                 self,
                 values.iter().map(|&value| i32::from(value) - 128),
                 channels,
-            )?,
+            ),
             Samples::I16(values) => {
-                append_samples(self, values.iter().map(|&value| i32::from(value)), channels)?
+                append_samples(self, values.iter().map(|&value| i32::from(value)), channels)
             }
             Samples::I24(values) | Samples::I32(values) => {
-                append_samples(self, values.iter().copied(), channels)?
+                append_samples(self, values.iter().copied(), channels)
             }
             _ => return Err(AudioError::Unsupported("WavPack integer PCM required")),
+        };
+        if result.is_err() {
+            self.poisoned = true;
         }
-        Ok(())
+        result
     }
 
     fn finish(&mut self) -> Result<(), AudioError> {
         if self.finished {
             return Ok(());
         }
+        if self.poisoned {
+            return Err(AudioError::InvalidData(
+                "WavPack encoder is unusable after an earlier write failure",
+            ));
+        }
         if self.frames == 0 {
             return Err(AudioError::InvalidData(
                 "cannot encode an empty WavPack stream",
             ));
         }
-        self.flush_block()?;
-        self.patch_total_samples()?;
-        self.writer.seek(SeekFrom::End(0))?;
-        if self.metadata.iter().next().is_some() {
-            let mut tag = ApeTag::new();
-            tag.replace_text_metadata(&self.metadata)
-                .map_err(|_| AudioError::InvalidData("invalid WavPack APEv2 metadata"))?;
-            self.writer.write_all(&tag.encode().map_err(|_| {
-                AudioError::InvalidData("WavPack APEv2 metadata exceeds the supported size")
-            })?)?;
+        let result = (|| {
+            self.flush_block()?;
+            self.patch_total_samples()?;
+            self.writer.seek(SeekFrom::End(0))?;
+            if self.metadata.iter().next().is_some() {
+                let mut tag = ApeTag::new();
+                tag.replace_text_metadata(&self.metadata)
+                    .map_err(|_| AudioError::InvalidData("invalid WavPack APEv2 metadata"))?;
+                self.writer.write_all(&tag.encode().map_err(|_| {
+                    AudioError::InvalidData("WavPack APEv2 metadata exceeds the supported size")
+                })?)?;
+            }
+            self.writer.flush()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            self.poisoned = true;
+        } else {
+            self.finished = true;
         }
-        self.writer.flush()?;
-        self.finished = true;
-        Ok(())
+        result
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {

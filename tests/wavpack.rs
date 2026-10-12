@@ -1,10 +1,43 @@
-use std::io::Cursor;
+use std::io::{self, Cursor, Seek, SeekFrom, Write};
 
 use wavpack::{WavPackDecoder, WavPackDsdDecoder, WavPackDsdEncoder, WavPackEncoder};
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioSpec, DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, PcmBuffer,
     SampleFormat, Samples,
 };
+
+struct FailOnceWriter {
+    inner: Cursor<Vec<u8>>,
+    bytes_before_failure: Option<usize>,
+}
+
+impl Write for FailOnceWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(remaining) = self.bytes_before_failure {
+            if remaining == 0 {
+                self.bytes_before_failure = None;
+                return Err(io::Error::other("injected write failure"));
+            }
+            if bytes.len() > remaining {
+                let written = self.inner.write(&bytes[..remaining])?;
+                self.bytes_before_failure = Some(0);
+                return Ok(written);
+            }
+            self.bytes_before_failure = Some(remaining - bytes.len());
+        }
+        self.inner.write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl Seek for FailOnceWriter {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.inner.seek(position)
+    }
+}
 
 #[test]
 fn dsd_wavpack_encoder_round_trips_raw_octets_and_bit_rate() {
@@ -139,4 +172,31 @@ fn wavpack_encoder_splits_float32_at_the_block_boundary() {
         actual.extend(samples.iter().map(|sample| sample.to_bits()));
     }
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn pcm_and_dsd_writers_cannot_finish_after_a_partial_write_failure() {
+    let writer = FailOnceWriter {
+        inner: Cursor::new(Vec::new()),
+        bytes_before_failure: Some(16),
+    };
+    let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
+    let mut encoder = WavPackEncoder::new(writer, spec).unwrap();
+    encoder
+        .write_block(&PcmBuffer::new(spec, Samples::I16(vec![123])).unwrap())
+        .unwrap();
+    assert!(encoder.finish().is_err());
+    assert!(encoder.finish().is_err());
+
+    let writer = FailOnceWriter {
+        inner: Cursor::new(Vec::new()),
+        bytes_before_failure: Some(16),
+    };
+    let spec = DsdSpec::new(2_822_400, 1).unwrap();
+    let mut encoder = WavPackDsdEncoder::new(writer, spec).unwrap();
+    encoder
+        .write_dsd_octets(&DsdBuffer::new(spec, vec![0x80]).unwrap())
+        .unwrap();
+    assert!(encoder.finish().is_err());
+    assert!(encoder.finish().is_err());
 }
