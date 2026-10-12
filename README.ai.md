@@ -8,7 +8,7 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
 - [`zemer-dsf`](crates/dsf/): DSF 1.01 raw one-bit DSD decoder/encoder; reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags. The CLI inspects DSF/native DSD WavPack and transcodes between the two without a PCM path. Artwork/raw-frame preservation remains open.
-- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native and Ogg-FLAC integer-PCM encoders, native/Ogg-FLAC decoders, native seekable decoding, Vorbis-comment rewriting, and preserved typed metadata blocks. The CLI can encode both mappings. Ogg-FLAC chained-stream decoding and seeking remain open.
+- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native and Ogg-FLAC integer-PCM encoders, native/Ogg-FLAC decoders, native seekable decoding, Ogg-FLAC restart-and-scan seeking, Vorbis-comment rewriting, and preserved typed metadata blocks. The CLI can encode both mappings. Chained Ogg-FLAC links require matching audio specifications.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer reused by Ogg-FLAC.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
@@ -17,11 +17,13 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, WAVE/FLAC/WavPack conversion, DSF/native DSD WavPack transcoding, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
-Ogg-FLAC decoding handles one logical stream and verifies the terminal granule
-against decoded sample count, including when STREAMINFO total samples are
-unknown, trimming trailing samples from the final decoded block when required.
-Independent PCM-oracle validation is still limited to a generated sample; do
-not claim broad Ogg-FLAC conformance yet.
+Ogg-FLAC decoding verifies each link's terminal granule against its decoded
+sample count, including when STREAMINFO total samples are unknown, and trims
+trailing samples from the final decoded block when required. Chained links
+must have matching audio specifications; metadata comes from the first link.
+Seekable sources can restart at their initial Ogg offset and scan forward to a
+target sample; this path is linear. Independent PCM-oracle validation is still
+limited to generated samples; do not claim broad Ogg-FLAC conformance yet.
 
 The WAVE reader handles top-level `data` and ordered `LIST/wavl` `data`/`slnt`
 segments in RIFF and RF64. Silence segments hold the previous interleaved frame;

@@ -73,7 +73,7 @@ support for every file with that extension.
 | Format | Intended read/decode work | Intended write/encode work | Priority |
 |---|---|---|---|
 | RIFF/WAVE and RF64 | Inspect, stream PCM/float/G.711, read metadata | Write PCM/float/G.711; edit RIFF INFO while preserving audio, unknown chunks, and RF64 sizes | Foundation |
-| FLAC | Native FLAC streaming decode with frame CRC, STREAMINFO MD5 verification, and sample seeking for seekable readers; Ogg-FLAC streaming decode with Ogg page CRC, terminal-granule verification, and final-frame trimming; Vorbis comments, raw metadata-block preservation, and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION reads | Native and Ogg-FLAC integer PCM 8/16/24/32-bit encoding; native verbatim/fixed-predictor Rice frames; metadata rewrite and CLI native/Ogg-FLAC output/tag edits | Independent Ogg-FLAC corpus, Ogg-FLAC seeking, and chained logical streams remain open |
+| FLAC | Native FLAC streaming decode with frame CRC, STREAMINFO MD5 verification, and sample seeking for seekable readers; Ogg-FLAC streaming decode with Ogg page CRC, terminal-granule verification, final-frame trimming, and chained links with matching audio specifications; seekable Ogg-FLAC restart-and-scan sample seeking; Vorbis comments, raw metadata-block preservation, and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION reads | Native and Ogg-FLAC integer PCM 8/16/24/32-bit encoding; native verbatim/fixed-predictor Rice frames; metadata rewrite and CLI native/Ogg-FLAC output/tag edits | Independent Ogg-FLAC corpus remains open |
 | AIFF / AIFF-C | Parse chunks, decode supported PCM/float and declared codecs | Write supported PCM/float, metadata | Lossless |
 | AU / CAF / raw PCM | Decode supported encodings; raw PCM requires caller-supplied parameters | Encode supported encodings and raw PCM | Lossless / utility |
 | WavPack (`.wv`) | Supported for decoding and writing: streaming decode covers lossless PCM, IEEE float32, hybrid `.wvc` restoration, and native DSD modes; lossless integer PCM encoding supports 1–32 channels at 8/16/24/32 bits; hybrid integer PCM encoding writes standard-bitrate `.wv`+`.wvc` pairs; float32 preserves exact bits through uncompressed WVX; raw native DSD encoding supports 1–32 channels; custom rates and APEv2 text editing preserve non-text items | Official suite: 35 supported files decoded, 9 legacy files skipped, and 4 malformed files rejected; DSD has no hybrid `.wvc` mode | Clean-room specification path confirmed; implementation uses Rust `std` and Zemer crates only |
@@ -160,10 +160,10 @@ discard layout or audio information.
 ## Current status
 
 See the [README support matrix](README.md#current-support) for implemented
-formats and exact read/write support. WAVE/RF64, native FLAC, single-stream
+formats and exact read/write support. WAVE/RF64, native FLAC, chained
 Ogg-FLAC, DSF 1.01 raw one-bit DSD decoding/encoding for the declared profile,
 DSF/native DSD WavPack CLI inspection and transcoding, WAVE-backed CUE
 splitting, CUE creation, and common DSF ID3v2.3/v2.4 text-tag reads/writes are
-implemented. DSF artwork/raw-frame preservation, Ogg-FLAC seeking and chaining,
+implemented. DSF artwork/raw-frame preservation,
 other codecs, track types, and
 archive/disc workflows remain planned until code and tests land.

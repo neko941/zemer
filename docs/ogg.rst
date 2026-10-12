@@ -24,7 +24,10 @@ decoding remain planned.
    # Ok::<(), std::io::Error>(())
 
 Packets are limited to 64 MiB by default. Use ``with_packet_limit`` when a
-caller needs a different bound. The reader handles one logical stream and
-rejects chained streams or trailing bytes after EOS; multiplexed or chained
-streams require a higher-level demultiplexer. ``OggPacketWriter`` writes one
-logical stream and requires ``finish()`` to mark its final page with EOS.
+caller needs a different bound. ``next_packet()`` stops at one logical stream's
+EOS page. To read a chained stream, consume that stream and call
+``next_stream()``; it validates the next BOS page and returns ``None`` only
+when input ends exactly at the link boundary. Trailing bytes and truncated
+pages are errors. The reader does not demultiplex concurrent serial numbers.
+``OggPacketWriter`` writes one logical stream and requires ``finish()`` to
+mark its final page with EOS.

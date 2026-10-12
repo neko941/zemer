@@ -58,8 +58,11 @@ Vorbis comments, retains each metadata block's
 raw type and payload through ``metadata_blocks()``, handles constant, verbatim,
 fixed-predictor, and linear-predictor subframes, Rice residuals, wasted bits,
 and stereo decorrelation. It verifies frame header and frame CRCs. It supports
-native FLAC and one-logical-stream Ogg-FLAC decoding; Ogg seeking and chained
-logical streams are not included. Ogg-FLAC validates page framing and checks
+native FLAC and chained Ogg-FLAC decoding. Every Ogg-FLAC link must have the
+same audio specification; the decoder keeps metadata from the first link.
+For seekable inputs, ``OggFlacDecoder::new_seekable`` and
+``seek_to_sample`` restart from the initial Ogg offset and decode forward.
+Ogg-FLAC validates page framing and checks
 the terminal granule against the decoded sample count, including when
 STREAMINFO's total is unknown, and trims trailing samples from the final
 decoded block as required. The CLI can inspect either FLAC mapping and convert

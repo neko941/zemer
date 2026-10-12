@@ -43,6 +43,10 @@ impl<R: Read> BitReader<R> {
         &mut self.inner
     }
 
+    pub(crate) fn into_inner(self) -> (R, u8) {
+        (self.inner, self.remaining)
+    }
+
     pub(crate) fn begin_frame(&mut self) -> Result<(), AudioError> {
         if self.remaining != 0 {
             return Err(AudioError::InvalidData("FLAC frame is not byte-aligned"));

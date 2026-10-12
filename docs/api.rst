@@ -25,7 +25,8 @@ Crate ``zemer-ogg``
 -------------------
 
 * ``OggPacketReader<R>`` — validates Ogg pages and yields bounded packets from
-  one logical stream.
+  one logical stream; consume to EOS and call ``next_stream()`` to advance
+  through chained logical streams.
 * ``OggPacketWriter<W>`` — writes bounded pages for one logical stream with
   packet granules and BOS/EOS flags; call ``finish()`` to write the EOS page.
 * ``OggPacket`` — packet bytes plus page sequence, granule position, named BOS,
@@ -106,7 +107,8 @@ Rust library crate ``flac`` (Cargo package ``zemer-flac``)
   Vorbis comments into shared ``Metadata`` and exposes retained raw blocks via
   ``metadata_blocks()``.
 * ``OggFlacDecoder<R>`` — Ogg-FLAC mapping decoder using the same PCM and
-  metadata interface.
+  metadata interface; chained links must share an audio specification. Use
+  ``new_seekable`` and ``seek_to_sample`` for restart-and-scan seeking.
 * ``OggFlacEncoder<W>`` — streaming Ogg-FLAC writer for integer PCM. It emits
   one frame packet at a time and writes the final sample count to the EOS page.
 * ``FlacMetadataBlock`` — preserves the original metadata block type and

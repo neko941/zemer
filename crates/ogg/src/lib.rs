@@ -37,7 +37,6 @@ pub struct OggPacketReader<R> {
     partial: Vec<u8>,
     first_page: bool,
     ended: bool,
-    eof_checked: bool,
     pending: VecDeque<OggPacket>,
 }
 
@@ -55,45 +54,46 @@ impl<R: Read> OggPacketReader<R> {
             partial: Vec::new(),
             first_page: true,
             ended: false,
-            eof_checked: false,
             pending: VecDeque::new(),
         }
     }
 
-    /// Returns the next complete packet, or `None` after the stream's EOS page.
+    /// Returns the next complete packet, or `None` after this stream's EOS page.
     pub fn next_packet(&mut self) -> io::Result<Option<OggPacket>> {
         loop {
             if let Some(packet) = self.pending.pop_front() {
                 return Ok(Some(packet));
             }
             if self.ended {
-                if self.eof_checked {
-                    return Ok(None);
-                }
-                let mut trailing = [0];
-                loop {
-                    match self.reader.read(&mut trailing) {
-                        Ok(0) => {
-                            self.eof_checked = true;
-                            return Ok(None);
-                        }
-                        Ok(_) => return Err(invalid_ogg("trailing data after Ogg EOS page")),
-                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                        Err(error) => return Err(error),
-                    }
-                }
+                return Ok(None);
             }
-            self.read_page()?;
+            if !self.read_page()? {
+                return Err(invalid_ogg("empty Ogg stream"));
+            }
         }
     }
 
-    fn read_page(&mut self) -> io::Result<()> {
+    /// Starts the next sequential logical stream after this stream's EOS page.
+    /// Returns `None` only when the input ends exactly at that page.
+    pub fn next_stream(self) -> io::Result<Option<Self>> {
+        if !self.ended || !self.partial.is_empty() || !self.pending.is_empty() {
+            return Err(invalid_ogg(
+                "Ogg stream has not reached a clean EOS boundary",
+            ));
+        }
+        let mut next = Self::with_packet_limit(self.reader, self.max_packet_bytes);
+        Ok(next.read_page()?.then_some(next))
+    }
+
+    fn read_page(&mut self) -> io::Result<bool> {
         let mut header = [0_u8; 27];
         loop {
             match self.reader.read(&mut header[..1]) {
                 Ok(0) => {
                     self.ended = true;
-                    return if self.partial.is_empty() {
+                    return if self.first_page {
+                        Ok(false)
+                    } else if self.partial.is_empty() {
                         Err(invalid_ogg("Ogg stream ended without an EOS page"))
                     } else {
                         Err(invalid_ogg("truncated Ogg packet"))
@@ -137,7 +137,7 @@ impl<R: Read> OggPacketReader<R> {
             self.sequence = Some(sequence);
         } else {
             if flags & PAGE_FLAG_BOS != 0 || self.serial != Some(serial) {
-                return Err(invalid_ogg("chained or changed Ogg stream is unsupported"));
+                return Err(invalid_ogg("changed Ogg stream serial number"));
             }
             let expected = self.sequence.unwrap().wrapping_add(1);
             if sequence != expected {
@@ -184,7 +184,7 @@ impl<R: Read> OggPacketReader<R> {
             }
             self.ended = true;
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -307,19 +307,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_chained_streams_and_trailing_bytes_after_eos() {
+    fn reads_chained_streams_and_rejects_trailing_garbage() {
         let first = page(&[1], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 1);
-        let chained = page(&[2], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 1);
+        let mut chained = page(&[2], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 1);
+        chained[14..18].copy_from_slice(&8_u32.to_le_bytes());
+        chained[22..26].fill(0);
+        let crc = ogg_crc(&chained);
+        chained[22..26].copy_from_slice(&crc.to_le_bytes());
         let mut input = first.clone();
         input.extend_from_slice(&chained);
         let mut reader = OggPacketReader::new(Cursor::new(input));
         assert_eq!(reader.next_packet().unwrap().unwrap().bytes, [1]);
-        assert!(reader.next_packet().is_err());
+        assert!(reader.next_packet().unwrap().is_none());
+        let mut next = reader.next_stream().unwrap().unwrap();
+        assert_eq!(next.next_packet().unwrap().unwrap().bytes, [2]);
+        assert!(next.next_packet().unwrap().is_none());
+        assert!(next.next_stream().unwrap().is_none());
 
         let mut input = first;
         input.push(0);
         let mut reader = OggPacketReader::new(Cursor::new(input));
         assert_eq!(reader.next_packet().unwrap().unwrap().bytes, [1]);
-        assert!(reader.next_packet().is_err());
+        assert!(reader.next_packet().unwrap().is_none());
+        assert!(reader.next_stream().is_err());
     }
 }

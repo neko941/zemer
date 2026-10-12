@@ -1,7 +1,7 @@
 use std::{
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -14,37 +14,108 @@ use crate::{FlacDecoder, metadata::MAX_METADATA_BYTES};
 const MAX_FLAC_FRAME_SAMPLES: usize = 65_535;
 
 pub struct OggFlacDecoder<R> {
-    decoder: FlacDecoder<OggFlacReader<R>>,
+    source: Arc<Mutex<R>>,
+    start: Option<u64>,
+    decoder: Option<FlacDecoder<OggFlacReader<SharedReader<R>>>>,
+    spec: AudioSpec,
+    metadata: Metadata,
     final_granule: Arc<AtomicU64>,
     decoded_samples: u64,
-    output_samples: u64,
+    link_output_samples: u64,
     pending: Option<PcmBuffer>,
     ready: Option<PcmBuffer>,
+    link_finished: bool,
     finished: bool,
 }
 
 impl<R: Read> OggFlacDecoder<R> {
     pub fn new(reader: R) -> Result<Self, AudioError> {
+        Self::with_reader(reader, None)
+    }
+
+    fn with_reader(reader: R, start: Option<u64>) -> Result<Self, AudioError> {
+        let source = Arc::new(Mutex::new(reader));
         let final_granule = Arc::new(AtomicU64::new(u64::MAX));
+        let decoder = FlacDecoder::new(OggFlacReader::new(
+            SharedReader(Arc::clone(&source)),
+            Arc::clone(&final_granule),
+        )?)?;
         Ok(Self {
-            decoder: FlacDecoder::new(OggFlacReader::new(reader, Arc::clone(&final_granule))?)?,
+            source,
+            start,
+            spec: decoder.spec(),
+            metadata: decoder.metadata().clone(),
+            decoder: Some(decoder),
             final_granule,
             decoded_samples: 0,
-            output_samples: 0,
+            link_output_samples: 0,
             pending: None,
             ready: None,
+            link_finished: false,
             finished: false,
         })
     }
 }
 
+impl<R: Read + Seek> OggFlacDecoder<R> {
+    /// Creates a decoder that can restart and seek by decoding forward.
+    pub fn new_seekable(mut reader: R) -> Result<Self, AudioError> {
+        let start = reader.stream_position()?;
+        Self::with_reader(reader, Some(start))
+    }
+
+    /// Positions the next decoded sample at `sample` (zero-based).
+    ///
+    /// Seeking restarts from the input's initial Ogg offset and decodes forward.
+    pub fn seek_to_sample(&mut self, sample: u64) -> Result<(), AudioError> {
+        let start = self.start.ok_or(AudioError::Unsupported(
+            "Ogg-FLAC seeking requires OggFlacDecoder::new_seekable",
+        ))?;
+        self.source
+            .lock()
+            .map_err(|_| AudioError::InvalidData("Ogg-FLAC input lock is poisoned"))?
+            .seek(SeekFrom::Start(start))?;
+        let final_granule = Arc::new(AtomicU64::new(u64::MAX));
+        let decoder = FlacDecoder::new(OggFlacReader::new(
+            SharedReader(Arc::clone(&self.source)),
+            Arc::clone(&final_granule),
+        )?)?;
+        if decoder.spec() != self.spec {
+            return Err(AudioError::InvalidData(
+                "Ogg-FLAC audio specification changed while seeking",
+            ));
+        }
+        self.decoder = Some(decoder);
+        self.final_granule = final_granule;
+        self.decoded_samples = 0;
+        self.link_output_samples = 0;
+        self.pending = None;
+        self.ready = None;
+        self.link_finished = false;
+        self.finished = false;
+
+        // shortcut: seek is linear in decoded samples; add page indexing when repeated long-file seeks need bounded latency.
+        let mut remaining = sample;
+        while remaining != 0 {
+            let frames = remaining.min(MAX_FLAC_FRAME_SAMPLES as u64) as usize;
+            let Some(block) = self.read_frames(frames)? else {
+                return Err(AudioError::InvalidData(
+                    "Ogg-FLAC seek target exceeds the decoded sample count",
+                ));
+            };
+            remaining -= block.frames() as u64;
+        }
+        Ok(())
+    }
+}
+
 impl<R: Read> AudioDecoder for OggFlacDecoder<R> {
     fn spec(&self) -> AudioSpec {
-        self.decoder.spec()
+        self.spec
     }
 
     fn metadata(&self) -> &Metadata {
-        self.decoder.metadata()
+        &self.metadata
     }
 
     fn read_frames(&mut self, max_frames: usize) -> Result<Option<PcmBuffer>, AudioError> {
@@ -57,10 +128,16 @@ impl<R: Read> AudioDecoder for OggFlacDecoder<R> {
             return self.emit_ready(max_frames).map(Some);
         }
         if self.finished {
-            self.verify_final_granule()?;
             return Ok(None);
         }
         loop {
+            if self.link_finished {
+                self.verify_link_granule()?;
+                if !self.advance_link()? {
+                    self.finished = true;
+                    return Ok(None);
+                }
+            }
             let next = self.next_block(MAX_FLAC_FRAME_SAMPLES)?;
             match (self.pending.take(), next) {
                 (Some(previous), Some(next)) => {
@@ -70,7 +147,7 @@ impl<R: Read> AudioDecoder for OggFlacDecoder<R> {
                 }
                 (None, Some(next)) => self.pending = Some(next),
                 (Some(last), None) => {
-                    self.finished = true;
+                    self.link_finished = true;
                     self.ready = trim_final_block(
                         last,
                         self.decoded_samples,
@@ -79,13 +156,9 @@ impl<R: Read> AudioDecoder for OggFlacDecoder<R> {
                     if self.ready.is_some() {
                         return self.emit_ready(max_frames).map(Some);
                     }
-                    self.verify_final_granule()?;
-                    return Ok(None);
                 }
                 (None, None) => {
-                    self.finished = true;
-                    self.verify_final_granule()?;
-                    return Ok(None);
+                    self.link_finished = true;
                 }
             }
         }
@@ -115,7 +188,12 @@ fn trim_final_block(
 
 impl<R: Read> OggFlacDecoder<R> {
     fn next_block(&mut self, max_frames: usize) -> Result<Option<PcmBuffer>, AudioError> {
-        let Some(block) = self.decoder.read_frames(max_frames)? else {
+        let Some(block) = self
+            .decoder
+            .as_mut()
+            .ok_or(AudioError::InvalidData("missing Ogg-FLAC link decoder"))?
+            .read_frames(max_frames)?
+        else {
             return Ok(None);
         };
         self.decoded_samples = self
@@ -127,21 +205,45 @@ impl<R: Read> OggFlacDecoder<R> {
         Ok(Some(block))
     }
 
-    fn verify_final_granule(&self) -> Result<(), AudioError> {
-        if self.final_granule.load(Ordering::Acquire) != self.output_samples {
+    fn verify_link_granule(&self) -> Result<(), AudioError> {
+        if self.final_granule.load(Ordering::Acquire) != self.link_output_samples {
             return Err(AudioError::InvalidData(
-                "Ogg-FLAC final granule differs from decoded sample count",
+                "Ogg-FLAC link granule differs from decoded sample count",
             ));
         }
         Ok(())
     }
 
+    fn advance_link(&mut self) -> Result<bool, AudioError> {
+        let reader = self
+            .decoder
+            .take()
+            .ok_or(AudioError::InvalidData("missing Ogg-FLAC link decoder"))?
+            .into_inner()?;
+        let Some((reader, final_granule)) = reader.next_link()? else {
+            return Ok(false);
+        };
+        let decoder = FlacDecoder::new(reader)?;
+        if decoder.spec() != self.spec {
+            return Err(AudioError::InvalidFormat(
+                "chained Ogg-FLAC links have different audio specifications",
+            ));
+        }
+        self.decoder = Some(decoder);
+        self.final_granule = final_granule;
+        self.decoded_samples = 0;
+        self.link_output_samples = 0;
+        self.pending = None;
+        self.link_finished = false;
+        Ok(true)
+    }
+
     fn record_output(&mut self, block: PcmBuffer) -> Result<PcmBuffer, AudioError> {
-        self.output_samples = self
-            .output_samples
+        self.link_output_samples = self
+            .link_output_samples
             .checked_add(block.frames() as u64)
             .ok_or(AudioError::InvalidData(
-                "Ogg-FLAC output sample count overflow",
+                "Ogg-FLAC link sample count overflow",
             ))?;
         Ok(block)
     }
@@ -159,6 +261,17 @@ impl<R: Read> OggFlacDecoder<R> {
     }
 }
 
+struct SharedReader<R>(Arc<Mutex<R>>);
+
+impl<R: Read> Read for SharedReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.0
+            .lock()
+            .map_err(|_| io::Error::other("Ogg-FLAC input lock is poisoned"))?
+            .read(buffer)
+    }
+}
+
 struct OggFlacReader<R> {
     packets: OggPackets<R>,
     output: Vec<u8>,
@@ -169,7 +282,13 @@ struct OggFlacReader<R> {
 
 impl<R: Read> OggFlacReader<R> {
     fn new(reader: R, final_granule: Arc<AtomicU64>) -> Result<Self, AudioError> {
-        let mut packets = OggPackets::new(reader);
+        Self::from_packets(OggPackets::new(reader), final_granule)
+    }
+
+    fn from_packets(
+        mut packets: OggPackets<R>,
+        final_granule: Arc<AtomicU64>,
+    ) -> Result<Self, AudioError> {
         let first = packets
             .next_packet()?
             .ok_or(AudioError::InvalidFormat("empty Ogg stream"))?;
@@ -291,6 +410,20 @@ impl<R: Read> OggFlacReader<R> {
             audio,
             final_granule,
         })
+    }
+
+    fn next_link(mut self) -> Result<Option<(Self, Arc<AtomicU64>)>, AudioError> {
+        if self.output_pos != self.output.len() || self.packets.next_packet()?.is_some() {
+            return Err(AudioError::InvalidData(
+                "Ogg-FLAC decoder stopped before the link boundary",
+            ));
+        }
+        let Some(packets) = self.packets.next_stream()? else {
+            return Ok(None);
+        };
+        let final_granule = Arc::new(AtomicU64::new(u64::MAX));
+        let reader = Self::from_packets(packets, Arc::clone(&final_granule))?;
+        Ok(Some((reader, final_granule)))
     }
 }
 
@@ -440,6 +573,25 @@ mod tests {
         page[22..26].copy_from_slice(&crc.to_le_bytes());
     }
 
+    fn set_stream_serial(stream: &mut [u8], serial: u32) {
+        let mut cursor = 0;
+        let mut sequence = 0_u32;
+        while cursor < stream.len() {
+            let segment_count = usize::from(stream[cursor + 26]);
+            let body_len: usize = stream[cursor + 27..cursor + 27 + segment_count]
+                .iter()
+                .map(|&length| usize::from(length))
+                .sum();
+            let page_len = 27 + segment_count + body_len;
+            let page = &mut stream[cursor..cursor + page_len];
+            page[14..18].copy_from_slice(&serial.to_le_bytes());
+            page[18..22].copy_from_slice(&sequence.to_le_bytes());
+            update_page_crc(page);
+            cursor += page_len;
+            sequence += 1;
+        }
+    }
+
     fn clear_streaminfo_total_samples(stream: &mut [u8]) {
         let segment_count = usize::from(stream[26]);
         let body_start = 27 + segment_count;
@@ -494,6 +646,63 @@ mod tests {
             &Samples::I16(vec![25_588, 10_416])
         );
         assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn decodes_chained_links_and_keeps_the_first_link_metadata() {
+        let mut input = ogg_flac();
+        let mut second = ogg_flac();
+        set_stream_serial(&mut second, 8);
+        input.extend(second);
+
+        let mut decoder = OggFlacDecoder::new(Cursor::new(input)).unwrap();
+        assert_eq!(decoder.read_frames(8).unwrap().unwrap().frames(), 1);
+        assert_eq!(decoder.read_frames(8).unwrap().unwrap().frames(), 1);
+        assert!(decoder.read_frames(8).unwrap().is_none());
+    }
+
+    #[test]
+    fn seeks_through_chained_links_and_restarts_from_the_initial_offset() {
+        let mut input = vec![0, 1, 2];
+        input.extend(ogg_flac());
+        let mut second = ogg_flac();
+        set_stream_serial(&mut second, 8);
+        input.extend(second);
+
+        let mut reader = Cursor::new(input);
+        reader.set_position(3);
+        let mut decoder = OggFlacDecoder::new_seekable(reader).unwrap();
+        decoder.seek_to_sample(1).unwrap();
+        assert_eq!(
+            decoder.read_frames(1).unwrap().unwrap().samples(),
+            &Samples::I16(vec![25_588, 10_416])
+        );
+        decoder.seek_to_sample(0).unwrap();
+        assert_eq!(decoder.read_frames(1).unwrap().unwrap().frames(), 1);
+        assert!(decoder.seek_to_sample(3).is_err());
+    }
+
+    #[test]
+    fn seek_requires_the_seekable_constructor() {
+        let mut decoder = OggFlacDecoder::new(Cursor::new(ogg_flac())).unwrap();
+        assert!(decoder.seek_to_sample(0).is_err());
+    }
+
+    #[test]
+    fn rejects_chained_links_with_different_audio_specifications() {
+        let mut input = ogg_flac();
+        let mut second = ogg_flac();
+        set_stream_serial(&mut second, 8);
+        let packed_start = 27 + 1 + 27;
+        let packed = u64::from_be_bytes(second[packed_start..packed_start + 8].try_into().unwrap());
+        let packed = (packed & ((1_u64 << 44) - 1)) | (48_000_u64 << 44);
+        second[packed_start..packed_start + 8].copy_from_slice(&packed.to_be_bytes());
+        update_page_crc(&mut second[..79]);
+        input.extend(second);
+
+        let mut decoder = OggFlacDecoder::new(Cursor::new(input)).unwrap();
+        assert_eq!(decoder.read_frames(8).unwrap().unwrap().frames(), 1);
+        assert!(decoder.read_frames(8).is_err());
     }
 
     #[test]

@@ -74,6 +74,22 @@ impl<R: Read> FlacDecoder<R> {
         &self.metadata_blocks
     }
 
+    /// Returns the input reader after a fully consumed FLAC stream.
+    pub fn into_inner(self) -> Result<R, AudioError> {
+        if !self.ended || !self.pending.is_empty() {
+            return Err(AudioError::InvalidData(
+                "FLAC reader can only be recovered after decoding to the end",
+            ));
+        }
+        let (buffered, remaining_bits) = self.reader.into_inner();
+        if remaining_bits != 0 || !buffered.buffer().is_empty() {
+            return Err(AudioError::InvalidData(
+                "FLAC decoder retained unread input at end of stream",
+            ));
+        }
+        Ok(buffered.into_inner())
+    }
+
     fn fill_pending(&mut self) -> Result<bool, AudioError> {
         if self.ended {
             return Ok(false);
