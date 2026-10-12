@@ -160,6 +160,7 @@ discard layout or audio information.
 
 See the [README support matrix](README.md#current-support) for implemented
 formats and exact read/write support. WAVE/RF64, native FLAC, single-stream
-Ogg-FLAC, WAVE-backed CUE splitting, and CUE creation are implemented. Ogg-FLAC
-seeking and chaining, other codecs, track types, and archive/disc workflows
-remain planned until code and tests land.
+Ogg-FLAC, DSF 1.01 raw one-bit DSD decoding for the declared profile,
+WAVE-backed CUE splitting, and CUE creation are implemented. DSF ID3 metadata,
+writing, and CLI workflows, Ogg-FLAC seeking and chaining, other codecs, track
+types, and archive/disc workflows remain planned until code and tests land.
