@@ -161,12 +161,10 @@ fn read_frames(body: &[u8], version: u8, tag_unsynchronized: bool) -> Result<Met
                 _ => unreachable!(),
             };
         if !compress_or_encrypt && id[0] == b'T' {
-            let mut frame = &body[position + 10..end];
-            let mut decoded_frame = None;
-            if tag_unsynchronized || frame_unsynchronized {
-                decoded_frame = Some(unsynchronize(frame));
-                frame = decoded_frame.as_deref().unwrap();
-            }
+            let original_frame = &body[position + 10..end];
+            let decoded_frame =
+                (tag_unsynchronized || frame_unsynchronized).then(|| unsynchronize(original_frame));
+            let mut frame = decoded_frame.as_deref().unwrap_or(original_frame);
             if grouped {
                 frame = frame
                     .get(1..)
@@ -215,7 +213,7 @@ fn parse_text_frame(
         return Ok(());
     };
     for value in values {
-        insert_nonempty(metadata, key, value);
+        insert_nonempty(metadata, key, &value);
     }
     Ok(())
 }
