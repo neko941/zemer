@@ -76,6 +76,9 @@ impl ApeTag {
 
         let body_start = header_size;
         let body_end = bytes.len() - FOOTER_SIZE;
+        if item_count > (body_end - body_start) / 11 {
+            return Err(ApeTagError("too many APEv2 items for the tag size"));
+        }
         let mut position = body_start;
         let mut items = Vec::new();
         items
@@ -335,6 +338,18 @@ mod tests {
         encoded = tag.encode().unwrap();
         encoded[32] = 0xff;
         assert!(ApeTag::parse(&encoded).is_err());
+    }
+
+    #[test]
+    fn rejects_item_count_larger_than_the_tag_can_contain() {
+        let mut tag = ApeTag::new().encode().unwrap();
+        let footer = tag.len() - FOOTER_SIZE;
+        tag[footer + 16..footer + 20].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        assert_eq!(
+            ApeTag::parse(&tag).unwrap_err(),
+            ApeTagError("too many APEv2 items for the tag size")
+        );
     }
 
     #[test]
