@@ -502,5 +502,4 @@ mod tests {
         let mut decoder = FlacDecoder::new(Cursor::new(bytes)).unwrap();
         assert!(decoder.seek_to_sample(0).is_err());
     }
-
 }
