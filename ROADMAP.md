@@ -72,7 +72,7 @@ support for every file with that extension.
 | Format | Intended read/decode work | Intended write/encode work | Priority |
 |---|---|---|---|
 | RIFF/WAVE and RF64 | Inspect, stream PCM/float/G.711, read metadata | Write PCM/float/G.711, metadata, large RF64 files | Foundation |
-| FLAC | Native FLAC streaming decode and Vorbis comments | FLAC encode and comment editing | Native decoder started; Ogg-FLAC is separate |
+| FLAC | Native FLAC streaming decode and Vorbis comments | FLAC encode and comment editing | Decoder and CLI inspect/WAVE conversion implemented; Ogg-FLAC is separate |
 | AIFF / AIFF-C | Parse chunks, decode supported PCM/float and declared codecs | Write supported PCM/float, metadata | Lossless |
 | AU / CAF / raw PCM | Decode supported encodings; raw PCM requires caller-supplied parameters | Encode supported encodings and raw PCM | Lossless / utility |
 | WavPack (`.wv`) | Inspect/decode lossless, lossy, and hybrid files; use a matching `.wvc` correction file when present | Encode lossless and explicitly selected lossy or hybrid modes; read/write APEv2 tags | Evaluate after FLAC |
@@ -155,6 +155,7 @@ discard layout or audio information.
 ## Current status
 
 See the [README support matrix](README.md#current-support) for implemented
-formats and exact read/write support. The implemented foundation is WAV, with
-WAVE-backed CUE track splitting and CUE creation; other codecs, track types,
-and archive/disc workflows remain planned until code and tests land.
+formats and exact read/write support. WAVE/RF64 and native FLAC decoding are
+implemented, with WAVE-backed CUE track splitting and CUE creation. FLAC
+writing, Ogg-FLAC, other codecs, track types, and archive/disc workflows remain
+planned until code and tests land.

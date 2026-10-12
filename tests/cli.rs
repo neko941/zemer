@@ -46,7 +46,6 @@ fn inspect_json_reports_pcm_properties_and_exact_duration() {
         .output()
         .unwrap();
     let _ = fs::remove_file(&path);
-
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap().trim(),
@@ -56,11 +55,63 @@ fn inspect_json_reports_pcm_properties_and_exact_duration() {
 }
 
 #[test]
+fn inspect_and_convert_native_flac_by_stream_marker() {
+    let input_path = temporary_path();
+    let output_path = temporary_path();
+    fs::write(
+        &input_path,
+        [
+            0x66, 0x4c, 0x61, 0x43, 0x80, 0x00, 0x00, 0x22, 0x10, 0x00, 0x10, 0x00, 0x00, 0x00,
+            0x0f, 0x00, 0x00, 0x0f, 0x0a, 0xc4, 0x42, 0xf0, 0x00, 0x00, 0x00, 0x01, 0x3e, 0x84,
+            0xb4, 0x18, 0x07, 0xdc, 0x69, 0x03, 0x07, 0x58, 0x6a, 0x3d, 0xad, 0x1a, 0x2e, 0x0f,
+            0xff, 0xf8, 0x69, 0x18, 0x00, 0x00, 0xbf, 0x03, 0x58, 0xfd, 0x03, 0x12, 0x8b, 0xaa,
+            0x9a,
+        ],
+    )
+    .unwrap();
+
+    let inspected = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&input_path)
+        .output()
+        .unwrap();
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(inspected.stdout).unwrap().trim(),
+        r#"{"format":"flac","container":null,"sample_rate":44100,"channels":2,"speaker_mask":null,"sample_format":"pcm_i16","frames":1,"duration_frames":{"numerator":1,"denominator":44100},"metadata":{}}"#
+    );
+
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "pcm_i16", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(
+        decoder.read_frames(1).unwrap().unwrap().samples(),
+        &Samples::I16(vec![25_588, 10_416])
+    );
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
 fn inspect_json_reports_extensible_speaker_mask() {
     let path = temporary_path();
+    let converted_path = temporary_path();
     let spec =
         AudioSpec::new_with_speaker_mask(48_000, 2, SampleFormat::PcmI16, Some(0x3)).unwrap();
-    let audio = PcmBuffer::new(spec, Samples::I16(vec![0, 0])).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![0, 0, 1, -1])).unwrap();
     write_wav(File::create(&path).unwrap(), &audio).unwrap();
 
     let output = Command::new(cli_path())
@@ -68,7 +119,6 @@ fn inspect_json_reports_extensible_speaker_mask() {
         .arg(&path)
         .output()
         .unwrap();
-    let _ = fs::remove_file(&path);
 
     assert!(output.status.success());
     assert!(
@@ -76,6 +126,22 @@ fn inspect_json_reports_extensible_speaker_mask() {
             .unwrap()
             .contains("\"speaker_mask\":3")
     );
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "float32"])
+        .arg(&path)
+        .arg(&converted_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let decoder = wav::WavDecoder::new(File::open(&converted_path).unwrap()).unwrap();
+    assert_eq!(decoder.spec().speaker_mask(), Some(0x3));
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(converted_path);
 }
 
 #[test]

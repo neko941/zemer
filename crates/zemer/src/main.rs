@@ -2,10 +2,12 @@ use std::{
     env,
     fmt::Write as _,
     fs::{self, File, OpenOptions},
+    io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
+use flac::FlacDecoder;
 use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioError, AudioSpec, Metadata, SampleFormat,
@@ -16,11 +18,18 @@ use zemer_core::{
 mod cue_cli;
 
 struct Report {
+    format: &'static str,
     spec: AudioSpec,
     frames: u64,
     metadata: Metadata,
     output_encoding: Option<&'static str>,
-    container: WavContainer,
+    container: Option<WavContainer>,
+}
+
+struct AudioInput {
+    decoder: Box<dyn AudioDecoder>,
+    format: &'static str,
+    container: Option<WavContainer>,
 }
 
 #[derive(Clone, Copy)]
@@ -75,7 +84,9 @@ fn main() -> ExitCode {
             } else {
                 println!("converted_frames: {}", report.frames);
                 println!("output: {}", output.display());
-                println!("container: {}", container_name(report.container));
+                if let Some(container) = report.container {
+                    println!("container: {}", container_name(container));
+                }
                 println!(
                     "sample_format: {}",
                     sample_format_name(report.spec.sample_format())
@@ -143,7 +154,7 @@ fn inspect_args(args: &[std::ffi::OsString]) -> Result<Report, CliError> {
             return Err(usage_error());
         }
     }
-    inspect_wav(input.ok_or_else(usage_error)?)
+    inspect_audio(input.ok_or_else(usage_error)?)
 }
 
 fn convert_args(args: &[std::ffi::OsString]) -> Result<(Report, PathBuf), CliError> {
@@ -226,15 +237,13 @@ fn convert_wav(
     format: OutputFormat,
     container: WavContainer,
 ) -> Result<Report, CliError> {
-    let file = File::open(&input).map_err(|error| CliError {
-        kind: "io",
-        message: format!("{}: {error}", input.display()),
-    })?;
-    let mut decoder = WavDecoder::new(file).map_err(|error| cli_audio_error(error, &input))?;
-    let spec = AudioSpec::new(
-        decoder.spec().sample_rate(),
-        decoder.spec().channels(),
+    let AudioInput { mut decoder, .. } = open_decoder(&input)?;
+    let input_spec = decoder.spec();
+    let spec = AudioSpec::new_with_speaker_mask(
+        input_spec.sample_rate(),
+        input_spec.channels(),
         format.input_sample_format(),
+        input_spec.speaker_mask(),
     )
     .map_err(|error| cli_audio_error(error.into(), &input))?;
     let output_file = OpenOptions::new()
@@ -284,11 +293,12 @@ fn convert_wav(
             .finish()
             .map_err(|error| cli_audio_error(error, &output))?;
         Ok(Report {
+            format: "wav",
             spec,
             frames,
             metadata: decoder.metadata().clone(),
             output_encoding: matches!(format, OutputFormat::G711(_)).then(|| format.name()),
-            container,
+            container: Some(container),
         })
     })();
 
@@ -298,12 +308,42 @@ fn convert_wav(
     result
 }
 
-fn inspect_wav(path: PathBuf) -> Result<Report, CliError> {
-    let file = File::open(&path).map_err(|error| CliError {
+fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
+    let file = File::open(path).map_err(|error| CliError {
         kind: "io",
         message: format!("{}: {error}", path.display()),
     })?;
-    let mut decoder = WavDecoder::new(file).map_err(|error| cli_audio_error(error, &path))?;
+    let mut file = file;
+    let mut signature = [0; 4];
+    let count = file
+        .read(&mut signature)
+        .map_err(|error| cli_audio_error(error.into(), path))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| cli_audio_error(error.into(), path))?;
+    if count == signature.len() && signature == *b"fLaC" {
+        let decoder = FlacDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
+        Ok(AudioInput {
+            decoder: Box::new(decoder),
+            format: "flac",
+            container: None,
+        })
+    } else {
+        let decoder = WavDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
+        let container = decoder.container();
+        Ok(AudioInput {
+            decoder: Box::new(decoder),
+            format: "wav",
+            container: Some(container),
+        })
+    }
+}
+
+fn inspect_audio(path: PathBuf) -> Result<Report, CliError> {
+    let AudioInput {
+        mut decoder,
+        format,
+        container,
+    } = open_decoder(&path)?;
     let spec = decoder.spec();
     let mut frames = 0_u64;
     while let Some(block) = decoder
@@ -318,11 +358,12 @@ fn inspect_wav(path: PathBuf) -> Result<Report, CliError> {
             })?;
     }
     Ok(Report {
+        format,
         spec,
         frames,
         metadata: decoder.metadata().clone(),
         output_encoding: None,
-        container: decoder.container(),
+        container,
     })
 }
 
@@ -342,13 +383,15 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw> [--container <riff|rf64>] [--json] <input.wav> <output.wav> | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.flac> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw> [--container <riff|rf64>] [--json] <input.wav|input.flac> <output.wav> | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 
 fn print_report(report: &Report) {
-    println!("format: WAVE");
-    println!("container: {}", container_name(report.container));
+    println!("format: {}", report.format.to_ascii_uppercase());
+    if let Some(container) = report.container {
+        println!("container: {}", container_name(container));
+    }
     println!("sample_rate: {}", report.spec.sample_rate());
     println!("channels: {}", report.spec.channels());
     if let Some(mask) = report.spec.speaker_mask() {
@@ -373,8 +416,12 @@ fn print_report(report: &Report) {
 
 fn report_json(report: &Report) -> String {
     let mut json = format!(
-        "{{\"format\":\"wav\",\"container\":{},\"sample_rate\":{},\"channels\":{},\"speaker_mask\":{},\"sample_format\":{},\"frames\":{},\"duration_frames\":{{\"numerator\":{},\"denominator\":{}}},\"metadata\":{{",
-        json_string(container_name(report.container)),
+        "{{\"format\":{},\"container\":{},\"sample_rate\":{},\"channels\":{},\"speaker_mask\":{},\"sample_format\":{},\"frames\":{},\"duration_frames\":{{\"numerator\":{},\"denominator\":{}}},\"metadata\":{{",
+        json_string(report.format),
+        report.container.map_or_else(
+            || "null".to_owned(),
+            |container| json_string(container_name(container))
+        ),
         report.spec.sample_rate(),
         report.spec.channels(),
         report

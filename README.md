@@ -20,7 +20,7 @@ The workspace separates format-independent audio types from each format implemen
 | RIFF/WAVE G.711 A-law and μ-law | Yes | Yes | RIFF INFO read/write | Decodes to signed 16-bit PCM; writing requires explicit G.711 selection |
 | RF64/WAVE | Yes | Yes | RIFF INFO read/write | 64-bit file and data sizes; select explicitly for output |
 | CUE sheets for WAVE/AUDIO tracks | Yes | Yes | Track title and performer | Split referenced WAV audio into track WAVs; create CUE sheets for WAV tracks |
-| Native FLAC | Yes (library) | No | Vorbis comments read | Streaming decoder in [`zemer-flac`](crates/flac/); CLI integration and writing remain planned |
+| Native FLAC | Yes | No | Vorbis comments read | Streaming decoder in [`zemer-flac`](crates/flac/); CLI inspects FLAC and converts it to WAVE |
 
 ## Roadmap
 

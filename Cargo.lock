@@ -140,6 +140,7 @@ version = "0.4.0"
 dependencies = [
  "zemer-core",
  "zemer-cue",
+ "zemer-flac",
  "zemer-wav",
 ]
 
@@ -180,6 +181,7 @@ version = "0.4.0"
 dependencies = [
  "zemer-core",
  "zemer-cue",
+ "zemer-flac",
  "zemer-wav",
 ]
 

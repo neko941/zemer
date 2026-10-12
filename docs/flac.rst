@@ -21,8 +21,9 @@ PCM blocks, so applications can use it without the Zemer CLI.
 The decoder reads STREAMINFO and Vorbis comments, handles constant, verbatim,
 fixed-predictor, and linear-predictor subframes, Rice residuals, wasted bits,
 and stereo decorrelation. It verifies frame header and frame CRCs. It currently
-supports native FLAC streams only; Ogg-FLAC, encoding, seeking, and CLI input
-are not implemented. It rejects streams that change sample rate, channel count,
+supports native FLAC streams only; Ogg-FLAC, encoding, and seeking are not
+implemented. The CLI can inspect native FLAC streams and convert them to WAVE.
+It rejects streams that change sample rate, channel count,
 or bit depth between frames because the shared decoder interface has one fixed
 ``AudioSpec`` per stream. It exposes the STREAMINFO MD5 value but does not yet
 verify the decoded audio against it.
