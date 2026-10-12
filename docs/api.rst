@@ -55,7 +55,7 @@ Rust library crate ``wav`` (Cargo package ``zemer-wav``)
 * ``WavContainer`` — explicitly choose classic RIFF or RF64 output.
 
 Rust library crate ``flac`` (Cargo package ``zemer-flac``)
----------------------------------------------------------
+----------------------------------------------------------
 
 * ``FlacDecoder<R>`` — streaming decoder for native FLAC streams; reads
   Vorbis comments into the shared ``Metadata`` type.
