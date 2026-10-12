@@ -7,7 +7,7 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-core`](crates/core/): shared PCM/DSD decoder and encoder interfaces; re-exports metadata and audio buffer types.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
-- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming decoder with frame CRC and STREAMINFO MD5 verification after full consumption, and a Vorbis-comment rewriter with preserved raw metadata blocks and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
+- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming integer-PCM encoder and decoder, plus Vorbis-comment rewriting and preserved raw metadata blocks with typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.

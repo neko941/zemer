@@ -72,7 +72,7 @@ support for every file with that extension.
 | Format | Intended read/decode work | Intended write/encode work | Priority |
 |---|---|---|---|
 | RIFF/WAVE and RF64 | Inspect, stream PCM/float/G.711, read metadata | Write PCM/float/G.711; edit RIFF INFO while preserving audio, unknown chunks, and RF64 sizes | Foundation |
-| FLAC | Partial native FLAC streaming decode with frame CRC and STREAMINFO MD5 verification; Vorbis comments, raw metadata-block preservation, and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION reads | Metadata rewrite and CLI tag edits implemented; FLAC audio encoding remains planned | CLI inspect/WAVE conversion implemented; Ogg-FLAC and seeking remain open |
+| FLAC | Native FLAC streaming decode with frame CRC and STREAMINFO MD5 verification; Vorbis comments, raw metadata-block preservation, and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION reads | Native integer PCM 8/16/24/32-bit verbatim-frame encoding and metadata rewrite; CLI tag edits implemented | CLI inspect/WAVE conversion implemented; Ogg-FLAC encoding and seeking remain open |
 | AIFF / AIFF-C | Parse chunks, decode supported PCM/float and declared codecs | Write supported PCM/float, metadata | Lossless |
 | AU / CAF / raw PCM | Decode supported encodings; raw PCM requires caller-supplied parameters | Encode supported encodings and raw PCM | Lossless / utility |
 | WavPack (`.wv`) | Partial: mono/stereo lossless integer PCM at 8/16/24/32 bits, stereo lossless IEEE float32, custom sample rates, false stereo, tested PCM16 groups with 3–8 channels and 5.1 PCM24/32, hybrid-lossy PCM16/float32, tested `.wvc` restoration for PCM16/24/32 and float32 including 3-channel PCM16 and shaped/cross-channel stereo PCM16, and native DSD direct/fast/adaptive stereo plus adaptive 5.1; block, decoded-sample, WVX, and DSD checksums are verified | PCM/DSD encoding, APEv2 tags, and broader profile/corpus conformance remain planned; DSD has no hybrid `.wvc` mode | Clean-room specification path confirmed; implementation uses Rust `std` and Zemer crates only |
@@ -158,6 +158,7 @@ discard layout or audio information.
 
 See the [README support matrix](README.md#current-support) for implemented
 formats and exact read/write support. WAVE/RF64 and native FLAC decoding are
-implemented, with WAVE-backed CUE track splitting and CUE creation. FLAC
-writing, Ogg-FLAC, other codecs, track types, and archive/disc workflows remain
-planned until code and tests land.
+implemented, with library-level native FLAC integer PCM encoding, WAVE-backed
+CUE track splitting, and CUE creation. Ogg-FLAC encoding, FLAC seeking, other
+codecs, track types, and archive/disc workflows remain planned until code and
+tests land.

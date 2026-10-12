@@ -184,7 +184,7 @@ impl<R: Read> BitReader<R> {
     }
 }
 
-fn crc8_update(mut crc: u8, byte: u8) -> u8 {
+pub(crate) fn crc8_update(mut crc: u8, byte: u8) -> u8 {
     crc ^= byte;
     for _ in 0..8 {
         crc = if crc & 0x80 == 0 {
@@ -196,7 +196,7 @@ fn crc8_update(mut crc: u8, byte: u8) -> u8 {
     crc
 }
 
-fn crc16_update(mut crc: u16, byte: u8) -> u16 {
+pub(crate) fn crc16_update(mut crc: u16, byte: u8) -> u16 {
     crc ^= u16::from(byte) << 8;
     for _ in 0..8 {
         crc = if crc & 0x8000 == 0 {

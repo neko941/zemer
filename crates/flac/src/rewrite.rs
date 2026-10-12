@@ -4,8 +4,8 @@ use zemer_core::{AudioError, Metadata};
 
 use crate::metadata::{checked_metadata_size, read_metadata};
 
-const MAX_BLOCK_BYTES: usize = 0x00ff_ffff;
-const DEFAULT_VENDOR: &[u8] = b"zemer";
+pub(crate) const MAX_BLOCK_BYTES: usize = 0x00ff_ffff;
+pub(crate) const DEFAULT_VENDOR: &[u8] = b"zemer";
 
 /// Rewrites FLAC Vorbis comments and copies every other metadata block and audio byte unchanged.
 ///
@@ -79,7 +79,7 @@ fn read_vendor(data: &[u8]) -> Result<&[u8], AudioError> {
     Ok(&data[4..end])
 }
 
-fn encode_comments(metadata: &Metadata, vendor: &[u8]) -> Result<Vec<u8>, AudioError> {
+pub(crate) fn encode_comments(metadata: &Metadata, vendor: &[u8]) -> Result<Vec<u8>, AudioError> {
     let field_count = metadata
         .iter()
         .try_fold(0_usize, |count, (_, values)| {
@@ -137,7 +137,7 @@ fn encode_comments(metadata: &Metadata, vendor: &[u8]) -> Result<Vec<u8>, AudioE
     Ok(block)
 }
 
-fn write_block<W: Write>(
+pub(crate) fn write_block<W: Write>(
     output: &mut W,
     kind: u8,
     data: &[u8],
