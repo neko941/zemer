@@ -91,8 +91,9 @@ platform-specific implementations may remain unsupported.
 
 ## 4. DSD and optical-disc audio
 
-- Read DSF and DSDIFF/DFF metadata and audio; add writing where the
-  specifications allow it.
+- DSF 1.01 raw one-bit DSD read/write and common ID3 text mapping are
+  implemented. Add DSDIFF/DFF metadata/audio support and artwork/unknown-frame
+  preservation for DSF.
 - Inspect SACD/DSD ISO navigation, stereo and multichannel areas, track
   boundaries, timing, and metadata only after normative documentation and
   fixture rights are established. Any future extraction must stream readable,
