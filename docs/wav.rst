@@ -74,9 +74,17 @@ Supported samples
   album, date, genre, and comment. Other metadata keys are rejected by the WAV
   writer rather than silently discarded.
 
-The reader selects the first ``data`` chunk, skips unknown chunks, and rejects
-partial sample frames. It does not decode ADPCM, GSM, or other unsupported
-codecs stored inside WAV.
+The reader concatenates top-level ``data`` chunks and ``LIST/wavl`` child
+segments in file order. A ``wavl`` list may contain ``data`` sample bytes and
+``slnt`` silent-frame counts; silence repeats the preceding interleaved sample
+frame so transitions do not introduce clicks. If a file starts with ``slnt``,
+the reader uses neutral PCM or G.711 sample codes. Segment reads remain bounded
+by the caller's requested frame count, and at most one million audio segments
+are retained while parsing. Unknown RIFF chunks and unknown ``wavl`` children
+are skipped. Partial PCM sample frames and malformed ``slnt`` chunks are
+rejected. The writer emits one conventional contiguous ``data`` chunk.
+The reader does not decode ADPCM, GSM, or other unsupported codecs stored
+inside WAV.
 
 Metadata rewriting
 ------------------
@@ -110,6 +118,7 @@ The reader requires a seekable input and the writer requires a seekable output.
 The writer produces classic RIFF/WAVE by default and ``WAVE_FORMAT_EXTENSIBLE``
 when a channel mask is specified. RF64 output must be selected explicitly with
 ``WavContainer::Rf64``. Classic RIFF output errors before exceeding the 4 GiB
-size limit. The reader supports the first ``data`` chunk in both containers,
-but not ``wavl``/``slnt`` audio lists or embedded metadata beyond the listed
-INFO tags.
+size limit. RIFF and RF64 readers support ``data`` and ``wavl``/``slnt`` audio
+segments. The writer does not create segmented ``wavl`` audio; it writes a
+contiguous ``data`` chunk. Embedded metadata beyond the listed INFO tags is not
+interpreted.

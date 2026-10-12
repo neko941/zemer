@@ -20,12 +20,57 @@ const MULAW_GUID: [u8; 16] = [
 ];
 const MAX_FORMAT_CHUNK: u32 = 64 * 1024;
 const MAX_INFO_VALUE: u32 = 1024 * 1024;
+const MAX_AUDIO_SEGMENTS: usize = 1_000_000;
 pub(super) const MAX_DS64_CHUNK: u32 = 1024 * 1024;
 
 pub(super) struct Ds64 {
     pub(super) riff_size: u64,
     pub(super) data_size: u64,
     table: HashMap<[u8; 4], VecDeque<u64>>,
+}
+
+#[derive(Clone, Copy)]
+enum AudioSegment {
+    Data {
+        next_offset: u64,
+        remaining_frames: u64,
+    },
+    Silence {
+        remaining_frames: u64,
+    },
+}
+
+#[derive(Default)]
+struct AudioLayout {
+    segments: VecDeque<AudioSegment>,
+    data_chunk_seen: bool,
+    remaining_frames: u64,
+}
+
+impl AudioLayout {
+    fn push(&mut self, segment: AudioSegment) -> Result<(), AudioError> {
+        if self.segments.len() == MAX_AUDIO_SEGMENTS {
+            return Err(AudioError::InvalidFormat(
+                "WAVE audio segment count exceeds the safety limit",
+            ));
+        }
+        let frames = match segment {
+            AudioSegment::Data {
+                remaining_frames, ..
+            }
+            | AudioSegment::Silence { remaining_frames } => remaining_frames,
+        };
+        let remaining_frames = self
+            .remaining_frames
+            .checked_add(frames)
+            .ok_or(AudioError::InvalidFormat("WAVE sample count overflow"))?;
+        self.segments
+            .try_reserve(1)
+            .map_err(|_| AudioError::InvalidFormat("WAVE audio segment list is too large"))?;
+        self.segments.push_back(segment);
+        self.remaining_frames = remaining_frames;
+        Ok(())
+    }
 }
 
 impl Ds64 {
@@ -74,6 +119,94 @@ pub(super) fn parse_ds64(bytes: &[u8]) -> Result<Ds64, AudioError> {
     })
 }
 
+fn parse_wavl<R: Read + Seek>(
+    reader: &mut R,
+    start: u64,
+    size: u64,
+    frame_bytes: u16,
+    container: WavContainer,
+    ds64: &mut Option<Ds64>,
+    audio: &mut AudioLayout,
+) -> Result<(), AudioError> {
+    let end = start
+        .checked_add(size)
+        .ok_or(AudioError::InvalidFormat("wavl LIST size overflow"))?;
+    loop {
+        let position = reader.stream_position()?;
+        if position == end {
+            break;
+        }
+        if position > end || end - position < 8 {
+            return Err(AudioError::InvalidFormat("truncated wavl subchunk header"));
+        }
+        let mut header = [0; 8];
+        reader.read_exact(&mut header)?;
+        let id: [u8; 4] = header[..4].try_into().unwrap();
+        let size_32 = u32::from_le_bytes(header[4..8].try_into().unwrap());
+        let chunk_size = if size_32 != u32::MAX {
+            u64::from(size_32)
+        } else if container == WavContainer::Rf64 {
+            let info = ds64
+                .as_mut()
+                .ok_or(AudioError::InvalidFormat("missing RF64 ds64 sizes"))?;
+            if id == *b"data" && !audio.data_chunk_seen {
+                info.data_size
+            } else {
+                info.take_table_size(&id).ok_or(AudioError::InvalidFormat(
+                    "RF64 wavl sentinel has no ds64 table entry",
+                ))?
+            }
+        } else {
+            return Err(AudioError::InvalidFormat(
+                "RIFF wavl chunk uses a size sentinel without RF64 ds64",
+            ));
+        };
+        if id == *b"data" {
+            audio.data_chunk_seen = true;
+        }
+        let data_start = reader.stream_position()?;
+        let chunk_end = data_start
+            .checked_add(chunk_size)
+            .ok_or(AudioError::InvalidFormat("wavl subchunk size overflow"))?;
+        let padded_end = chunk_end
+            .checked_add(chunk_size & 1)
+            .ok_or(AudioError::InvalidFormat("wavl subchunk padding overflow"))?;
+        if padded_end > end {
+            return Err(AudioError::InvalidFormat(
+                "wavl subchunk extends past its LIST boundary",
+            ));
+        }
+        match &id {
+            b"data" => {
+                if chunk_size % u64::from(frame_bytes) != 0 {
+                    return Err(AudioError::InvalidFormat(
+                        "wavl data chunk ends in a partial sample frame",
+                    ));
+                }
+                audio.push(AudioSegment::Data {
+                    next_offset: data_start,
+                    remaining_frames: chunk_size / u64::from(frame_bytes),
+                })?;
+            }
+            b"slnt" => {
+                if chunk_size != 4 {
+                    return Err(AudioError::InvalidFormat(
+                        "wavl slnt chunk must contain one sample count",
+                    ));
+                }
+                let mut bytes = [0; 4];
+                reader.read_exact(&mut bytes)?;
+                audio.push(AudioSegment::Silence {
+                    remaining_frames: u64::from(u32::from_le_bytes(bytes)),
+                })?;
+            }
+            _ => {}
+        }
+        reader.seek(SeekFrom::Start(padded_end))?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum WaveEncoding {
     Pcm(SampleFormat),
@@ -87,7 +220,9 @@ pub struct WavDecoder<R> {
     container: WavContainer,
     metadata: Metadata,
     frame_bytes: u16,
-    data_remaining: u64,
+    segments: VecDeque<AudioSegment>,
+    remaining_frames: u64,
+    last_frame: Option<Vec<u8>>,
     encoding: WaveEncoding,
 }
 
@@ -155,7 +290,8 @@ impl<R: Read + Seek> WavDecoder<R> {
         let mut parsed_spec = None;
         let mut frame_bytes = None;
         let mut encoding = None;
-        let mut data_chunk = None;
+        let mut audio = AudioLayout::default();
+        let mut has_audio = false;
         let mut metadata = Metadata::default();
         loop {
             let position = reader.stream_position()?;
@@ -171,7 +307,7 @@ impl<R: Read + Seek> WavDecoder<R> {
             let chunk_size = if chunk_size_32 != u32::MAX {
                 u64::from(chunk_size_32)
             } else if container == WavContainer::Rf64 {
-                if &chunk_header[..4] == b"data" && data_chunk.is_none() {
+                if &chunk_header[..4] == b"data" && !audio.data_chunk_seen {
                     ds64.as_ref()
                         .ok_or(AudioError::InvalidFormat("missing RF64 ds64 sizes"))?
                         .data_size
@@ -187,6 +323,9 @@ impl<R: Read + Seek> WavDecoder<R> {
                     "RIFF chunk size sentinel without RF64 ds64",
                 ));
             };
+            if &chunk_header[..4] == b"data" {
+                audio.data_chunk_seen = true;
+            }
             let chunk_start = reader.stream_position()?;
             let chunk_end = chunk_start
                 .checked_add(chunk_size)
@@ -217,9 +356,46 @@ impl<R: Read + Seek> WavDecoder<R> {
                 b"data" if parsed_spec.is_none() => {
                     return Err(AudioError::InvalidFormat("fmt chunk must precede data"));
                 }
-                b"data" if data_chunk.is_none() => data_chunk = Some((chunk_start, chunk_size)),
-                b"LIST" if chunk_size >= 4 && chunk_size <= u64::from(u32::MAX) => {
-                    parse_list_info(&mut reader, chunk_size as u32, &mut metadata)?
+                b"data" => {
+                    let frame_bytes = frame_bytes
+                        .ok_or(AudioError::InvalidFormat("fmt chunk must precede data"))?;
+                    if chunk_size % u64::from(frame_bytes) != 0 {
+                        return Err(AudioError::InvalidFormat(
+                            "data chunk ends in a partial sample frame",
+                        ));
+                    }
+                    audio.push(AudioSegment::Data {
+                        next_offset: chunk_start,
+                        remaining_frames: chunk_size / u64::from(frame_bytes),
+                    })?;
+                    has_audio = true;
+                }
+                b"LIST" if chunk_size >= 4 => {
+                    let mut list_type = [0; 4];
+                    reader.read_exact(&mut list_type)?;
+                    match &list_type {
+                        b"INFO" if chunk_size <= u64::from(u32::MAX) => {
+                            reader.seek(SeekFrom::Start(chunk_start))?;
+                            parse_list_info(&mut reader, chunk_size as u32, &mut metadata)?;
+                        }
+                        b"wavl" => {
+                            let frame_bytes = frame_bytes.ok_or(AudioError::InvalidFormat(
+                                "fmt chunk must precede wavl audio",
+                            ))?;
+                            let wavl_start = reader.stream_position()?;
+                            parse_wavl(
+                                &mut reader,
+                                wavl_start,
+                                chunk_size - 4,
+                                frame_bytes,
+                                container,
+                                &mut ds64,
+                                &mut audio,
+                            )?;
+                            has_audio = true;
+                        }
+                        _ => {}
+                    }
                 }
                 _ => {}
             }
@@ -230,14 +406,9 @@ impl<R: Read + Seek> WavDecoder<R> {
         let frame_bytes =
             frame_bytes.ok_or(AudioError::InvalidFormat("missing frame alignment"))?;
         let encoding = encoding.ok_or(AudioError::InvalidFormat("missing WAVE encoding"))?;
-        let (data_start, data_size) =
-            data_chunk.ok_or(AudioError::InvalidFormat("missing data chunk"))?;
-        if data_size % u64::from(frame_bytes) != 0 {
-            return Err(AudioError::InvalidFormat(
-                "data chunk ends in a partial sample frame",
-            ));
+        if !has_audio {
+            return Err(AudioError::InvalidFormat("missing data or wavl audio"));
         }
-        reader.seek(SeekFrom::Start(data_start))?;
 
         Ok(Self {
             reader,
@@ -245,7 +416,9 @@ impl<R: Read + Seek> WavDecoder<R> {
             container,
             metadata,
             frame_bytes,
-            data_remaining: data_size,
+            segments: audio.segments,
+            remaining_frames: audio.remaining_frames,
+            last_frame: None,
             encoding,
         })
     }
@@ -270,12 +443,12 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
                 "max_frames must be greater than zero",
             ));
         }
-        if self.data_remaining == 0 {
+        let frames = self.remaining_frames.min(max_frames as u64);
+        if frames == 0 {
             return Ok(None);
         }
-
-        let frames_left = self.data_remaining / u64::from(self.frame_bytes);
-        let frames = frames_left.min(max_frames as u64) as usize;
+        let frames = usize::try_from(frames)
+            .map_err(|_| AudioError::InvalidData("requested block size overflow"))?;
         let byte_count = frames
             .checked_mul(usize::from(self.frame_bytes))
             .ok_or(AudioError::InvalidData("requested block size overflow"))?;
@@ -283,10 +456,77 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
         bytes
             .try_reserve_exact(byte_count)
             .map_err(|_| AudioError::InvalidData("audio block is too large"))?;
-        bytes.resize(byte_count, 0);
-        self.reader.read_exact(&mut bytes)?;
-        self.data_remaining -= byte_count as u64;
+        while bytes.len() < byte_count {
+            let Some(segment) = self.segments.front_mut() else {
+                break;
+            };
+            match segment {
+                AudioSegment::Data {
+                    next_offset,
+                    remaining_frames,
+                } => {
+                    if *remaining_frames == 0 {
+                        self.segments.pop_front();
+                        continue;
+                    }
+                    let frames_left = (byte_count - bytes.len()) / usize::from(self.frame_bytes);
+                    let take_frames = (*remaining_frames).min(frames_left as u64);
+                    let take_bytes = usize::try_from(take_frames)
+                        .ok()
+                        .and_then(|count| count.checked_mul(usize::from(self.frame_bytes)))
+                        .ok_or(AudioError::InvalidData("requested block size overflow"))?;
+                    self.reader.seek(SeekFrom::Start(*next_offset))?;
+                    let start = bytes.len();
+                    bytes.resize(start + take_bytes, 0);
+                    self.reader.read_exact(&mut bytes[start..])?;
+                    *next_offset = next_offset
+                        .checked_add(take_bytes as u64)
+                        .ok_or(AudioError::InvalidData("WAVE data offset overflow"))?;
+                    *remaining_frames -= take_frames;
+                    let frame_bytes = usize::from(self.frame_bytes);
+                    self.last_frame = Some(bytes[bytes.len() - frame_bytes..].to_vec());
+                }
+                AudioSegment::Silence { remaining_frames } => {
+                    if *remaining_frames == 0 {
+                        self.segments.pop_front();
+                        continue;
+                    }
+                    let frame_bytes = usize::from(self.frame_bytes);
+                    let frames_left = (byte_count - bytes.len()) / frame_bytes;
+                    let take_frames = (*remaining_frames).min(frames_left as u64);
+                    let silence_frame = self.last_frame.get_or_insert_with(|| {
+                        initial_silence_frame(self.frame_bytes, self.encoding)
+                    });
+                    let take_bytes = usize::try_from(take_frames)
+                        .ok()
+                        .and_then(|count| count.checked_mul(frame_bytes))
+                        .ok_or(AudioError::InvalidData("requested block size overflow"))?;
+                    let start = bytes.len();
+                    bytes.resize(start + take_bytes, 0);
+                    for frame in bytes[start..].chunks_exact_mut(frame_bytes) {
+                        frame.copy_from_slice(silence_frame);
+                    }
+                    *remaining_frames -= take_frames;
+                }
+            }
+            let exhausted = match self.segments.front() {
+                Some(AudioSegment::Data {
+                    remaining_frames, ..
+                })
+                | Some(AudioSegment::Silence { remaining_frames }) => *remaining_frames == 0,
+                None => false,
+            };
+            if exhausted {
+                self.segments.pop_front();
+            }
+        }
 
+        let decoded_frames = u64::try_from(bytes.len() / usize::from(self.frame_bytes))
+            .map_err(|_| AudioError::InvalidData("decoded frame count overflow"))?;
+        self.remaining_frames = self
+            .remaining_frames
+            .checked_sub(decoded_frames)
+            .ok_or(AudioError::InvalidData("WAVE sample count underflow"))?;
         let samples = decode_samples(self.encoding, bytes)?;
         PcmBuffer::new(self.spec, samples)
             .map(Some)
@@ -356,6 +596,16 @@ fn decode_samples(encoding: WaveEncoding, bytes: Vec<u8>) -> Result<Samples, Aud
             Samples::F64(output)
         }
     })
+}
+
+fn initial_silence_frame(frame_bytes: u16, encoding: WaveEncoding) -> Vec<u8> {
+    let fill = match encoding {
+        WaveEncoding::Pcm(SampleFormat::PcmU8) => 0x80,
+        WaveEncoding::ALaw => 0xd5,
+        WaveEncoding::MuLaw => 0xff,
+        _ => 0,
+    };
+    vec![fill; usize::from(frame_bytes)]
 }
 
 fn decode_alaw(byte: u8) -> i16 {
@@ -568,6 +818,125 @@ mod tests {
         let mut decoder = WavDecoder::new(Cursor::new(encoded.into_inner())).unwrap();
         assert_eq!(decoder.spec(), spec);
         assert_eq!(decoder.read_frames(input.frames()).unwrap().unwrap(), input);
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    fn append_chunk(output: &mut Vec<u8>, id: &[u8; 4], data: &[u8]) {
+        output.extend_from_slice(id);
+        output.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        output.extend_from_slice(data);
+        if data.len() & 1 != 0 {
+            output.push(0);
+        }
+    }
+
+    fn wavl_pcm(channels: u16, bits: u16, segments: &[(&[u8; 4], Vec<u8>)]) -> Vec<u8> {
+        let bytes_per_sample = bits / 8;
+        let frame_bytes = channels * bytes_per_sample;
+        let rate = 48_000_u32;
+        let mut bytes = b"RIFF\0\0\0\0WAVE".to_vec();
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&1_u16.to_le_bytes());
+        fmt.extend_from_slice(&channels.to_le_bytes());
+        fmt.extend_from_slice(&rate.to_le_bytes());
+        fmt.extend_from_slice(&(rate * u32::from(frame_bytes)).to_le_bytes());
+        fmt.extend_from_slice(&frame_bytes.to_le_bytes());
+        fmt.extend_from_slice(&bits.to_le_bytes());
+        append_chunk(&mut bytes, b"fmt ", &fmt);
+
+        let mut wavl = b"wavl".to_vec();
+        for (id, data) in segments {
+            append_chunk(&mut wavl, id, data);
+        }
+        append_chunk(&mut bytes, b"LIST", &wavl);
+        let riff_size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn decodes_wavl_data_and_slnt_in_order_across_read_boundaries() {
+        let bytes = wavl_pcm(
+            1,
+            8,
+            &[
+                (b"data", vec![0x10, 0x20]),
+                (b"slnt", 2_u32.to_le_bytes().to_vec()),
+                (b"data", vec![0x30]),
+            ],
+        );
+        let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.read_frames(2).unwrap().unwrap().samples(),
+            &Samples::U8(vec![0x10, 0x20])
+        );
+        assert_eq!(
+            decoder.read_frames(2).unwrap().unwrap().samples(),
+            &Samples::U8(vec![0x20, 0x20])
+        );
+        assert_eq!(
+            decoder.read_frames(2).unwrap().unwrap().samples(),
+            &Samples::U8(vec![0x30])
+        );
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn wavl_slnt_counts_multichannel_frames_and_uses_initial_pcm_silence() {
+        let bytes = wavl_pcm(
+            2,
+            16,
+            &[
+                (b"slnt", 1_u32.to_le_bytes().to_vec()),
+                (b"data", vec![1, 0, 2, 0]),
+                (b"slnt", 1_u32.to_le_bytes().to_vec()),
+            ],
+        );
+        let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.read_frames(3).unwrap().unwrap().samples(),
+            &Samples::I16(vec![0, 0, 1, 2, 1, 2])
+        );
+        assert!(decoder.read_frames(1).unwrap().is_none());
+
+        let bytes = wavl_pcm(1, 8, &[(b"slnt", 2_u32.to_le_bytes().to_vec())]);
+        let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.read_frames(2).unwrap().unwrap().samples(),
+            &Samples::U8(vec![128, 128])
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_wavl_silence_and_partial_frames() {
+        let malformed_slnt = wavl_pcm(1, 8, &[(b"slnt", vec![0, 0, 0])]);
+        assert!(WavDecoder::new(Cursor::new(malformed_slnt)).is_err());
+
+        let partial_stereo_frame = wavl_pcm(2, 16, &[(b"data", vec![1, 0])]);
+        assert!(WavDecoder::new(Cursor::new(partial_stereo_frame)).is_err());
+    }
+
+    #[test]
+    fn resolves_rf64_size_sentinel_for_data_inside_wavl() {
+        let mut bytes = b"RF64\xff\xff\xff\xffWAVE".to_vec();
+        let mut ds64 = Vec::new();
+        ds64.extend_from_slice(&0_u64.to_le_bytes());
+        ds64.extend_from_slice(&2_u64.to_le_bytes());
+        ds64.extend_from_slice(&2_u64.to_le_bytes());
+        ds64.extend_from_slice(&0_u32.to_le_bytes());
+        append_chunk(&mut bytes, b"ds64", &ds64);
+        bytes.extend_from_slice(b"fmt \x10\0\0\0\x01\0\x01\0\x80\xbb\0\0\x80\xbb\0\0\x01\0\x08\0");
+        let mut wavl = b"wavl".to_vec();
+        wavl.extend_from_slice(b"data\xff\xff\xff\xff\x34\x56");
+        append_chunk(&mut bytes, b"LIST", &wavl);
+        let riff_size = (bytes.len() - 8) as u64;
+        bytes[20..28].copy_from_slice(&riff_size.to_le_bytes());
+
+        let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.read_frames(2).unwrap().unwrap().samples(),
+            &Samples::U8(vec![0x34, 0x56])
+        );
         assert!(decoder.read_frames(1).unwrap().is_none());
     }
 

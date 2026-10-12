@@ -15,7 +15,7 @@ The workspace separates format-independent audio types from each format implemen
 
 | Format | Status | Capabilities |
 |---|---|---|
-| RIFF/WAVE PCM 8/16/24/32-bit | Supported | Read and write; RIFF INFO metadata read/write. Extensible PCM accepts 1..=container valid bits, preserves container-width sample values and optional channel masks. |
+| RIFF/WAVE PCM 8/16/24/32-bit | Supported | Read and write; decodes ordered `data` and `LIST/wavl` `data`/`slnt` segments. RIFF INFO metadata read/write. Extensible PCM accepts 1..=container valid bits, preserves container-width sample values and optional channel masks. |
 | RIFF/WAVE IEEE float 32/64-bit | Supported | Read and write; RIFF INFO metadata read/write. WAVE_FORMAT_EXTENSIBLE float and optional channel masks are preserved. |
 | RIFF/WAVE G.711 A-law and μ-law | Supported | Read and write; RIFF INFO metadata read/write. Decodes to signed 16-bit PCM; writing requires explicit G.711 selection. |
 | RF64/WAVE | Supported | Read and write; RIFF INFO metadata read/write. Supports 64-bit file and data sizes; select explicitly for output. |
@@ -28,7 +28,7 @@ The workspace separates format-independent audio types from each format implemen
 
 See [ROADMAP.md](ROADMAP.md) for planned formats and workflows.
 
-The WAV reader handles the first `data` chunk and skips unknown RIFF/RF64 chunks, including RF64 `ds64` size-table entries. `wavl`/`slnt` and non-G.711 compressed codecs inside WAV are not implemented. The writer defaults to classic RIFF/WAVE (using WAVE_FORMAT_EXTENSIBLE when a channel mask is provided); select `WavContainer::Rf64` or CLI `--container rf64` for 64-bit sizes. Classic RIFF reports an explicit error before exceeding its 4 GiB size limit.
+The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in file order, including RF64 `ds64` size-table entries. `slnt` holds the preceding interleaved sample frame; initial silence uses neutral PCM/G.711 codes. The reader caps retained audio segments at one million. The writer emits a conventional contiguous `data` chunk. Non-G.711 compressed codecs inside WAV are not implemented. The writer defaults to classic RIFF/WAVE (using WAVE_FORMAT_EXTENSIBLE when a channel mask is provided); select `WavContainer::Rf64` or CLI `--container rf64` for 64-bit sizes. Classic RIFF reports an explicit error before exceeding its 4 GiB size limit.
 
 ## Workspace crates
 
