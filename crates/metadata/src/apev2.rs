@@ -5,8 +5,9 @@ use std::{error::Error, fmt};
 use crate::Metadata;
 
 const FOOTER_SIZE: usize = 32;
-// shortcut: cap tags at 64 MiB; raise this when larger cover art is needed and memory bounds are revisited.
-const MAX_TAG_SIZE: usize = 64 * 1024 * 1024;
+// shortcut: stay within WavPack's documented interoperable tag size; revisit with a nonstandard opt-in.
+/// Maximum encoded APEv2 tag size, including its footer but excluding an optional header.
+pub const MAX_APEV2_TAG_SIZE: usize = 16 * 1024 * 1024;
 const HEADER_PRESENT: u32 = 1 << 31;
 const NO_FOOTER: u32 = 1 << 30;
 const IS_HEADER: u32 = 1 << 29;
@@ -41,8 +42,8 @@ impl ApeTag {
 
     /// Parses one complete APEv2 tag region, with a footer and optional header.
     pub fn parse(bytes: &[u8]) -> Result<Self, ApeTagError> {
-        if bytes.len() > MAX_TAG_SIZE + FOOTER_SIZE {
-            return Err(ApeTagError("APEv2 tag exceeds the 64 MiB limit"));
+        if bytes.len() > MAX_APEV2_TAG_SIZE + FOOTER_SIZE {
+            return Err(ApeTagError("APEv2 tag exceeds the 16 MiB limit"));
         }
         let footer = bytes
             .get(bytes.len().saturating_sub(FOOTER_SIZE)..)
@@ -57,7 +58,7 @@ impl ApeTag {
         } else {
             0
         };
-        if !(FOOTER_SIZE..=MAX_TAG_SIZE).contains(&declared_size)
+        if !(FOOTER_SIZE..=MAX_APEV2_TAG_SIZE).contains(&declared_size)
             || declared_size.checked_add(header_size) != Some(bytes.len())
         {
             return Err(ApeTagError("invalid APEv2 tag size"));
@@ -125,8 +126,8 @@ impl ApeTag {
                 .checked_add(9)
                 .and_then(|size| size.checked_add(item.key.len()))
                 .and_then(|size| size.checked_add(item.value.len()))
-                .filter(|&size| size <= MAX_TAG_SIZE - FOOTER_SIZE)
-                .ok_or(ApeTagError("APEv2 tag exceeds the 64 MiB limit"))?;
+                .filter(|&size| size <= MAX_APEV2_TAG_SIZE - FOOTER_SIZE)
+                .ok_or(ApeTagError("APEv2 tag exceeds the 16 MiB limit"))?;
         }
         let mut body = Vec::new();
         body.try_reserve_exact(body_size)

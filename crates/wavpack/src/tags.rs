@@ -1,7 +1,7 @@
 use std::io::{Read, Seek, SeekFrom, Write, copy};
 
 use zemer_core::{AudioError, Metadata};
-use zemer_metadata::apev2::ApeTag;
+use zemer_metadata::apev2::{ApeTag, MAX_APEV2_TAG_SIZE};
 
 const ID3V1_SIZE: u64 = 128;
 const APE_FOOTER_SIZE: u64 = 32;
@@ -75,7 +75,7 @@ fn locate_tag<R: Read + Seek>(reader: &mut R) -> Result<Option<(u64, u64, ApeTag
         };
         let total_size = size
             .checked_add(header_size)
-            .filter(|&size| size <= 64 * 1024 * 1024 + APE_FOOTER_SIZE)
+            .filter(|&size| size <= (MAX_APEV2_TAG_SIZE + APE_FOOTER_SIZE) as u64)
             .ok_or(AudioError::InvalidData(
                 "invalid or oversized WavPack APEv2 tag",
             ))?;

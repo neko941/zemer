@@ -9,7 +9,7 @@ APEv2 text metadata.
 APEv2 text fields are UTF-8 and case-insensitive when looked up. Rewriting
 metadata preserves binary, external, and reserved items, copies compressed
 audio blocks byte-for-byte, and retains a trailing ID3v1 record. Tags are
-bounded to 64 MiB. Streaming ``WavPackDecoder::new`` does not seek to find
+bounded to 16 MiB. Streaming ``WavPackDecoder::new`` does not seek to find
 trailing tags; use ``WavPackDecoder::new_seekable`` when the input supports
 seeking and metadata must be available before decoding.
 
