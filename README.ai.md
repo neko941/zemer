@@ -7,13 +7,20 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-core`](crates/core/): shared PCM/DSD decoder and encoder interfaces; re-exports metadata and audio buffer types.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
-- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming integer-PCM encoder and decoder, plus Vorbis-comment rewriting and preserved raw metadata blocks with typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
+- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming integer-PCM encoder and native/Ogg-FLAC decoders, plus Vorbis-comment rewriting and preserved raw metadata blocks with typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
+- [`zemer-ogg`](crates/ogg/): bounded Ogg page and packet reader reused by Ogg-FLAC.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): bounded block inspection; PCM/float32 including false stereo and custom rates; tested multichannel lossless/hybrid profiles; PCM16/24/32/float32 `.wvc` restoration; and native DSD direct/fast/adaptive decoding (stereo, plus adaptive 5.1), with block, decoded-sample, WVX, and DSD checksum validation.
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, WAVE/FLAC metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
+
+Ogg-FLAC decoding handles one logical stream and verifies the terminal granule
+against decoded sample count, including when STREAMINFO total samples are
+unknown, trimming trailing samples from the final decoded block when required.
+Independent PCM-oracle validation is still limited to a generated sample; do
+not claim broad Ogg-FLAC conformance yet.
 
 ## Other repository paths
 

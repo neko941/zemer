@@ -34,10 +34,14 @@ RFC-defined hexadecimal Vorbis comment. The decoder reads STREAMINFO and
 Vorbis comments, retains each metadata block's
 raw type and payload through ``metadata_blocks()``, handles constant, verbatim,
 fixed-predictor, and linear-predictor subframes, Rice residuals, wasted bits,
-and stereo decorrelation. It verifies frame header and frame CRCs. It currently
-supports native FLAC streams only; Ogg-FLAC and seeking are not implemented.
-The CLI can inspect native FLAC streams and convert them to WAVE; encoding is
-currently exposed by the Rust library only.
+and stereo decorrelation. It verifies frame header and frame CRCs. It supports
+native FLAC and single-logical-stream Ogg-FLAC decoding; chained logical streams
+and seeking are not implemented. Ogg-FLAC validates page framing and checks the
+terminal granule against the decoded sample count, including when STREAMINFO's
+total is unknown, and trims trailing samples from the final decoded block as
+required. The CLI can inspect either
+FLAC mapping and convert them to WAVE; encoding is currently exposed by the Rust
+library only.
 Support is partial: valid uncommon streams outside the decoder's current
 capabilities may be rejected. Vorbis comments are exposed as shared text
 metadata. Every block is preserved as its original type and payload. Picture

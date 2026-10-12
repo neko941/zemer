@@ -4,10 +4,12 @@ mod encode;
 mod frame;
 mod md5;
 mod metadata;
+mod ogg;
 mod rewrite;
 
 pub use decode::FlacDecoder;
 pub use encode::FlacEncoder;
+pub use ogg::OggFlacDecoder;
 pub use metadata::{
     FlacApplication, FlacCueIndex, FlacCueSheet, FlacCueTrack, FlacMetadataBlock, FlacPicture,
     FlacSeekPoint, FlacSeekTable, FlacStreamInfo,
