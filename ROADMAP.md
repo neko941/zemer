@@ -81,7 +81,7 @@ support for every file with that extension.
 | Ogg with Vorbis / Opus | Parse streams and decode each supported codec | Encode each codec and write stream metadata | Separate codec support |
 | WMA and other legacy formats | Evaluate supported variants and dependencies | Encode only where clean-room scope and licensing permit | Evaluate separately |
 | DSF / DSDIFF | Inspect, decode DSD, read format metadata | Write DSD and metadata where specified | DSD |
-| SACD DSD ISO | Inspect areas/tracks, extract DSD or DST tracks and metadata | Create images only if specification-based workflows and tests are practical | DSD / disc |
+| SACD DSD ISO | Evaluate TOC/area inspection and extraction of readable DSD tracks from user-supplied images | Image creation only if specification-based workflows and tests are practical | Deferred pending a lawful normative source, usable test-image rights, and an explicit image/sector model; no DRM circumvention, DST is a separate codec |
 
 Read and write are separate capabilities: a format may be readable before an
 encoder is ready. Formats that depend on restricted, undocumented, or
@@ -92,8 +92,10 @@ platform-specific implementations may remain unsupported.
 - Read DSF and DSDIFF/DFF metadata and audio; add writing where the
   specifications allow it.
 - Inspect SACD/DSD ISO navigation, stereo and multichannel areas, track
-  boundaries, timing, and metadata; extract supported tracks without loading an
-  entire image into memory.
+  boundaries, timing, and metadata only after normative documentation and
+  fixture rights are established. Any future extraction must stream readable,
+  unencrypted content and reject protected or undocumented paths; see the
+  internal feasibility notes.
 - Evaluate DST decoding as a separate codec with its own tests and documented
   limits.
 - Preserve track, index, timing, and channel information when exporting tracks
