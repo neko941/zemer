@@ -12,7 +12,8 @@ use zemer_core::{
     convert_sample_format,
 };
 
-mod cue;
+#[path = "cue.rs"]
+mod cue_cli;
 
 struct Report {
     spec: AudioSpec,
@@ -48,7 +49,7 @@ impl OutputFormat {
 enum CommandReport {
     Inspect(Report),
     Convert(Report, PathBuf),
-    Cue(cue::CueReport),
+    Cue(cue_cli::CueReport),
 }
 
 struct CliError {
@@ -122,7 +123,7 @@ fn command_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
     match command {
         "inspect" => inspect_args(args).map(CommandReport::Inspect),
         "convert" => convert_args(args).map(|(report, path)| CommandReport::Convert(report, path)),
-        "cue" => cue::run(&args[1..])
+        "cue" => cue_cli::run(&args[1..])
             .map(CommandReport::Cue)
             .map_err(|message| CliError {
                 kind: "invalid_data",

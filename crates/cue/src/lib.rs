@@ -40,9 +40,10 @@ fn parse_wav_text(text: &str) -> Result<CUEFile, String> {
 
 /// Convert a CUE timestamp to an audio frame position without rounding.
 pub fn cue_frame(timestamp: CUETimeStamp) -> Result<u64, &'static str> {
-    let mut components = timestamp.to_string().split(':').map(|part| {
-        part.parse::<u64>().map_err(|_| "invalid CUE timestamp")
-    });
+    let formatted = timestamp.to_string();
+    let mut components = formatted
+        .split(':')
+        .map(|part| part.parse::<u64>().map_err(|_| "invalid CUE timestamp"));
     let minutes = components.next().ok_or("invalid CUE timestamp")??;
     let seconds = components.next().ok_or("invalid CUE timestamp")??;
     let fractions = components.next().ok_or("invalid CUE timestamp")??;
@@ -74,11 +75,11 @@ mod tests {
 
     #[test]
     fn cue_sectors_map_to_sample_frames_without_rounding() {
-        assert_eq!(sample_frame(CUETimeStamp::new(1, 2, 3), 44_100), Ok(2_735_964));
         assert_eq!(
-            sample_frame(CUETimeStamp::new(0, 0, 1), 44_100),
-            Ok(588)
+            sample_frame(CUETimeStamp::new(1, 2, 3), 44_100),
+            Ok(2_735_964)
         );
+        assert_eq!(sample_frame(CUETimeStamp::new(0, 0, 1), 44_100), Ok(588));
         assert!(sample_frame(CUETimeStamp::new(0, 0, 1), 8_000).is_err());
     }
 
@@ -86,11 +87,13 @@ mod tests {
     fn parses_utf8_and_shift_jis_wave_sheets_and_rejects_data_tracks() {
         let utf8 = b"FILE \"a.wav\" WAVE\n TRACK 01 AUDIO\n INDEX 01 00:00:00\n";
         assert_eq!(parse_wav(utf8).unwrap().files, ["a.wav"]);
-        let shift_jis = [
-            b"FILE \"", &[0x83, 0x65, 0x83, 0x58, 0x83, 67], b".wav\" WAVE\n TRACK 01 AUDIO\n INDEX 01 00:00:00\n",
-        ]
-        .concat();
+        let mut shift_jis = b"FILE \"".to_vec();
+        shift_jis.extend([0x83, 0x65, 0x83, 0x58, 0x83, 0x67]);
+        shift_jis.extend_from_slice(b".wav\" WAVE\n TRACK 01 AUDIO\n INDEX 01 00:00:00\n");
         assert!(parse_wav(&shift_jis).unwrap().files[0].contains("テスト"));
-        assert!(parse_wav(b"FILE \"disc.bin\" BINARY\n TRACK 01 MODE1/2352\n INDEX 01 00:00:00\n").is_err());
+        assert!(
+            parse_wav(b"FILE \"disc.bin\" BINARY\n TRACK 01 MODE1/2352\n INDEX 01 00:00:00\n")
+                .is_err()
+        );
     }
 }

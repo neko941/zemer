@@ -17,6 +17,7 @@ path = "crates/zemer-cli/src/main.rs"
 [dependencies]
 zemer-core.workspace = true
 wav.workspace = true
+cue.workspace = true
 
 [workspace.package]
 edition = "2024"

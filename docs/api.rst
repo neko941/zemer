@@ -29,7 +29,7 @@ Rust library crate ``cue`` (Cargo package ``zemer-cue``)
 * UTF-8 and Shift-JIS CUE text parsing for WAVE files and AUDIO tracks.
 
 Rust library crate ``wav`` (Cargo package ``zemer-wav``)
--------------------------------------------------------
+------------------------------------------------------------
 
 * ``WavDecoder<R>`` — seekable RIFF/WAVE and RF64 reader implementing
   ``AudioDecoder``; ``container()`` identifies which one was read.

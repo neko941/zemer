@@ -268,7 +268,9 @@ fn cue_split_and_create_preserve_track_samples_and_metadata() {
     let cue_path = audio_path.with_extension("cue");
     let output_dir = temporary_directory();
     let output_cue = output_dir.join("rebuilt.cue");
-    let samples = (0..1176).map(|sample| sample as i16 - 588).collect::<Vec<_>>();
+    let samples = (0..1176)
+        .map(|sample| sample as i16 - 588)
+        .collect::<Vec<_>>();
     let audio = PcmBuffer::new(
         AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap(),
         Samples::I16(samples.clone()),
@@ -295,10 +297,21 @@ fn cue_split_and_create_preserve_track_samples_and_metadata() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(String::from_utf8(output.stdout).unwrap().contains("\"tracks\":2"));
-    for (number, expected) in [("01 - First.wav", &samples[..588]), ("02 - Second.wav", &samples[588..])] {
-        let mut decoder = wav::WavDecoder::new(File::open(output_dir.join(number)).unwrap()).unwrap();
-        assert_eq!(decoder.read_frames(588).unwrap().unwrap().samples(), &Samples::I16(expected.to_vec()));
+    assert!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .contains("\"tracks\":2")
+    );
+    for (number, expected) in [
+        ("01 - First.wav", &samples[..588]),
+        ("02 - Second.wav", &samples[588..]),
+    ] {
+        let mut decoder =
+            wav::WavDecoder::new(File::open(output_dir.join(number)).unwrap()).unwrap();
+        assert_eq!(
+            decoder.read_frames(588).unwrap().unwrap().samples(),
+            &Samples::I16(expected.to_vec())
+        );
         assert_eq!(decoder.metadata().values("TITLE").len(), 1);
     }
 
