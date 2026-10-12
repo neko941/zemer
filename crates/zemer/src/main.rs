@@ -278,9 +278,7 @@ fn edit_audio_metadata(
         match format {
             "flac" => flac::rewrite_metadata(input_file, &mut output_file, &metadata),
             "wav" => wav::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
-            "wavpack" => {
-                wavpack::rewrite_metadata(input_file, &mut output_file, &metadata)
-            }
+            "wavpack" => wavpack::rewrite_metadata(input_file, &mut output_file, &metadata),
             _ => unreachable!("format was checked above"),
         }
         .map_err(|error| cli_rewrite_error(error, &input, &output))?;
@@ -492,8 +490,8 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
         has_signature(&mut file, b"OggS").map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| cli_audio_error(error.into(), path))?;
-    let is_wavpack = has_signature(&mut file, b"wvpk")
-        .map_err(|error| cli_audio_error(error.into(), path))?;
+    let is_wavpack =
+        has_signature(&mut file, b"wvpk").map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| cli_audio_error(error.into(), path))?;
     if is_flac {
@@ -511,8 +509,8 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             container: None,
         })
     } else if is_wavpack {
-        let decoder = WavPackDecoder::new_seekable(file)
-            .map_err(|error| cli_audio_error(error, path))?;
+        let decoder =
+            WavPackDecoder::new_seekable(file).map_err(|error| cli_audio_error(error, path))?;
         Ok(AudioInput {
             decoder: Box::new(decoder),
             format: "wavpack",

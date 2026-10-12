@@ -115,8 +115,8 @@ impl ApeTag {
 
     /// Encodes a footer-only APEv2 tag, as used at the end of WavPack files.
     pub fn encode(&self) -> Result<Vec<u8>, ApeTagError> {
-        let item_count = u32::try_from(self.items.len())
-            .map_err(|_| ApeTagError("too many APEv2 items"))?;
+        let item_count =
+            u32::try_from(self.items.len()).map_err(|_| ApeTagError("too many APEv2 items"))?;
         let mut body_size = 0_usize;
         for item in &self.items {
             validate_key(&item.key)?;
@@ -190,8 +190,7 @@ impl ApeTag {
         self.items.retain(|item| {
             item.item_type() != ApeItemType::Text
                 || std::str::from_utf8(&item.key).is_err()
-                || std::str::from_utf8(&item.value)
-                    .is_err()
+                || std::str::from_utf8(&item.value).is_err()
         });
         for (key, values) in metadata.iter() {
             if values.is_empty() {

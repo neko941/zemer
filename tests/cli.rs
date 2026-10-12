@@ -216,7 +216,8 @@ fn wavpack_inspect_convert_and_metadata_edit_use_trailing_apev2() {
         "{}",
         String::from_utf8_lossy(&edited.stderr)
     );
-    let mut edited_decoder = WavPackDecoder::new_seekable(File::open(&tagged_path).unwrap()).unwrap();
+    let mut edited_decoder =
+        WavPackDecoder::new_seekable(File::open(&tagged_path).unwrap()).unwrap();
     assert!(edited_decoder.metadata().values("TITLE").is_empty());
     assert_eq!(edited_decoder.metadata().values("ARTIST"), ["Zemer"]);
     let mut source_again = WavPackDecoder::new_seekable(File::open(&input_path).unwrap()).unwrap();

@@ -51,9 +51,7 @@ pub(crate) fn read_tag_metadata<R: Read + Seek>(reader: &mut R) -> Result<Metada
     Ok(read_apev2_tag(reader)?.map_or_else(Metadata::default, |tag| tag.metadata()))
 }
 
-fn locate_tag<R: Read + Seek>(
-    reader: &mut R,
-) -> Result<Option<(u64, u64, ApeTag)>, AudioError> {
+fn locate_tag<R: Read + Seek>(reader: &mut R) -> Result<Option<(u64, u64, ApeTag)>, AudioError> {
     let original_position = reader.stream_position()?;
     let result = (|| {
         let file_end = reader.seek(SeekFrom::End(0))?;
@@ -70,14 +68,22 @@ fn locate_tag<R: Read + Seek>(
 
         let size = u64::from(u32::from_le_bytes(footer[12..16].try_into().unwrap()));
         let flags = u32::from_le_bytes(footer[20..24].try_into().unwrap());
-        let header_size = if flags & (1 << 31) != 0 { APE_FOOTER_SIZE } else { 0 };
+        let header_size = if flags & (1 << 31) != 0 {
+            APE_FOOTER_SIZE
+        } else {
+            0
+        };
         let total_size = size
             .checked_add(header_size)
             .filter(|&size| size <= 64 * 1024 * 1024 + APE_FOOTER_SIZE)
-            .ok_or(AudioError::InvalidData("invalid or oversized WavPack APEv2 tag"))?;
+            .ok_or(AudioError::InvalidData(
+                "invalid or oversized WavPack APEv2 tag",
+            ))?;
         let tag_start = tag_end
             .checked_sub(total_size)
-            .ok_or(AudioError::InvalidData("WavPack APEv2 tag exceeds the file"))?;
+            .ok_or(AudioError::InvalidData(
+                "WavPack APEv2 tag exceeds the file",
+            ))?;
         let read_size = usize::try_from(total_size)
             .map_err(|_| AudioError::InvalidData("WavPack APEv2 tag is too large"))?;
         let mut bytes = Vec::new();
@@ -137,7 +143,10 @@ mod tests {
         let mut input = Cursor::new(bytes);
         input.set_position(5);
 
-        assert_eq!(read_apev2_tag(&mut input).unwrap().unwrap().metadata(), expected);
+        assert_eq!(
+            read_apev2_tag(&mut input).unwrap().unwrap().metadata(),
+            expected
+        );
         assert_eq!(input.position(), 5);
     }
 
@@ -164,7 +173,13 @@ mod tests {
         rewrite_metadata(Cursor::new(&original), &mut output, &updated).unwrap();
         assert!(output.starts_with(b"a small fake WavPack audio stream"));
         assert!(output.ends_with(&original[original.len() - 128..]));
-        assert_eq!(read_apev2_tag(&mut Cursor::new(&output)).unwrap().unwrap().metadata(), updated);
+        assert_eq!(
+            read_apev2_tag(&mut Cursor::new(&output))
+                .unwrap()
+                .unwrap()
+                .metadata(),
+            updated
+        );
 
         output.clear();
         rewrite_metadata(Cursor::new(&original), &mut output, &Metadata::default()).unwrap();
@@ -180,6 +195,12 @@ mod tests {
         let mut output = Vec::new();
         rewrite_metadata(Cursor::new(source), &mut output, &metadata).unwrap();
         assert!(output.starts_with(source));
-        assert_eq!(read_apev2_tag(&mut Cursor::new(&output)).unwrap().unwrap().metadata(), metadata);
+        assert_eq!(
+            read_apev2_tag(&mut Cursor::new(&output))
+                .unwrap()
+                .unwrap()
+                .metadata(),
+            metadata
+        );
     }
 }

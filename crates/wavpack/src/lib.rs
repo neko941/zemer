@@ -16,8 +16,8 @@ mod tags;
 pub use decode::WavPackDecoder;
 pub use dsd_decode::WavPackDsdDecoder;
 pub use metadata::{WavPackMetadataSubBlockHeader, visit_metadata_sub_blocks};
-pub use tags::{read_apev2_tag, rewrite_metadata};
 use tags::read_tag_metadata;
+pub use tags::{read_apev2_tag, rewrite_metadata};
 
 const HEADER_SIZE: usize = 32;
 
