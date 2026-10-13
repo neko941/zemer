@@ -81,8 +81,8 @@ support for every file with that extension.
 | DTS Coherent Acoustics (`.dts`) | Inspect and decode DTS core; evaluate DTS-HD and embedded/container streams separately | Evaluate clean-room encoding scope and licensing before promising a writer | Spec-based feasibility review ([ETSI TS 102 114](https://www.etsi.org/deliver/etsi_ts/102100_102199/102114/01.06.01_60/ts_102114v010601p.pdf)) |
 | Ogg with Vorbis / Opus | Reusable bounded Ogg page/packet reader is implemented; parse streams and decode each codec | Encode each codec and write stream metadata | Separate codec support |
 | WMA and other legacy formats | Evaluate supported variants and dependencies | Encode only where clean-room scope and licensing permit | Evaluate separately |
-| DSF (`.dsf`) | DSF 1.01 raw one-bit DSD decode and encode for supported channel layouts at 2.8224/5.6448 MHz; reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags | CLI inspects DSF and native DSD WavPack and transcodes between them without PCM conversion | Artwork/unknown-frame preservation remains open |
-| DSDIFF (`.dff`) | Read and decode uncompressed raw DSD, title/artist, general and typed `COMT` comments, and channel IDs | Write uncompressed raw DSD, title/artist, general and typed `COMT` comments, and channel IDs | Implemented profile is partial; DST, markers, unknown-chunk retention, and independent corpus remain open |
+| DSF (`.dsf`) | DSF 1.01 raw one-bit/eight-bit DSD decode and encode for mono through 5.1 at 2.8224/5.6448 MHz; reads common ID3v2.2/v2.3/v2.4 text and writes common ID3v2.4 text | CLI inspection, same-format copy with complete bounded ID3 retention, text metadata edits that preserve opaque frames, and DSF/native DSD WavPack transcoding without PCM | Supported for the implemented DSF 1.01 profile; ID3v2.2 compressed tags are ignored as specified, and cross-container artwork transfer is a separate workflow |
+| DSDIFF (`.dff`) | Read raw DSD across the full 1–65,535-channel `CHNL` range and compressed DST (up to 64 channels at DSD64/128/256) with optional frame CRC validation, title/artist, general and typed `COMT` comments, channel IDs, and typed markers | Write raw DSD or compressed DST with a clean-room first-order predictor and valid mode-0 bypass fallback; same-format metadata edits preserve audio, typed metadata, and unchanged/unknown chunks | Supported for the implemented profile: all three full 300-frame `DST_02_02` vectors and the first 10 frames of every available ISO vector pass bit-exactly; the ISO archive omits `DST_05` vectors |
 | SACD DSD ISO | Evaluate TOC/area inspection and extraction of readable DSD tracks from user-supplied images | Image creation only if specification-based workflows and tests are practical | Deferred pending a lawful normative source, usable test-image rights, and an explicit image/sector model; no DRM circumvention, DST is a separate codec |
 
 Read and write are separate capabilities: a format may be readable before an
@@ -91,18 +91,19 @@ platform-specific implementations may remain unsupported.
 
 ## 4. DSD and optical-disc audio
 
-- DSF 1.01 raw one-bit DSD read/write, common ID3 text mapping, and CLI inspect
-  plus DSF/native DSD WavPack transcoding are implemented. DSDIFF/DFF raw DSD
-  read/write, `COMT` comments, and CLI conversion are implemented for its
-  uncompressed profile; DST and markers remain separate work. DSF
-  artwork/unknown-frame preservation is still open.
+- DSF 1.01 raw one-bit/eight-bit DSD read/write for the documented profile is
+  implemented, with bounded ID3 text mapping, same-format tag retention, and
+  audio-preserving metadata edits. DSDIFF/DFF raw DSD and DST read/write,
+  typed comments and markers, and audio/unknown-chunk-preserving metadata edits
+  are implemented. DST decoding and encoding are in the reusable `zemer-dst`
+  crate; see the support matrix for conformance-vector coverage and limits.
 - Inspect SACD/DSD ISO navigation, stereo and multichannel areas, track
   boundaries, timing, and metadata only after normative documentation and
   fixture rights are established. Any future extraction must stream readable,
   unencrypted content and reject protected or undocumented paths; see the
   internal feasibility notes.
-- Evaluate DST decoding as a separate codec with its own tests and documented
-  limits.
+- Keep DST decoding and encoding as a separate codec with its own tests and
+  documented limits; the initial DSDIFF/DST profile is implemented.
 - Preserve track, index, timing, and channel information when exporting tracks
   or creating cue sheets.
 - Keep PCM conversion from DSD explicit, since it is a signal-processing step
@@ -162,10 +163,7 @@ discard layout or audio information.
 ## Current status
 
 See the [README support matrix](README.md#current-support) for implemented
-formats and exact read/write support. WAVE/RF64, native FLAC, chained
-Ogg-FLAC, DSF 1.01 raw one-bit DSD decoding/encoding for the declared profile,
-DSF/native DSD WavPack CLI inspection and transcoding, WAVE-backed CUE
-splitting, CUE creation, and common DSF ID3v2.3/v2.4 text-tag reads/writes are
-implemented. DSF artwork/raw-frame preservation,
-other codecs, track types, and
-archive/disc workflows remain planned until code and tests land.
+formats and exact read/write support. WAVE/RF64, native and Ogg-FLAC,
+WavPack, DSF 1.01, DSDIFF/DST, WAVE-backed CUE splitting, and CUE creation
+have implemented profiles. Other codecs, track types, and archive/disc
+workflows remain planned until code and tests land.

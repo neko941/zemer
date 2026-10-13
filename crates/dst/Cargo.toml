@@ -1,0 +1,13 @@
+[package]
+name = "zemer-dst"
+description = "Clean-room MPEG-4 DST frame decoder and encoder for oversampled audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "dst"
+
+[dependencies]
+zemer-core.workspace = true

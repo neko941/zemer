@@ -1,12 +1,16 @@
-//! DSDIFF container support for uncompressed, raw one-bit DSD.
+//! DSDIFF container decoding for raw and DST-compressed DSD, with raw DSD encoding.
 
 mod comment;
 mod decode;
 mod encode;
+mod marker;
+mod rewrite;
 
 pub use comment::DsdiffComment;
 pub use decode::DsdiffDecoder;
 pub use encode::DsdiffEncoder;
+pub use marker::DsdiffMarker;
+pub use rewrite::rewrite_metadata;
 
 #[cfg(test)]
 mod tests {
@@ -14,7 +18,7 @@ mod tests {
 
     use zemer_core::{DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata};
 
-    use crate::{DsdiffComment, DsdiffDecoder, DsdiffEncoder};
+    use crate::{DsdiffComment, DsdiffDecoder, DsdiffEncoder, DsdiffMarker};
 
     #[test]
     fn raw_dsd_round_trip_preserves_channels_and_text_metadata() {
@@ -48,6 +52,162 @@ mod tests {
     }
 
     #[test]
+    fn raw_dsd_round_trips_more_than_dst_channel_limit() {
+        let spec = DsdSpec::new(2_822_400, 65).unwrap();
+        assert!(DsdiffEncoder::new_dst(Cursor::new(Vec::new()), spec).is_err());
+        let audio = DsdBuffer::new(spec, (0..65).map(|channel| channel as u8).collect()).unwrap();
+        let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_dsd_octets(&audio).unwrap();
+        encoder.finish().unwrap();
+
+        let mut decoder =
+            DsdiffDecoder::new(Cursor::new(encoder.into_inner().into_inner())).unwrap();
+        assert_eq!(decoder.dsd_spec(), spec);
+        assert_eq!(decoder.metadata().values("DSDIFF_CHANNEL_ID").len(), 65);
+        assert_eq!(
+            decoder.read_dsd_octets(1).unwrap().unwrap().bytes(),
+            audio.bytes()
+        );
+        assert!(decoder.read_dsd_octets(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn raw_dsd_round_trips_the_full_dsdiff_channel_count_field() {
+        let spec = DsdSpec::new(2_822_400, u16::MAX).unwrap();
+        let audio = DsdBuffer::new(spec, vec![0x5a; usize::from(u16::MAX)]).unwrap();
+        let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_dsd_octets(&audio).unwrap();
+        encoder.finish().unwrap();
+
+        let mut decoder =
+            DsdiffDecoder::new(Cursor::new(encoder.into_inner().into_inner())).unwrap();
+        assert_eq!(decoder.dsd_spec(), spec);
+        let ids = decoder.metadata().values("DSDIFF_CHANNEL_ID");
+        assert_eq!(ids.len(), 65_535);
+        let mut unique_ids = ids.to_vec();
+        unique_ids.sort_unstable();
+        unique_ids.dedup();
+        assert_eq!(unique_ids.len(), ids.len());
+        assert_eq!(
+            decoder.read_dsd_octets(1).unwrap().unwrap().bytes(),
+            audio.bytes()
+        );
+        assert!(decoder.read_dsd_octets(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn dst_bypass_round_trip_streams_split_frames() {
+        let spec = DsdSpec::new(2_822_400, 2).unwrap();
+        let frame_bytes = 4_704;
+        let audio = (0..frame_bytes * 2)
+            .map(|index| (index as u8).wrapping_mul(37))
+            .collect::<Vec<_>>();
+        let mut encoder = DsdiffEncoder::new_dst_bypass(Cursor::new(Vec::new()), spec).unwrap();
+        encoder
+            .write_dsd_octets(&DsdBuffer::new(spec, audio[..2_000 * 2].to_vec()).unwrap())
+            .unwrap();
+        encoder
+            .write_dsd_octets(&DsdBuffer::new(spec, audio[2_000 * 2..].to_vec()).unwrap())
+            .unwrap();
+        encoder.finish().unwrap();
+        let bytes = encoder.into_inner().into_inner();
+        assert!(bytes.windows(4).any(|window| window == b"DST "));
+        let mut decoder = DsdiffDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.sample_count(), Some((frame_bytes * 8) as u64));
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_dsd_octets(777).unwrap() {
+            decoded.extend_from_slice(block.bytes());
+        }
+        assert_eq!(decoded, audio);
+    }
+
+    #[test]
+    fn dst_bypass_requires_complete_frames() {
+        let spec = DsdSpec::new(2_822_400, 1).unwrap();
+        let mut encoder = DsdiffEncoder::new_dst_bypass(Cursor::new(Vec::new()), spec).unwrap();
+        encoder
+            .write_dsd_octets(&DsdBuffer::new(spec, vec![0x55]).unwrap())
+            .unwrap();
+        assert!(encoder.finish().is_err());
+    }
+
+    #[test]
+    fn dst_encoder_writes_compressed_frames_when_prediction_saves_space() {
+        let spec = DsdSpec::new(2_822_400, 2).unwrap();
+        let frame_bytes = 4_704;
+        let audio = DsdBuffer::new(spec, vec![0xff; frame_bytes * 2]).unwrap();
+        let mut encoder = DsdiffEncoder::new_dst(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_dsd_octets(&audio).unwrap();
+        encoder.finish().unwrap();
+        let bytes = encoder.into_inner().into_inner();
+        let frame_header = bytes
+            .windows(4)
+            .position(|window| window == b"DSTF")
+            .unwrap();
+        assert_ne!(bytes[frame_header + 12] & 0x80, 0);
+
+        let mut decoder = DsdiffDecoder::new(Cursor::new(bytes)).unwrap();
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_dsd_octets(frame_bytes * 2).unwrap() {
+            decoded.extend_from_slice(block.bytes());
+        }
+        assert_eq!(decoded, audio.bytes());
+    }
+
+    #[test]
+    fn dst_encoder_falls_back_to_bypass_when_prediction_is_not_usable() {
+        let spec = DsdSpec::new(2_822_400, 1).unwrap();
+        let frame_bytes = 4_704;
+        let audio = DsdBuffer::new(
+            spec,
+            (0..frame_bytes)
+                .map(|index| (index as u8).wrapping_mul(73))
+                .collect(),
+        )
+        .unwrap();
+        let mut encoder = DsdiffEncoder::new_dst(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_dsd_octets(&audio).unwrap();
+        encoder.finish().unwrap();
+        let bytes = encoder.into_inner().into_inner();
+        let frame_header = bytes
+            .windows(4)
+            .position(|window| window == b"DSTF")
+            .unwrap();
+        assert_eq!(bytes[frame_header + 12], 0);
+
+        let mut decoder = DsdiffDecoder::new(Cursor::new(bytes)).unwrap();
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_dsd_octets(frame_bytes).unwrap() {
+            decoded.extend_from_slice(block.bytes());
+        }
+        assert_eq!(decoded, audio.bytes());
+    }
+
+    #[test]
+    fn dst_bypass_supports_dsd64_128_and_256() {
+        for (bit_rate, frame_bytes) in
+            [(2_822_400, 4_704), (5_644_800, 9_408), (11_289_600, 18_816)]
+        {
+            let spec = DsdSpec::new(bit_rate, 1).unwrap();
+            let audio = (0..frame_bytes)
+                .map(|index| (index as u8).wrapping_mul(73))
+                .collect::<Vec<_>>();
+            let mut encoder = DsdiffEncoder::new_dst(Cursor::new(Vec::new()), spec).unwrap();
+            encoder
+                .write_dsd_octets(&DsdBuffer::new(spec, audio.clone()).unwrap())
+                .unwrap();
+            encoder.finish().unwrap();
+            let mut decoder =
+                DsdiffDecoder::new(Cursor::new(encoder.into_inner().into_inner())).unwrap();
+            let mut decoded = Vec::new();
+            while let Some(block) = decoder.read_dsd_octets(frame_bytes).unwrap() {
+                decoded.extend_from_slice(block.bytes());
+            }
+            assert_eq!(decoded, audio);
+        }
+    }
+
+    #[test]
     fn mono_odd_length_data_uses_an_unplayed_zero_pad_byte() {
         let spec = DsdSpec::new(2_822_400, 1).unwrap();
         let audio = DsdBuffer::new(spec, vec![0xa5]).unwrap();
@@ -62,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dst_and_bad_form_boundaries() {
+    fn rejects_a_dst_marker_without_dst_sound_data_and_bad_form_boundaries() {
         let spec = DsdSpec::new(2_822_400, 1).unwrap();
         let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
         encoder
@@ -76,10 +236,7 @@ mod tests {
             .unwrap();
         let compression_id = compression_id + 12;
         bytes[compression_id..compression_id + 4].copy_from_slice(b"DST ");
-        assert!(matches!(
-            DsdiffDecoder::new(Cursor::new(bytes.clone())),
-            Err(zemer_core::AudioError::Unsupported(_))
-        ));
+        assert!(DsdiffDecoder::new(Cursor::new(bytes.clone())).is_err());
 
         bytes[4..12].copy_from_slice(&0_u64.to_be_bytes());
         assert!(DsdiffDecoder::new(Cursor::new(bytes)).is_err());
@@ -163,6 +320,96 @@ mod tests {
         assert_eq!(decoder.comments()[1].kind, 1);
         assert_eq!(decoder.comments()[1].reference, 1);
         assert_eq!(decoder.metadata().values("COMMENT"), ["Odd"]);
+    }
+
+    #[test]
+    fn round_trips_typed_markers_in_file_order() {
+        let spec = DsdSpec::new(2_822_400, 2).unwrap();
+        let markers = [
+            DsdiffMarker {
+                hours: 0,
+                minutes: 0,
+                seconds: 0,
+                samples: 100,
+                offset: -12,
+                kind: 2,
+                channel: 0,
+                track_flags: 0,
+                text: "Program".into(),
+            },
+            DsdiffMarker {
+                hours: 0,
+                minutes: 0,
+                seconds: 1,
+                samples: 200,
+                offset: 0,
+                kind: 0,
+                channel: 1,
+                track_flags: 0,
+                text: "Track 1".into(),
+            },
+        ];
+        let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.set_markers(&markers).unwrap();
+        encoder
+            .write_dsd_octets(&DsdBuffer::new(spec, vec![0x55, 0xaa]).unwrap())
+            .unwrap();
+        encoder.finish().unwrap();
+        let decoder = DsdiffDecoder::new(Cursor::new(encoder.into_inner().into_inner())).unwrap();
+        assert_eq!(decoder.markers(), markers);
+    }
+
+    #[test]
+    fn rejects_marker_fields_outside_the_specified_ranges() {
+        let spec = DsdSpec::new(2_822_400, 1).unwrap();
+        let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        assert!(
+            encoder
+                .set_markers(&[DsdiffMarker {
+                    hours: 24,
+                    minutes: 0,
+                    seconds: 0,
+                    samples: 0,
+                    offset: 0,
+                    kind: 0,
+                    channel: 0,
+                    track_flags: 0,
+                    text: "bad".into(),
+                }])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn validates_track_flags_against_the_ordered_sacd_channel_layout() {
+        let spec = DsdSpec::new_with_speaker_mask(2_822_400, 5, Some(0x37)).unwrap();
+        let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        let marker = |track_flags| DsdiffMarker {
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+            samples: 0,
+            offset: 0,
+            kind: 0,
+            channel: 0,
+            track_flags,
+            text: String::new(),
+        };
+
+        encoder.set_markers(&[marker(0x0002)]).unwrap();
+        assert!(encoder.set_markers(&[marker(0x0001)]).is_err());
+        assert!(encoder.set_markers(&[marker(0x0100)]).is_err());
+
+        let mut metadata = Metadata::default();
+        for id in ["MLFT", "MRGT", "C   ", "LS  ", "RS  "] {
+            metadata.insert("DSDIFF_CHANNEL_ID", id);
+        }
+        encoder.set_markers(&[marker(0x0002)]).unwrap();
+        metadata.remove("DSDIFF_CHANNEL_ID");
+        for id in ["C001", "C002", "C003", "C004", "C005"] {
+            metadata.insert("DSDIFF_CHANNEL_ID", id);
+        }
+        assert!(encoder.set_metadata(&metadata).is_err());
     }
 
     #[test]

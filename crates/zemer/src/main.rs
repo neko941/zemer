@@ -8,7 +8,7 @@ use std::{
     process::ExitCode,
 };
 
-use dsdiff::{DsdiffDecoder, DsdiffEncoder};
+use dsdiff::{DsdiffComment, DsdiffDecoder, DsdiffEncoder, DsdiffMarker};
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
 use wav::{G711Encoding, WavContainer, WavDecoder, WavWriter};
@@ -39,7 +39,13 @@ struct AudioInput {
     container: Option<WavContainer>,
 }
 
-type DsdInput = (Box<dyn DsdDecoder>, &'static str);
+type DsdInput = (
+    Box<dyn DsdDecoder>,
+    &'static str,
+    Option<Vec<u8>>,
+    Option<Vec<DsdiffComment>>,
+    Option<Vec<DsdiffMarker>>,
+);
 
 struct DsdReport {
     format: &'static str,
@@ -58,6 +64,7 @@ enum OutputFormat {
     WavPack,
     Dsf,
     Dsdiff,
+    DsdiffDst,
 }
 
 impl OutputFormat {
@@ -68,7 +75,7 @@ impl OutputFormat {
             Self::Flac => None,
             Self::OggFlac => None,
             Self::WavPack => None,
-            Self::Dsf | Self::Dsdiff => None,
+            Self::Dsf | Self::Dsdiff | Self::DsdiffDst => None,
         }
     }
 
@@ -82,6 +89,7 @@ impl OutputFormat {
             Self::WavPack => "wavpack",
             Self::Dsf => "dsf",
             Self::Dsdiff => "dsdiff",
+            Self::DsdiffDst => "dsdiff_dst",
         }
     }
 }
@@ -293,14 +301,56 @@ fn edit_audio_metadata(
     sets: &[(String, String)],
     removes: &[String],
 ) -> Result<MetadataEditReport, CliError> {
+    if let Some((decoder, format, _, _, _)) = open_dsd_decoder(&input)? {
+        if matches!(format, "dsf" | "dsdiff") {
+            let (metadata, updated_fields) =
+                apply_metadata_changes(decoder.metadata().clone(), sets, removes);
+            drop(decoder);
+            let input_file = File::open(&input).map_err(|error| CliError {
+                kind: "io",
+                message: format!("{}: {error}", input.display()),
+            })?;
+            let mut output_file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output)
+                .map_err(|error| CliError {
+                    kind: "io",
+                    message: format!("{}: {error}", output.display()),
+                })?;
+            let result = (|| {
+                let result = match format {
+                    "dsf" => dsf::rewrite_metadata(input_file, &mut output_file, &metadata),
+                    "dsdiff" => dsdiff::rewrite_metadata(input_file, &mut output_file, &metadata),
+                    _ => unreachable!(),
+                };
+                result.map_err(|error| cli_rewrite_error(error, &input, &output))?;
+                output_file.flush().map_err(|error| CliError {
+                    kind: "io",
+                    message: format!("{}: {error}", output.display()),
+                })
+            })();
+            drop(output_file);
+            if let Err(error) = result {
+                let _ = fs::remove_file(&output);
+                return Err(error);
+            }
+            return Ok(MetadataEditReport {
+                output,
+                updated_fields,
+                format,
+            });
+        }
+    }
     let AudioInput {
         decoder, format, ..
     } = open_decoder(&input)?;
     if format != "flac" && format != "wav" && format != "wavpack" {
         return Err(CliError {
             kind: "unsupported",
-            message: "metadata editing supports WAVE, native FLAC, and WavPack files only"
-                .to_owned(),
+            message:
+                "metadata editing supports WAVE, DSF, DSDIFF, native FLAC, and WavPack files only"
+                    .to_owned(),
         });
     }
     let mut metadata = decoder.metadata().clone();
@@ -352,6 +402,25 @@ fn edit_audio_metadata(
     })
 }
 
+fn apply_metadata_changes(
+    mut metadata: Metadata,
+    sets: &[(String, String)],
+    removes: &[String],
+) -> (Metadata, usize) {
+    for key in removes {
+        metadata.remove(key);
+    }
+    let mut set_keys = BTreeSet::new();
+    for (key, value) in sets {
+        if set_keys.insert(key.as_str()) {
+            metadata.remove(key);
+        }
+        metadata.insert(key, value.clone());
+    }
+    let updated_fields = set_keys.len() + removes.iter().collect::<BTreeSet<_>>().len();
+    (metadata, updated_fields)
+}
+
 fn cli_rewrite_error(error: AudioError, input: &Path, output: &Path) -> CliError {
     let kind = match &error {
         AudioError::Io(_) => "io",
@@ -376,7 +445,7 @@ fn inspect_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         }
     }
     let input = input.ok_or_else(usage_error)?;
-    if let Some((decoder, format)) = open_dsd_decoder(&input)? {
+    if let Some((decoder, format, _, _, _)) = open_dsd_decoder(&input)? {
         return inspect_dsd(decoder, format, &input).map(CommandReport::InspectDsd);
     }
     inspect_audio(input).map(CommandReport::Inspect)
@@ -440,27 +509,34 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
     let output = paths.remove(0);
     let format = format.ok_or_else(usage_error)?;
     let dsd_input = open_dsd_decoder(&input)?;
-    if matches!(format, OutputFormat::Dsf | OutputFormat::Dsdiff) && dsd_input.is_none() {
+    if matches!(
+        format,
+        OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::DsdiffDst
+    ) && dsd_input.is_none()
+    {
         return Err(CliError {
             kind: "unsupported",
             message: "DSD output requires a DSF, DSDIFF, or native DSD WavPack input".to_owned(),
         });
     }
-    if let Some((decoder, _)) = dsd_input {
+    if let Some((decoder, _, id3_tag, comments, markers)) = dsd_input {
         if !matches!(
             format,
-            OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::WavPack
+            OutputFormat::Dsf
+                | OutputFormat::Dsdiff
+                | OutputFormat::DsdiffDst
+                | OutputFormat::WavPack
         ) || container.is_some()
             || bitrate.is_some()
         {
             return Err(CliError {
                 kind: "unsupported",
                 message:
-                    "native DSD conversion supports DSF, DSDIFF, and lossless WavPack outputs only"
+                    "native DSD conversion supports DSF, DSDIFF, compressed DSDIFF, and lossless WavPack outputs only"
                         .to_owned(),
             });
         }
-        return convert_dsd(input, output, format, decoder)
+        return convert_dsd(input, output, format, decoder, id3_tag, comments, markers)
             .map(|(report, path)| CommandReport::ConvertDsd(report, path));
     }
     if bitrate.is_some() && !matches!(format, OutputFormat::WavPack) {
@@ -506,6 +582,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "wavpack" => Some(OutputFormat::WavPack),
         "dsf" => Some(OutputFormat::Dsf),
         "dsdiff" => Some(OutputFormat::Dsdiff),
+        "dsdiff_dst" => Some(OutputFormat::DsdiffDst),
         _ => None,
     }
 }
@@ -618,7 +695,7 @@ fn convert_wav(
                     Box::new(encoder)
                 }
             }
-            OutputFormat::Dsf | OutputFormat::Dsdiff => {
+            OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::DsdiffDst => {
                 unreachable!("DSD output uses the DSD interface")
             }
         };
@@ -650,7 +727,7 @@ fn convert_wav(
                 OutputFormat::Flac => "flac",
                 OutputFormat::OggFlac => "ogg-flac",
                 OutputFormat::WavPack => "wavpack",
-                OutputFormat::Dsf | OutputFormat::Dsdiff => {
+                OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::DsdiffDst => {
                     unreachable!("DSD output uses the DSD interface")
                 }
                 _ => "wav",
@@ -665,6 +742,8 @@ fn convert_wav(
                     | OutputFormat::OggFlac
                     | OutputFormat::WavPack
                     | OutputFormat::Dsf
+                    | OutputFormat::Dsdiff
+                    | OutputFormat::DsdiffDst
             ))
             .then_some(container),
             companion_output: correction_output.clone(),
@@ -685,6 +764,9 @@ fn convert_dsd(
     output: PathBuf,
     format: OutputFormat,
     mut decoder: Box<dyn DsdDecoder>,
+    id3_tag: Option<Vec<u8>>,
+    comments: Option<Vec<DsdiffComment>>,
+    markers: Option<Vec<DsdiffMarker>>,
 ) -> Result<(DsdReport, PathBuf), CliError> {
     let output_file = OpenOptions::new()
         .write(true)
@@ -699,14 +781,41 @@ fn convert_dsd(
     let metadata = decoder.metadata().clone();
     let result = (|| {
         let mut encoder: Box<dyn DsdEncoder> = match format {
-            OutputFormat::Dsf => Box::new(
-                DsfEncoder::new(output_file, spec)
-                    .map_err(|error| cli_audio_error(error, &output))?,
-            ),
-            OutputFormat::Dsdiff => Box::new(
-                DsdiffEncoder::new(output_file, spec)
-                    .map_err(|error| cli_audio_error(error, &output))?,
-            ),
+            OutputFormat::Dsf => {
+                let mut encoder = DsfEncoder::new(output_file, spec)
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(tag) = &id3_tag {
+                    encoder
+                        .set_id3_tag(tag)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                encoder
+                    .set_metadata(&metadata)
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                Box::new(encoder)
+            }
+            OutputFormat::Dsdiff | OutputFormat::DsdiffDst => {
+                let mut encoder = if matches!(format, OutputFormat::DsdiffDst) {
+                    DsdiffEncoder::new_dst(output_file, spec)
+                } else {
+                    DsdiffEncoder::new(output_file, spec)
+                }
+                .map_err(|error| cli_audio_error(error, &output))?;
+                encoder
+                    .set_metadata(&metadata)
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(comments) = &comments {
+                    encoder
+                        .set_comments(comments)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                if let Some(markers) = &markers {
+                    encoder
+                        .set_markers(markers)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                Box::new(encoder)
+            }
             OutputFormat::WavPack => Box::new(
                 WavPackDsdEncoder::new(output_file, spec)
                     .map_err(|error| cli_audio_error(error, &output))?,
@@ -721,6 +830,7 @@ fn convert_dsd(
             format: match format {
                 OutputFormat::Dsf => "dsf",
                 OutputFormat::Dsdiff => "dsdiff",
+                OutputFormat::DsdiffDst => "dsdiff_dst",
                 OutputFormat::WavPack => "wavpack-dsd",
                 _ => unreachable!("DSD conversion format was checked"),
             },
@@ -799,7 +909,8 @@ fn open_dsd_decoder(path: &Path) -> Result<Option<DsdInput>, CliError> {
         .map_err(|error| cli_audio_error(error.into(), path))?;
     if is_dsf {
         let decoder = DsfDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
-        return Ok(Some((Box::new(decoder), "dsf")));
+        let id3_tag = decoder.id3_tag().map(<[u8]>::to_vec);
+        return Ok(Some((Box::new(decoder), "dsf", id3_tag, None, None)));
     }
     let is_dsdiff =
         has_signature(&mut file, b"FRM8").map_err(|error| cli_audio_error(error.into(), path))?;
@@ -807,7 +918,15 @@ fn open_dsd_decoder(path: &Path) -> Result<Option<DsdInput>, CliError> {
         .map_err(|error| cli_audio_error(error.into(), path))?;
     if is_dsdiff {
         let decoder = DsdiffDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
-        return Ok(Some((Box::new(decoder), "dsdiff")));
+        let comments = decoder.comments().to_vec();
+        let markers = decoder.markers().to_vec();
+        return Ok(Some((
+            Box::new(decoder),
+            "dsdiff",
+            None,
+            Some(comments),
+            Some(markers),
+        )));
     }
     let is_wavpack =
         has_signature(&mut file, b"wvpk").map_err(|error| cli_audio_error(error.into(), path))?;
@@ -817,7 +936,7 @@ fn open_dsd_decoder(path: &Path) -> Result<Option<DsdInput>, CliError> {
         return Ok(None);
     }
     match WavPackDsdDecoder::new(file) {
-        Ok(decoder) => Ok(Some((Box::new(decoder), "wavpack-dsd"))),
+        Ok(decoder) => Ok(Some((Box::new(decoder), "wavpack-dsd", None, None, None))),
         Err(AudioError::Unsupported("WavPack stream is not native DSD")) => Ok(None),
         Err(error) => Err(cli_audio_error(error, path)),
     }
@@ -929,7 +1048,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|flac|ogg_flac|wavpack|dsf|dsdiff> [--container <riff|rf64>] [--bitrate <24..9600>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.flac|input.wv> <new-output.wav|new-output.flac|new-output.wv> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|flac|ogg_flac|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600>] [--json] <input.wav|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.flac|input.wv|input.dsf|input.dff> <new-output.wav|new-output.flac|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 
