@@ -158,7 +158,7 @@ mod tests {
         let packet = reader.next_packet().unwrap().unwrap();
         assert_eq!(packet.bytes, audio);
         assert_eq!(packet.page_granule_position, 4096);
-        assert!(!packet.starts_page);
+        assert!(packet.starts_page);
         assert_eq!(packet.page_flags & PAGE_FLAG_CONTINUED, PAGE_FLAG_CONTINUED);
         assert_eq!(packet.page_flags & PAGE_FLAG_EOS, PAGE_FLAG_EOS);
         assert!(reader.next_packet().unwrap().is_none());

@@ -73,16 +73,16 @@ support for every file with that extension.
 | Format | Intended read/decode work | Intended write/encode work | Priority |
 |---|---|---|---|
 | RIFF/WAVE and RF64 | Inspect, stream PCM/float/G.711, read metadata | Write PCM/float/G.711; edit RIFF INFO while preserving audio, unknown chunks, and RF64 sizes | Foundation |
-| FLAC | Native FLAC streaming decode with frame CRC, STREAMINFO MD5 verification, and sample seeking for seekable readers; Ogg-FLAC streaming decode with Ogg page CRC, terminal-granule verification, final-frame trimming, and chained links with matching audio specifications; seekable Ogg-FLAC restart-and-scan sample seeking; Vorbis comments, raw metadata-block preservation, and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION reads | Native and Ogg-FLAC integer PCM 8/16/24/32-bit encoding; native verbatim/fixed-predictor Rice frames; metadata rewrite and CLI native/Ogg-FLAC output/tag edits | Independent Ogg-FLAC corpus remains open |
-| AIFF / AIFF-C | Parse chunks, decode supported PCM/float and declared codecs | Write supported PCM/float, metadata | Lossless |
+| FLAC | Native FLAC streaming decode with frame CRC, STREAMINFO MD5 verification, and sample seeking for seekable readers; Ogg-FLAC current and tested pre-1.1.1 legacy mapping decode, page CRC, terminal-granule verification, final-frame trimming, and chained links with per-link audio specifications; seekable Ogg-FLAC restart-and-scan sample seeking; Vorbis comments, raw metadata-block preservation, and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION reads | Native and Ogg-FLAC integer PCM 8/16/24/32-bit encoding; native verbatim/fixed-predictor Rice frames; metadata rewrite and CLI native/Ogg-FLAC output/tag edits | Broader independent Ogg-FLAC source corpus remains open |
+| AIFF / AIFF-C | Implemented profile: AIFF PCM 1–32-bit, AIFC `NONE`/`twos`/`sowt`, `fl32`/`fl64`, G.711 A-law/μ-law, and Apple IMA4; bounded chunks, NAME/AUTH/ANNO metadata, and typed `COMT` read | AIFF integer PCM, AIFC integer/float/G.711/IMA4 output, and typed `COMT` write | Add remaining AIFC compression codecs, unknown metadata retention during transcode, and broader independent corpus coverage |
 | AU / CAF / raw PCM | Decode supported encodings; raw PCM requires caller-supplied parameters | Encode supported encodings and raw PCM | Lossless / utility |
 | WavPack (`.wv`) | Supported for decoding and writing: streaming decode covers lossless PCM, IEEE float32, hybrid `.wvc` restoration, and native DSD modes; lossless integer PCM encoding supports 1–32 channels at 8/16/24/32 bits; hybrid integer PCM encoding writes standard-bitrate `.wv`+`.wvc` pairs; float32 preserves exact bits through uncompressed WVX; raw native DSD encoding supports 1–32 channels; custom rates and APEv2 text editing preserve non-text items | Official suite: 35 supported files decoded, 9 legacy files skipped, and 4 malformed files rejected; DSD has no hybrid `.wvc` mode | Clean-room specification path confirmed; implementation uses Rust `std` and Zemer crates only |
 | MP3, AAC | Inspect, decode, metadata, and seek where supported | Encode with explicit profile/quality options | Licensing and build review first |
 | DTS Coherent Acoustics (`.dts`) | Inspect and decode DTS core; evaluate DTS-HD and embedded/container streams separately | Evaluate clean-room encoding scope and licensing before promising a writer | Spec-based feasibility review ([ETSI TS 102 114](https://www.etsi.org/deliver/etsi_ts/102100_102199/102114/01.06.01_60/ts_102114v010601p.pdf)) |
 | Ogg with Vorbis / Opus | Reusable bounded Ogg page/packet reader is implemented; parse streams and decode each codec | Encode each codec and write stream metadata | Separate codec support |
 | WMA and other legacy formats | Evaluate supported variants and dependencies | Encode only where clean-room scope and licensing permit | Evaluate separately |
-| DSF (`.dsf`) | DSF 1.01 raw one-bit DSD decode and encode for supported channel layouts at 2.8224/5.6448 MHz; reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags | CLI inspects DSF and native DSD WavPack and transcodes between them without PCM conversion | Artwork/unknown-frame preservation remains open |
-| DSDIFF (`.dff`) | Read and decode uncompressed raw DSD, title/artist, general and typed `COMT` comments, and channel IDs | Write uncompressed raw DSD, title/artist, general and typed `COMT` comments, and channel IDs | Implemented profile is partial; DST, markers, unknown-chunk retention, and independent corpus remain open |
+| DSF (`.dsf`) | DSF 1.01 raw one-bit/eight-bit DSD decode and encode for mono through 5.1 at 2.8224/5.6448 MHz; reads common ID3v2.2/v2.3/v2.4 text and writes common ID3v2.4 text | CLI inspection, same-format copy with complete bounded ID3 retention, text metadata edits that preserve opaque frames, and DSF/native DSD WavPack transcoding without PCM | Supported for the implemented DSF 1.01 profile; ID3v2.2 compressed tags are ignored as specified, and cross-container artwork transfer is a separate workflow |
+| DSDIFF (`.dff`) | Read raw DSD across the full 1–65,535-channel `CHNL` range and compressed DST (up to 64 channels at DSD64/128/256) with optional frame CRC validation, title/artist, general and typed `COMT` comments, channel IDs, and typed markers | Write raw DSD or compressed DST with a clean-room first-order predictor and valid mode-0 bypass fallback; same-format metadata edits preserve audio, typed metadata, and unchanged/unknown chunks | Supported for the implemented profile: all three full 300-frame `DST_02_02` vectors and the first 10 frames of every available ISO vector pass bit-exactly; the ISO archive omits `DST_05` vectors |
 | SACD DSD ISO | Evaluate TOC/area inspection and extraction of readable DSD tracks from user-supplied images | Image creation only if specification-based workflows and tests are practical | Deferred pending a lawful normative source, usable test-image rights, and an explicit image/sector model; no DRM circumvention, DST is a separate codec |
 
 Read and write are separate capabilities: a format may be readable before an
@@ -91,18 +91,24 @@ platform-specific implementations may remain unsupported.
 
 ## 4. DSD and optical-disc audio
 
-- DSF 1.01 raw one-bit DSD read/write, common ID3 text mapping, and CLI inspect
-  plus DSF/native DSD WavPack transcoding are implemented. DSDIFF/DFF raw DSD
-  read/write, `COMT` comments, and CLI conversion are implemented for its
-  uncompressed profile; DST and markers remain separate work. DSF
-  artwork/unknown-frame preservation is still open.
+- DSF 1.01 raw one-bit/eight-bit DSD read/write for the implemented mono-to-5.1
+  profile, common ID3 text mapping, audio-preserving metadata edits, and
+  DSF/native DSD WavPack CLI transcoding are implemented.
+  DSDIFF/DFF reads raw and compressed DST DSD and writes raw or compressed DST
+  with mode-0 fallback; comments, markers, and audio-preserving metadata edits
+  are supported. All available ISO vector prefixes pass at DSD64/128/256, and
+  the three complete 300-frame `DST_02_02` sequences match their raw references.
+  ID3v2.2
+  compression is intentionally ignored because that tag version defines no
+  compression scheme; cross-container DSF artwork transfer remains separate.
 - Inspect SACD/DSD ISO navigation, stereo and multichannel areas, track
   boundaries, timing, and metadata only after normative documentation and
   fixture rights are established. Any future extraction must stream readable,
   unencrypted content and reject protected or undocumented paths; see the
   internal feasibility notes.
-- Evaluate DST decoding as a separate codec with its own tests and documented
-  limits.
+- Expand DST conformance coverage when additional lawfully distributable
+  reference vectors become available; the three `DST_05` archive vectors are
+  currently missing.
 - Preserve track, index, timing, and channel information when exporting tracks
   or creating cue sheets.
 - Keep PCM conversion from DSD explicit, since it is a signal-processing step
@@ -163,9 +169,10 @@ discard layout or audio information.
 
 See the [README support matrix](README.md#current-support) for implemented
 formats and exact read/write support. WAVE/RF64, native FLAC, chained
-Ogg-FLAC, DSF 1.01 raw one-bit DSD decoding/encoding for the declared profile,
-DSF/native DSD WavPack CLI inspection and transcoding, WAVE-backed CUE
+Ogg-FLAC, DSF 1.01 raw one-bit and eight-bit DSD decoding/encoding for the declared profile,
+DSF/native DSD WavPack CLI inspection and transcoding, DSDIFF audio-preserving
+metadata edits, WAVE-backed CUE
 splitting, CUE creation, and common DSF ID3v2.3/v2.4 text-tag reads/writes are
-implemented. DSF artwork/raw-frame preservation,
-other codecs, track types, and
+implemented. Cross-container DSF artwork transfer, remaining codec profiles,
+other track types, and
 archive/disc workflows remain planned until code and tests land.

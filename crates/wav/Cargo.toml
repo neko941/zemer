@@ -11,3 +11,4 @@ name = "wav"
 
 [dependencies]
 zemer-core.workspace = true
+g711.workspace = true

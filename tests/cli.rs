@@ -1,18 +1,21 @@
 use std::{
     fs::{self, File},
+    io::Cursor,
     path::PathBuf,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 
+use aiff::AiffDecoder;
 use dsdiff::DsdiffDecoder;
 use dsf::{DsfDecoder, DsfEncoder};
-use flac::{FlacDecoder, OggFlacDecoder};
+use flac::{FlacDecoder, OggFlacDecoder, OggFlacEncoder};
+use g711::{decode_alaw, decode_mulaw, encode_alaw, encode_mulaw};
 use wav::{write_wav, write_wav_with_metadata};
 use wavpack::{WavPackDecoder, WavPackDsdDecoder};
 use zemer_core::{
-    AudioDecoder, AudioSpec, DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata, PcmBuffer,
-    SampleFormat, Samples,
+    AudioDecoder, AudioEncoder, AudioSpec, DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata,
+    PcmBuffer, SampleFormat, Samples,
 };
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
@@ -137,6 +140,15 @@ fn ogg_flac_with_rfc_frame() -> Vec<u8> {
     stream.extend(ogg_page(&comment, 0, 1, 0));
     stream.extend(ogg_page(&native[42..], 4, 2, 1));
     stream
+}
+
+fn one_sample_ogg_flac(sample_rate: u32, sample: i16) -> Vec<u8> {
+    let spec = AudioSpec::new(sample_rate, 1, SampleFormat::PcmI16).unwrap();
+    let block = PcmBuffer::new(spec, Samples::I16(vec![sample])).unwrap();
+    let mut encoder = OggFlacEncoder::new(Vec::new(), spec).unwrap();
+    encoder.write_block(&block).unwrap();
+    encoder.finish().unwrap();
+    encoder.into_inner()
 }
 
 fn temporary_directory() -> PathBuf {
@@ -336,6 +348,74 @@ fn inspect_ogg_flac_by_container_signature() {
 }
 
 #[test]
+fn convert_ogg_flac_to_wav_keeps_supported_tags_and_skips_other_comments() {
+    let input_path = temporary_path().with_extension("oga");
+    let output_path = temporary_path();
+    let spec = AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap();
+    let mut encoder = OggFlacEncoder::new(Vec::new(), spec).unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "test title");
+    metadata.insert("ENCODER", "external encoder");
+    encoder.set_metadata(&metadata).unwrap();
+    encoder
+        .write_block(&PcmBuffer::new(spec, Samples::I16(vec![123])).unwrap())
+        .unwrap();
+    encoder.finish().unwrap();
+    fs::write(&input_path, encoder.into_inner()).unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "pcm_i16", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut decoded = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoded.metadata().values("TITLE"), ["test title"]);
+    assert!(decoded.metadata().values("ENCODER").is_empty());
+    assert_eq!(
+        decoded.read_frames(1).unwrap().unwrap().samples(),
+        &Samples::I16(vec![123])
+    );
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn inspect_rejects_chained_ogg_flac_with_different_audio_specs() {
+    let path = temporary_path();
+    let output_path = temporary_path().with_extension("flac");
+    let mut stream = one_sample_ogg_flac(44_100, 1);
+    stream.extend(one_sample_ogg_flac(48_000, 2));
+    fs::write(&path, stream).unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("inspection cannot summarize audio with changing specifications")
+    );
+
+    let conversion = Command::new(cli_path())
+        .args(["convert", "--format", "flac"])
+        .arg(&path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    let _ = fs::remove_file(&path);
+    assert!(!conversion.status.success());
+    assert!(!output_path.exists());
+}
+
+#[test]
 fn metadata_edit_updates_and_removes_tags_without_changing_audio() {
     let input_path = temporary_path().with_extension("flac");
     let output_path = temporary_path().with_extension("flac");
@@ -393,6 +473,82 @@ fn metadata_edit_updates_and_removes_tags_without_changing_audio() {
         .unwrap();
     assert_eq!(overwrite.status.code(), Some(2));
     assert_eq!(fs::read(&output_path).unwrap(), original_output);
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn metadata_edit_rewrites_dsf_without_reencoding_audio() {
+    let input_path = temporary_path();
+    let output_path = temporary_path();
+    let spec = DsdSpec::new(2_822_400, 1).unwrap();
+    let audio = DsdBuffer::new(spec, vec![0x55, 0xaa]).unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "Old title");
+    let mut encoder = DsfEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_metadata(&metadata).unwrap();
+    encoder.write_dsd_octets(&audio).unwrap();
+    encoder.finish().unwrap();
+    fs::write(&input_path, encoder.into_inner().into_inner()).unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["metadata", "edit", "--set", "TITLE=New title", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let decoder = DsfDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata().values("TITLE"), ["New title"]);
+    let mut decoder = decoder;
+    assert_eq!(dsd_bytes(&mut decoder), audio.bytes());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn metadata_edit_rewrites_dsdiff_and_preserves_unknown_chunks_and_audio() {
+    let input_path = temporary_path().with_extension("dff");
+    let output_path = temporary_path().with_extension("dff");
+    let spec = DsdSpec::new(2_822_400, 2).unwrap();
+    let audio = DsdBuffer::new(spec, vec![0x55, 0xaa, 0x69, 0x96]).unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "Old title");
+    let mut encoder = dsdiff::DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_metadata(&metadata).unwrap();
+    encoder.write_dsd_octets(&audio).unwrap();
+    encoder.finish().unwrap();
+    let mut input = encoder.into_inner().into_inner();
+    let unknown_chunk = b"JUNK\0\0\0\0\0\0\0\x03xyz\0";
+    input.extend_from_slice(unknown_chunk);
+    let form_size = u64::from_be_bytes(input[4..12].try_into().unwrap());
+    input[4..12].copy_from_slice(&(form_size + unknown_chunk.len() as u64).to_be_bytes());
+    fs::write(&input_path, input).unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["metadata", "edit", "--set", "TITLE=New title", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let output_bytes = fs::read(&output_path).unwrap();
+    assert!(
+        output_bytes
+            .windows(unknown_chunk.len())
+            .any(|w| w == unknown_chunk)
+    );
+    let mut decoder = DsdiffDecoder::new(Cursor::new(output_bytes)).unwrap();
+    assert_eq!(decoder.metadata().values("TITLE"), ["New title"]);
+    assert_eq!(dsd_bytes(&mut decoder), audio.bytes());
     let _ = fs::remove_file(input_path);
     let _ = fs::remove_file(output_path);
 }
@@ -668,6 +824,205 @@ fn convert_encodes_g711_only_when_explicitly_selected() {
 }
 
 #[test]
+fn convert_inspects_and_converts_aiff_and_aifc() {
+    let input_path = temporary_path();
+    let audio = PcmBuffer::new(
+        AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(vec![i16::MIN, 1, -2, i16::MAX]),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("title", "AIFF CLI");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    for (format, extension) in [("aiff", "aiff"), ("aifc", "aifc")] {
+        let output_path = temporary_path().with_extension(extension);
+        let output = Command::new(cli_path())
+            .args(["convert", "--format", format, "--json"])
+            .arg(&input_path)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("\"format\":\"{format}\""))
+        );
+
+        let inspect = Command::new(cli_path())
+            .args(["inspect", "--json"])
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(
+            inspect.status.success(),
+            "{}",
+            String::from_utf8_lossy(&inspect.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&inspect.stdout).contains(&format!("\"format\":\"{format}\""))
+        );
+        let mut decoder = AiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+        assert_eq!(decoder.metadata(), &metadata);
+        assert_eq!(decoder.read_frames(2).unwrap().unwrap(), audio);
+        assert!(decoder.read_frames(1).unwrap().is_none());
+        assert_eq!(decoder.is_aifc(), format == "aifc");
+        let _ = fs::remove_file(output_path);
+    }
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
+fn convert_encodes_aifc_g711_only_when_explicitly_selected() {
+    let input_path = temporary_path();
+    let samples = [i16::MIN, -1, 0, 1, i16::MAX];
+    let audio = PcmBuffer::new(
+        AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(samples.to_vec()),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("title", "G.711 AIFC");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    for (format, decode) in [
+        (
+            "aifc_alaw",
+            samples.map(encode_alaw).map(decode_alaw).to_vec(),
+        ),
+        (
+            "aifc_mulaw",
+            samples.map(encode_mulaw).map(decode_mulaw).to_vec(),
+        ),
+    ] {
+        let output_path = temporary_path().with_extension("aifc");
+        let output = Command::new(cli_path())
+            .args(["convert", "--format", format, "--json"])
+            .arg(&input_path)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report = String::from_utf8_lossy(&output.stdout);
+        assert!(report.contains("\"format\":\"aifc\""));
+        assert!(report.contains(&format!("\"output_encoding\":\"{format}\"")));
+        let mut decoder = AiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+        assert_eq!(decoder.metadata(), &metadata);
+        assert_eq!(
+            decoder
+                .read_frames(samples.len())
+                .unwrap()
+                .unwrap()
+                .samples(),
+            &Samples::I16(decode)
+        );
+        assert!(decoder.read_frames(1).unwrap().is_none());
+        let _ = fs::remove_file(output_path);
+    }
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
+fn convert_encodes_aifc_ima4_with_packet_frame_count_and_padding() {
+    let input_path = temporary_path();
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let samples: Vec<_> = (0..65)
+        .map(|index| ((index as f32 * 0.13).sin() * 3_000.0).round() as i16)
+        .collect();
+    let audio = PcmBuffer::new(spec, Samples::I16(samples)).unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    let output_path = temporary_path().with_extension("aifc");
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "aifc_ima4", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(report.contains("\"output_encoding\":\"aifc_ima4\""));
+    assert!(report.contains("\"frames\":128"));
+
+    let mut decoder = AiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.read_frames(128).unwrap().unwrap().frames(), 128);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+    let _ = fs::remove_file(output_path);
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
+fn metadata_edit_preserves_aiff_and_aifc_audio() {
+    let input_path = temporary_path();
+    let audio = PcmBuffer::new(
+        AudioSpec::new(32_000, 1, SampleFormat::PcmI24).unwrap(),
+        Samples::I24(vec![-8_388_608, -1, 0, 8_388_607]),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    for (format, extension) in [("aiff", "aiff"), ("aifc", "aifc")] {
+        let source = temporary_path().with_extension(extension);
+        let conversion = Command::new(cli_path())
+            .args(["convert", "--format", format])
+            .arg(&input_path)
+            .arg(&source)
+            .output()
+            .unwrap();
+        assert!(
+            conversion.status.success(),
+            "{}",
+            String::from_utf8_lossy(&conversion.stderr)
+        );
+
+        let output_path = temporary_path().with_extension(extension);
+        let edited = Command::new(cli_path())
+            .args([
+                "metadata",
+                "edit",
+                "--json",
+                "--set",
+                "TITLE=Edited",
+                "--set",
+                "COMMENT=first",
+                "--set",
+                "COMMENT=second",
+            ])
+            .arg(&source)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(
+            edited.status.success(),
+            "{}",
+            String::from_utf8_lossy(&edited.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&edited.stdout).contains(&format!("\"format\":\"{format}\""))
+        );
+        let mut decoder = AiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+        assert_eq!(decoder.metadata().values("TITLE"), ["Edited"]);
+        assert_eq!(decoder.metadata().values("COMMENT"), ["first", "second"]);
+        assert_eq!(decoder.read_frames(8).unwrap().unwrap(), audio);
+        assert!(decoder.read_frames(1).unwrap().is_none());
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(output_path);
+    }
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
 fn convert_encodes_wavpack_pcm_and_metadata() {
     let input_path = temporary_path();
     let output_path = temporary_path().with_extension("wv");
@@ -853,6 +1208,55 @@ fn convert_encodes_ogg_flac_with_metadata_and_eos_granule() {
     assert_eq!(decoded, vec![0; 4097]);
     assert!(decoder.read_frames(1).unwrap().is_none());
     let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn metadata_edit_rewrites_ogg_flac_comments_without_changing_audio() {
+    let input_path = temporary_path();
+    let oga_path = input_path.with_extension("oga");
+    let output_path = temporary_path().with_extension("oga");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(
+            (0..2049)
+                .map(|index| (index as i16).wrapping_mul(31))
+                .collect(),
+        ),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    let encoded = Command::new(cli_path())
+        .args(["convert", "--format", "ogg_flac"])
+        .arg(&input_path)
+        .arg(&oga_path)
+        .output()
+        .unwrap();
+    assert!(
+        encoded.status.success(),
+        "{}",
+        String::from_utf8_lossy(&encoded.stderr)
+    );
+    let edited = Command::new(cli_path())
+        .args(["metadata", "edit", "--set", "TITLE=Edited", "--json"])
+        .arg(&oga_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    assert!(String::from_utf8_lossy(&edited.stdout).contains("\"format\":\"ogg-flac\""));
+
+    let mut decoder = OggFlacDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata().values("TITLE"), ["Edited"]);
+    assert_eq!(decoder.read_frames(4096).unwrap().unwrap(), audio);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(oga_path);
     let _ = fs::remove_file(output_path);
 }
 
@@ -1057,6 +1461,54 @@ fn dsd_cli_inspects_and_transcodes_wavpack_and_dsf_without_pcm() {
 }
 
 #[test]
+fn dsf_cli_transcode_preserves_opaque_id3_frames() {
+    let input_path = temporary_path().with_extension("dsf");
+    let output_path = temporary_path().with_extension("dsf");
+    let spec = DsdSpec::new(2_822_400, 1).unwrap();
+    let payload = b"org.example\0opaque image or private data";
+    let mut body = Vec::from(&b"PRIV"[..]);
+    body.extend_from_slice(&[
+        ((payload.len() >> 21) & 0x7f) as u8,
+        ((payload.len() >> 14) & 0x7f) as u8,
+        ((payload.len() >> 7) & 0x7f) as u8,
+        (payload.len() & 0x7f) as u8,
+        0,
+        0,
+    ]);
+    body.extend_from_slice(payload);
+    let size = body.len();
+    let mut id3_tag = Vec::from(&b"ID3\x04\0\0"[..]);
+    id3_tag.extend_from_slice(&[
+        ((size >> 21) & 0x7f) as u8,
+        ((size >> 14) & 0x7f) as u8,
+        ((size >> 7) & 0x7f) as u8,
+        (size & 0x7f) as u8,
+    ]);
+    id3_tag.extend_from_slice(&body);
+    let audio = DsdBuffer::new(spec, vec![0x96, 0x69]).unwrap();
+    let mut encoder = DsfEncoder::new(File::create(&input_path).unwrap(), spec).unwrap();
+    encoder.set_id3_tag(&id3_tag).unwrap();
+    encoder.write_dsd_octets(&audio).unwrap();
+    encoder.finish().unwrap();
+
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "dsf", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let decoder = DsfDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.id3_tag(), Some(id3_tag.as_slice()));
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
 fn dsd_cli_preserves_partial_final_octet_sample_count() {
     let input = temporary_path().with_extension("dsf");
     let output_path = temporary_path().with_extension("dsf");
@@ -1105,4 +1557,162 @@ fn dsd_cli_preserves_partial_final_octet_sample_count() {
     let _ = fs::remove_file(input);
     let _ = fs::remove_file(output_path);
     let _ = fs::remove_file(wavpack_path);
+}
+
+#[test]
+fn dsdiff_conversion_preserves_typed_markers_and_comments() {
+    let input_path = temporary_path();
+    let output_path = temporary_path();
+    let spec = DsdSpec::new(2_822_400, 2).unwrap();
+    let marker = dsdiff::DsdiffMarker {
+        hours: 0,
+        minutes: 0,
+        seconds: 1,
+        samples: 42,
+        offset: -3,
+        kind: 0,
+        channel: 0,
+        track_flags: 0,
+        text: "Track 1".into(),
+    };
+    let comment = dsdiff::DsdiffComment {
+        year: 2024,
+        month: 5,
+        day: 6,
+        hour: 7,
+        minute: 8,
+        kind: 1,
+        reference: 2,
+        text: "Right channel".into(),
+    };
+    let mut encoder = dsdiff::DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_markers(std::slice::from_ref(&marker)).unwrap();
+    encoder
+        .set_comments(std::slice::from_ref(&comment))
+        .unwrap();
+    encoder
+        .write_dsd_octets(&DsdBuffer::new(spec, vec![0x55, 0xaa]).unwrap())
+        .unwrap();
+    encoder.finish().unwrap();
+    fs::write(&input_path, encoder.into_inner().into_inner()).unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "dsdiff", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let decoder = DsdiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.markers(), [marker]);
+    assert_eq!(decoder.comments(), [comment]);
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn dsdiff_dst_conversion_writes_multiframe_compressed_audio_and_decodes_it() {
+    let input_path = temporary_path();
+    let output_path = temporary_path().with_extension("dff");
+    let bypass_path = temporary_path().with_extension("bypass.dff");
+    let spec = DsdSpec::new(2_822_400, 2).unwrap();
+    let frame_bytes = 4_704;
+    let mut dsd = Vec::with_capacity(frame_bytes * 2 * 3);
+    for index in 0..frame_bytes * 3 {
+        let frame = index / frame_bytes;
+        let byte = match frame {
+            0 => 0xff,
+            1 => 0x55,
+            _ => {
+                if index / 16 % 2 == 0 {
+                    0xff
+                } else {
+                    0x00
+                }
+            }
+        };
+        dsd.extend_from_slice(&[byte, !byte]);
+    }
+    let audio = DsdBuffer::new(spec, dsd).unwrap();
+    let mut encoder = dsdiff::DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.write_dsd_octets(&audio).unwrap();
+    encoder.finish().unwrap();
+    fs::write(&input_path, encoder.into_inner().into_inner()).unwrap();
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "dsdiff_dst", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bypass = Command::new(cli_path())
+        .args(["convert", "--format", "dsdiff", "--json"])
+        .arg(&input_path)
+        .arg(&bypass_path)
+        .output()
+        .unwrap();
+    assert!(
+        bypass.status.success(),
+        "{}",
+        String::from_utf8_lossy(&bypass.stderr)
+    );
+    let bytes = fs::read(&output_path).unwrap();
+    let frame_header = bytes
+        .windows(4)
+        .position(|window| window == b"DSTF")
+        .unwrap();
+    assert_ne!(bytes[frame_header + 12] & 0x80, 0);
+    let mut decoder = DsdiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(dsd_bytes(&mut decoder), audio.bytes());
+    let ffmpeg_has_dst = Command::new("ffmpeg")
+        .arg("-decoders")
+        .output()
+        .is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.split_whitespace().any(|field| field == "dst"))
+        });
+    if ffmpeg_has_dst {
+        let oracle_path = temporary_path().with_extension("f32");
+        let oracle = Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-i"])
+            .arg(&output_path)
+            .args(["-f", "f32le", "-acodec", "pcm_f32le"])
+            .arg(&oracle_path)
+            .output()
+            .unwrap();
+        assert!(
+            oracle.status.success(),
+            "{}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+        let decoded = fs::read(&oracle_path).unwrap();
+        let bypass_oracle_path = temporary_path().with_extension("f32");
+        let bypass_oracle = Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-i"])
+            .arg(&bypass_path)
+            .args(["-f", "f32le", "-acodec", "pcm_f32le"])
+            .arg(&bypass_oracle_path)
+            .output()
+            .unwrap();
+        assert!(
+            bypass_oracle.status.success(),
+            "{}",
+            String::from_utf8_lossy(&bypass_oracle.stderr)
+        );
+        assert_eq!(decoded, fs::read(&bypass_oracle_path).unwrap());
+        let _ = fs::remove_file(oracle_path);
+        let _ = fs::remove_file(bypass_oracle_path);
+    }
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+    let _ = fs::remove_file(bypass_path);
 }

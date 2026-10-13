@@ -1,6 +1,6 @@
 use std::{fs::File, io::Cursor};
 
-use dsf::{DsfDecoder, DsfEncoder};
+use dsf::{DsfDecoder, DsfEncoder, rewrite_metadata};
 use zemer_core::{DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata};
 
 fn dsf(channels: u32, channel_type: u32, sample_count: u64, data: &[Vec<u8>]) -> Vec<u8> {
@@ -57,6 +57,14 @@ fn with_id3(mut bytes: Vec<u8>) -> Vec<u8> {
     let offset = bytes.len() as u64;
     let mut body = id3_frame(b"TIT2", &[3, b'T', b'i', b't', b'l', b'e']);
     body.extend(id3_frame(b"TPE1", &[3, b'A', b'r', b't', b'i', b's', b't']));
+    body.extend(id3_frame(
+        b"APIC",
+        &[
+            3, b'i', b'm', b'a', b'g', b'e', b'/', b'p', b'n', b'g', 0, 3, b'f', b'r', b'o', b'n',
+            b't', 0, 0x89, b'P', b'N', b'G',
+        ],
+    ));
+    body.extend(id3_frame(b"PRIV", b"opaque frame payload"));
     let size = body.len();
     let mut tag = b"ID3\x04\x00\x00".to_vec();
     tag.extend_from_slice(&[
@@ -101,9 +109,52 @@ fn reports_and_decodes_a_partial_final_octet() {
 #[test]
 fn reads_id3v24_text_metadata_from_the_dsf_metadata_pointer() {
     let bytes = with_id3(dsf(1, 1, 8, &[vec![0x55]]));
+    let tag = bytes[28 + 52 + 12 + 4096..].to_vec();
     let decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
     assert_eq!(decoder.metadata().values("TITLE"), ["Title"]);
     assert_eq!(decoder.metadata().values("ARTIST"), ["Artist"]);
+    assert_eq!(decoder.id3_tag(), Some(tag.as_slice()));
+}
+
+#[test]
+fn copies_raw_id3_artwork_and_unknown_frames_without_reencoding() {
+    let spec = DsdSpec::new(2_822_400, 1).unwrap();
+    let original = with_id3(dsf(1, 1, 8, &[vec![0x55]]));
+    let tag = original[28 + 52 + 12 + 4096..].to_vec();
+    let mut encoder = DsfEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_id3_tag(&tag).unwrap();
+    encoder
+        .write_dsd_octets(&DsdBuffer::new(spec, vec![0x55]).unwrap())
+        .unwrap();
+    encoder.finish().unwrap();
+    let encoded = encoder.into_inner().into_inner();
+    assert_eq!(&encoded[28 + 52 + 12 + 4096..], tag);
+    let decoder = DsfDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(decoder.id3_tag(), Some(tag.as_slice()));
+    assert_eq!(decoder.metadata().values("TITLE"), ["Title"]);
+}
+
+#[test]
+fn rewrites_text_metadata_without_changing_audio_or_opaque_id3_frames() {
+    let original = with_id3(dsf(1, 1, 8, &[vec![0x55]]));
+    let audio_end = 28 + 52 + 12 + 4096;
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "Edited title");
+    metadata.insert("ALBUM", "New album");
+    let mut output = Vec::new();
+    rewrite_metadata(Cursor::new(&original), &mut output, &metadata).unwrap();
+
+    assert_eq!(&output[92..audio_end], &original[92..audio_end]);
+    assert!(
+        output
+            .windows(b"opaque frame payload".len())
+            .any(|window| window == b"opaque frame payload")
+    );
+    assert!(output.windows(4).any(|window| window == b"APIC"));
+    let decoder = DsfDecoder::new(Cursor::new(output)).unwrap();
+    assert_eq!(decoder.metadata().values("TITLE"), ["Edited title"]);
+    assert_eq!(decoder.metadata().values("ALBUM"), ["New album"]);
+    assert!(decoder.metadata().values("ARTIST").is_empty());
 }
 
 #[test]
@@ -138,9 +189,25 @@ fn rejects_nonzero_dsf_padding_and_unsupported_sample_packing() {
     let mut decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
     assert!(decoder.read_dsd_octets(1).is_err());
 
-    let mut bytes = dsf(1, 1, 8, &[vec![0x80]]);
+    let mut bytes = dsf(1, 1, 8, &[vec![0x96]]);
     bytes[28 + 32..28 + 36].copy_from_slice(&8_u32.to_le_bytes());
-    assert!(DsfDecoder::new(Cursor::new(bytes)).is_err());
+    let mut decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(decoder.read_dsd_octets(1).unwrap().unwrap().bytes(), [0x96]);
+}
+
+#[test]
+fn encodes_eight_bit_dsf_storage_without_reversing_dsd_octets() {
+    let spec = DsdSpec::new(2_822_400, 1).unwrap();
+    let input = DsdBuffer::new(spec, vec![0x96]).unwrap();
+    let mut encoder =
+        DsfEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), spec, 8).unwrap();
+    encoder.write_dsd_octets(&input).unwrap();
+    encoder.finish().unwrap();
+    let bytes = encoder.into_inner().into_inner();
+    assert_eq!(&bytes[60..64], &8_u32.to_le_bytes());
+    assert_eq!(bytes[92], 0x96);
+    let mut decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(decoder.read_dsd_octets(1).unwrap().unwrap().bytes(), [0x96]);
 }
 
 #[test]

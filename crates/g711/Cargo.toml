@@ -1,0 +1,12 @@
+[package]
+name = "zemer-g711"
+description = "ITU-T G.711 A-law and mu-law sample codec for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "g711"
+
+[dependencies]

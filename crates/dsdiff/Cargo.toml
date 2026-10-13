@@ -1,6 +1,6 @@
 [package]
 name = "zemer-dsdiff"
-description = "Clean-room DSDIFF container reader and writer for raw DSD"
+description = "Clean-room DSDIFF reader and writer for raw and DST DSD"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,3 +11,4 @@ name = "dsdiff"
 
 [dependencies]
 zemer-core.workspace = true
+dst.workspace = true

@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::encode::WavContainer;
+use g711::{decode_alaw, decode_mulaw};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 const PCM_GUID: [u8; 16] = [
@@ -608,32 +609,6 @@ fn initial_silence_frame(frame_bytes: u16, encoding: WaveEncoding) -> Vec<u8> {
     vec![fill; usize::from(frame_bytes)]
 }
 
-fn decode_alaw(byte: u8) -> i16 {
-    let value = byte ^ 0x55;
-    let segment = i32::from((value & 0x70) >> 4);
-    let mut sample = i32::from(value & 0x0f) << 4;
-    sample = match segment {
-        0 => sample + 8,
-        1 => sample + 0x108,
-        _ => (sample + 0x108) << (segment - 1),
-    };
-    if value & 0x80 != 0 {
-        sample as i16
-    } else {
-        -(sample as i16)
-    }
-}
-
-fn decode_mulaw(byte: u8) -> i16 {
-    let value = !byte;
-    let sample = ((i32::from(value & 0x0f) << 3) + 0x84) << ((value & 0x70) >> 4);
-    if value & 0x80 != 0 {
-        (sample - 0x84) as i16
-    } else {
-        (0x84 - sample) as i16
-    }
-}
-
 fn reserve_samples<T>(count: usize) -> Result<Vec<T>, AudioError> {
     let mut output = Vec::new();
     output
@@ -995,8 +970,8 @@ mod tests {
         assert_eq!(decode_alaw(0xd5), 8);
         assert_eq!(decode_alaw(0x55), -8);
         assert_eq!(decode_mulaw(0xff), 0);
-        assert_eq!(decode_mulaw(0x00), 32_124);
-        assert_eq!(decode_mulaw(0x80), -32_124);
+        assert_eq!(decode_mulaw(0x00), -32_124);
+        assert_eq!(decode_mulaw(0x80), 32_124);
     }
 
     fn extensible_pcm(valid_bits: u16, bits: u16, data: &[u8]) -> Vec<u8> {

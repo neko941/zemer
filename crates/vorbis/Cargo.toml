@@ -1,0 +1,13 @@
+[package]
+name = "zemer-vorbis"
+description = "Clean-room Ogg Vorbis decoder and encoder for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "vorbis"
+
+[dependencies]
+zemer-core.workspace = true

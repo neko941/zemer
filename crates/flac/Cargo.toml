@@ -1,6 +1,6 @@
 [package]
 name = "zemer-flac"
-description = "Native FLAC encoder and native/Ogg FLAC decoder for Zemer"
+description = "Native and Ogg FLAC integer PCM codec and metadata editing for Zemer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

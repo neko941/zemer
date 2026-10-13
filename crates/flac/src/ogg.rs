@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     io::{self, Read, Seek, SeekFrom},
     sync::{
         Arc, Mutex,
@@ -12,14 +13,17 @@ use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer};
 use crate::{FlacDecoder, metadata::MAX_METADATA_BYTES};
 
 const MAX_FLAC_FRAME_SAMPLES: usize = 65_535;
+type OggLink<R> = (OggFlacReader<R>, Arc<AtomicU64>, Arc<AtomicU64>);
 
 pub struct OggFlacDecoder<R> {
     source: Arc<Mutex<R>>,
     start: Option<u64>,
     decoder: Option<FlacDecoder<OggFlacReader<SharedReader<R>>>>,
     spec: AudioSpec,
+    initial_spec: AudioSpec,
     metadata: Metadata,
     final_granule: Arc<AtomicU64>,
+    granule_offset: Arc<AtomicU64>,
     decoded_samples: u64,
     link_output_samples: u64,
     pending: Option<PcmBuffer>,
@@ -36,17 +40,21 @@ impl<R: Read> OggFlacDecoder<R> {
     fn with_reader(reader: R, start: Option<u64>) -> Result<Self, AudioError> {
         let source = Arc::new(Mutex::new(reader));
         let final_granule = Arc::new(AtomicU64::new(u64::MAX));
+        let granule_offset = Arc::new(AtomicU64::new(0));
         let decoder = FlacDecoder::new(OggFlacReader::new(
             SharedReader(Arc::clone(&source)),
             Arc::clone(&final_granule),
+            Arc::clone(&granule_offset),
         )?)?;
         Ok(Self {
             source,
             start,
             spec: decoder.spec(),
+            initial_spec: decoder.spec(),
             metadata: decoder.metadata().clone(),
             decoder: Some(decoder),
             final_granule,
+            granule_offset,
             decoded_samples: 0,
             link_output_samples: 0,
             pending: None,
@@ -76,17 +84,21 @@ impl<R: Read + Seek> OggFlacDecoder<R> {
             .map_err(|_| AudioError::InvalidData("Ogg-FLAC input lock is poisoned"))?
             .seek(SeekFrom::Start(start))?;
         let final_granule = Arc::new(AtomicU64::new(u64::MAX));
+        let granule_offset = Arc::new(AtomicU64::new(0));
         let decoder = FlacDecoder::new(OggFlacReader::new(
             SharedReader(Arc::clone(&self.source)),
             Arc::clone(&final_granule),
+            Arc::clone(&granule_offset),
         )?)?;
-        if decoder.spec() != self.spec {
+        if decoder.spec() != self.initial_spec {
             return Err(AudioError::InvalidData(
                 "Ogg-FLAC audio specification changed while seeking",
             ));
         }
+        self.spec = decoder.spec();
         self.decoder = Some(decoder);
         self.final_granule = final_granule;
+        self.granule_offset = granule_offset;
         self.decoded_samples = 0;
         self.link_output_samples = 0;
         self.pending = None;
@@ -148,11 +160,12 @@ impl<R: Read> AudioDecoder for OggFlacDecoder<R> {
                 (None, Some(next)) => self.pending = Some(next),
                 (Some(last), None) => {
                     self.link_finished = true;
-                    self.ready = trim_final_block(
-                        last,
-                        self.decoded_samples,
-                        self.final_granule.load(Ordering::Acquire),
-                    )?;
+                    let granule = self.final_granule.load(Ordering::Acquire);
+                    let offset = self.granule_offset.load(Ordering::Acquire);
+                    let granule = granule.checked_sub(offset).ok_or(AudioError::InvalidData(
+                        "Ogg-FLAC granule precedes the stream origin",
+                    ))?;
+                    self.ready = trim_final_block(last, self.decoded_samples, granule)?;
                     if self.ready.is_some() {
                         return self.emit_ready(max_frames).map(Some);
                     }
@@ -206,7 +219,12 @@ impl<R: Read> OggFlacDecoder<R> {
     }
 
     fn verify_link_granule(&self) -> Result<(), AudioError> {
-        if self.final_granule.load(Ordering::Acquire) != self.link_output_samples {
+        let expected = self
+            .granule_offset
+            .load(Ordering::Acquire)
+            .checked_add(self.link_output_samples)
+            .ok_or(AudioError::InvalidData("Ogg-FLAC final granule overflow"))?;
+        if self.final_granule.load(Ordering::Acquire) != expected {
             return Err(AudioError::InvalidData(
                 "Ogg-FLAC link granule differs from decoded sample count",
             ));
@@ -220,17 +238,14 @@ impl<R: Read> OggFlacDecoder<R> {
             .take()
             .ok_or(AudioError::InvalidData("missing Ogg-FLAC link decoder"))?
             .into_inner()?;
-        let Some((reader, final_granule)) = reader.next_link()? else {
+        let Some((reader, final_granule, granule_offset)) = reader.next_link()? else {
             return Ok(false);
         };
         let decoder = FlacDecoder::new(reader)?;
-        if decoder.spec() != self.spec {
-            return Err(AudioError::InvalidFormat(
-                "chained Ogg-FLAC links have different audio specifications",
-            ));
-        }
+        self.spec = decoder.spec();
         self.decoder = Some(decoder);
         self.final_granule = final_granule;
+        self.granule_offset = granule_offset;
         self.decoded_samples = 0;
         self.link_output_samples = 0;
         self.pending = None;
@@ -276,22 +291,30 @@ struct OggFlacReader<R> {
     packets: OggPackets<R>,
     output: Vec<u8>,
     output_pos: usize,
-    audio: Option<Packet>,
+    audio: VecDeque<(Packet, bool)>,
     final_granule: Arc<AtomicU64>,
 }
 
 impl<R: Read> OggFlacReader<R> {
-    fn new(reader: R, final_granule: Arc<AtomicU64>) -> Result<Self, AudioError> {
-        Self::from_packets(OggPackets::new(reader), final_granule)
+    fn new(
+        reader: R,
+        final_granule: Arc<AtomicU64>,
+        granule_offset: Arc<AtomicU64>,
+    ) -> Result<Self, AudioError> {
+        Self::from_packets(OggPackets::new(reader), final_granule, granule_offset)
     }
 
     fn from_packets(
         mut packets: OggPackets<R>,
         final_granule: Arc<AtomicU64>,
+        granule_offset: Arc<AtomicU64>,
     ) -> Result<Self, AudioError> {
         let first = packets
             .next_packet()?
             .ok_or(AudioError::InvalidFormat("empty Ogg stream"))?;
+        if is_legacy_mapping_header(&first) {
+            return Self::from_legacy_packets(packets, first, final_granule, granule_offset);
+        }
         if !first.page_is_first
             || !first.ends_page
             || first.page_flags != PAGE_FLAG_BOS
@@ -314,7 +337,7 @@ impl<R: Read> OggFlacReader<R> {
         }
 
         let mut output = Vec::from(&first.bytes[9..]);
-        let audio = if declared > 0 {
+        let first_audio = if declared > 0 {
             for index in 0..declared {
                 let packet = packets
                     .next_packet()?
@@ -333,30 +356,32 @@ impl<R: Read> OggFlacReader<R> {
                 }
                 append_metadata_packet(&mut output, &packet.bytes, last)?;
             }
-            let packet = packets.next_packet()?.ok_or(AudioError::InvalidFormat(
-                "Ogg-FLAC stream has no audio packet",
-            ))?;
-            if !packet.starts_page || packet.page_granule_position == 0 {
+            let packet = packets
+                .next_packet_with_granule()?
+                .ok_or(AudioError::InvalidFormat(
+                    "Ogg-FLAC stream has no audio packet",
+                ))?;
+            if !packet.0.starts_page {
                 return Err(AudioError::InvalidFormat(
                     "first Ogg-FLAC audio packet must start an audio page",
                 ));
             }
-            validate_audio_packet(&packet)?;
-            Some(packet)
+            validate_audio_packet(&packet.0)?;
+            packet
         } else {
             let mut metadata_count = 0_usize;
             let first_audio = loop {
                 let packet = packets
-                    .next_packet()?
+                    .next_packet_with_granule()?
                     .ok_or(AudioError::InvalidFormat("truncated Ogg-FLAC headers"))?;
-                if is_metadata_packet(&packet.bytes) {
-                    validate_header_packet(&packet)?;
-                    if metadata_count == 0 && packet.bytes[0] & 0x7f != 4 {
+                if is_metadata_packet(&packet.0.bytes) {
+                    validate_header_packet(&packet.0)?;
+                    if metadata_count == 0 && packet.0.bytes[0] & 0x7f != 4 {
                         return Err(AudioError::InvalidFormat(
                             "first Ogg-FLAC metadata packet must be a Vorbis comment",
                         ));
                     }
-                    append_metadata_packet(&mut output, &packet.bytes, false)?;
+                    append_metadata_packet(&mut output, &packet.0.bytes, false)?;
                     metadata_count += 1;
                 } else {
                     if metadata_count == 0 {
@@ -364,12 +389,12 @@ impl<R: Read> OggFlacReader<R> {
                             "Ogg-FLAC stream is missing its Vorbis comment packet",
                         ));
                     }
-                    if !packet.starts_page || packet.page_granule_position == 0 {
+                    if !packet.0.starts_page {
                         return Err(AudioError::InvalidFormat(
                             "first Ogg-FLAC audio packet must start an audio page",
                         ));
                     }
-                    validate_audio_packet(&packet)?;
+                    validate_audio_packet(&packet.0)?;
                     break packet;
                 }
                 if metadata_count > MAX_METADATA_BYTES / 4 {
@@ -395,9 +420,10 @@ impl<R: Read> OggFlacReader<R> {
                     output[cursor - length - 4] |= 0x80;
                 }
             }
-            Some(first_audio)
+            first_audio
         };
 
+        let audio = collect_initial_audio_page(&mut packets, first_audio, &granule_offset)?;
         if output.len() > MAX_METADATA_BYTES + 4 {
             return Err(AudioError::InvalidData(
                 "FLAC metadata exceeds the 128 MiB limit",
@@ -412,8 +438,83 @@ impl<R: Read> OggFlacReader<R> {
         })
     }
 
-    fn next_link(mut self) -> Result<Option<(Self, Arc<AtomicU64>)>, AudioError> {
-        if self.output_pos != self.output.len() || self.packets.next_packet()?.is_some() {
+    fn from_legacy_packets(
+        mut packets: OggPackets<R>,
+        first: Packet,
+        final_granule: Arc<AtomicU64>,
+        granule_offset: Arc<AtomicU64>,
+    ) -> Result<Self, AudioError> {
+        if !first.page_is_first
+            || !first.ends_page
+            || first.page_flags != PAGE_FLAG_BOS
+            || first.page_granule_position != 0
+        {
+            return Err(AudioError::InvalidFormat(
+                "invalid legacy Ogg-FLAC identification packet",
+            ));
+        }
+
+        let mut output = Vec::from(&b"fLaC"[..]);
+        let mut metadata_count = 0_usize;
+        let mut metadata_finished = false;
+        let first_audio = loop {
+            let packet = packets
+                .next_packet_with_granule()?
+                .ok_or(AudioError::InvalidFormat(
+                    "legacy Ogg-FLAC stream has no audio packet",
+                ))?;
+            if is_metadata_packet(&packet.0.bytes) {
+                // Legacy mappings may share a page's granule with completed audio packets.
+                let block_type = packet.0.bytes[0] & 0x7f;
+                if metadata_count == 0 && (block_type != 0 || packet.0.bytes.len() != 38) {
+                    return Err(AudioError::InvalidFormat(
+                        "legacy Ogg-FLAC must begin with STREAMINFO",
+                    ));
+                }
+                if metadata_finished {
+                    return Err(AudioError::InvalidFormat(
+                        "legacy Ogg-FLAC metadata follows the last metadata block",
+                    ));
+                }
+                metadata_finished = packet.0.bytes[0] & 0x80 != 0;
+                append_metadata_packet(&mut output, &packet.0.bytes, metadata_finished)?;
+                metadata_count += 1;
+                if metadata_count > MAX_METADATA_BYTES / 4 {
+                    return Err(AudioError::InvalidData(
+                        "too many legacy Ogg-FLAC metadata packets",
+                    ));
+                }
+                continue;
+            }
+            if metadata_count == 0 || !metadata_finished {
+                return Err(AudioError::InvalidFormat(
+                    "legacy Ogg-FLAC metadata is missing its last-block marker",
+                ));
+            }
+            validate_audio_packet(&packet.0)?;
+            break packet;
+        };
+
+        let audio = collect_initial_audio_page(&mut packets, first_audio, &granule_offset)?;
+        if output.len() > MAX_METADATA_BYTES + 4 {
+            return Err(AudioError::InvalidData(
+                "FLAC metadata exceeds the 128 MiB limit",
+            ));
+        }
+        Ok(Self {
+            packets,
+            output,
+            output_pos: 0,
+            audio,
+            final_granule,
+        })
+    }
+
+    fn next_link(mut self) -> Result<Option<OggLink<R>>, AudioError> {
+        if self.output_pos != self.output.len()
+            || !self.audio.is_empty()
+            || self.packets.next_packet()?.is_some()
+        {
             return Err(AudioError::InvalidData(
                 "Ogg-FLAC decoder stopped before the link boundary",
             ));
@@ -422,9 +523,98 @@ impl<R: Read> OggFlacReader<R> {
             return Ok(None);
         };
         let final_granule = Arc::new(AtomicU64::new(u64::MAX));
-        let reader = Self::from_packets(packets, Arc::clone(&final_granule))?;
-        Ok(Some((reader, final_granule)))
+        let granule_offset = Arc::new(AtomicU64::new(0));
+        let reader = Self::from_packets(
+            packets,
+            Arc::clone(&final_granule),
+            Arc::clone(&granule_offset),
+        )?;
+        Ok(Some((reader, final_granule, granule_offset)))
     }
+}
+
+fn is_legacy_mapping_header(packet: &Packet) -> bool {
+    packet.bytes == b"fLaC"
+}
+
+fn collect_initial_audio_page<R: Read>(
+    packets: &mut OggPackets<R>,
+    first: (Packet, bool),
+    granule_offset: &AtomicU64,
+) -> Result<VecDeque<(Packet, bool)>, AudioError> {
+    let page_sequence = first.0.page_sequence;
+    let mut samples = 0_u64;
+    let mut audio = VecDeque::new();
+    let mut packet = first;
+    loop {
+        if packet.0.page_sequence != page_sequence {
+            return Err(AudioError::InvalidFormat(
+                "first Ogg-FLAC audio page has no completed-packet granule",
+            ));
+        }
+        samples = samples
+            .checked_add(frame_block_size(&packet.0.bytes)? as u64)
+            .ok_or(AudioError::InvalidData(
+                "Ogg-FLAC initial page sample count overflow",
+            ))?;
+        let owns_granule = packet.1;
+        let granule = packet.0.page_granule_position;
+        let terminal_page = packet.0.page_flags & PAGE_FLAG_EOS != 0;
+        audio.push_back(packet);
+        if owns_granule {
+            if granule == u64::MAX || (granule < samples && !terminal_page) {
+                return Err(AudioError::InvalidFormat(
+                    "invalid Ogg-FLAC initial audio granule",
+                ));
+            }
+            granule_offset.store(granule.saturating_sub(samples), Ordering::Release);
+            return Ok(audio);
+        }
+        packet = packets
+            .next_packet_with_granule()?
+            .ok_or(AudioError::InvalidFormat(
+                "Ogg-FLAC stream has no initial audio granule",
+            ))?;
+        validate_audio_packet(&packet.0)?;
+    }
+}
+
+pub(crate) fn frame_block_size(frame: &[u8]) -> Result<usize, AudioError> {
+    if frame.len() < 5 || frame[0] != 0xff || frame[1] & 0xfe != 0xf8 {
+        return Err(AudioError::InvalidFormat("invalid Ogg-FLAC audio frame"));
+    }
+    let block_code = frame[2] >> 4;
+    let first_number_byte = frame[4];
+    let number_bytes = match first_number_byte.leading_ones() {
+        0 => 1,
+        count @ 2..=7 => count as usize,
+        _ => return Err(AudioError::InvalidFormat("invalid FLAC coded frame number")),
+    };
+    let number_end = 4 + number_bytes;
+    if number_end > frame.len() || frame[5..number_end].iter().any(|byte| byte & 0xc0 != 0x80) {
+        return Err(AudioError::InvalidFormat("invalid FLAC coded frame number"));
+    }
+    let extra = match block_code {
+        6 => 1,
+        7 => 2,
+        _ => 0,
+    };
+    if number_end + extra > frame.len() {
+        return Err(AudioError::InvalidFormat("truncated FLAC block size"));
+    }
+    Ok(match block_code {
+        1 => 192,
+        2..=5 => 576_usize << (block_code - 2),
+        6 => usize::from(frame[number_end]) + 1,
+        7 => {
+            usize::from(u16::from_be_bytes([
+                frame[number_end],
+                frame[number_end + 1],
+            ])) + 1
+        }
+        8..=15 => 256_usize << (block_code - 8),
+        _ => return Err(AudioError::InvalidFormat("reserved FLAC block-size code")),
+    })
 }
 
 impl<R: Read> Read for OggFlacReader<R> {
@@ -435,17 +625,16 @@ impl<R: Read> Read for OggFlacReader<R> {
         if self.output_pos == self.output.len() {
             self.output.clear();
             self.output_pos = 0;
-            let packet = if let Some(packet) = self.audio.take() {
+            let (packet, owns_granule) = if let Some(packet) = self.audio.pop_front() {
                 packet
             } else {
-                let Some(packet) = self.packets.next_packet()? else {
+                let Some(packet) = self.packets.next_packet_with_granule()? else {
                     return Ok(0);
                 };
                 packet
             };
-            validate_audio_packet(&packet)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-            if packet.page_flags & PAGE_FLAG_EOS != 0 && packet.ends_page {
+            let terminal_granule = packet.page_flags & PAGE_FLAG_EOS != 0 && owns_granule;
+            if terminal_granule {
                 if packet.page_granule_position == u64::MAX
                     || packet.page_granule_position > i64::MAX as u64
                 {
@@ -457,6 +646,17 @@ impl<R: Read> Read for OggFlacReader<R> {
                 self.final_granule
                     .store(packet.page_granule_position, Ordering::Release);
             }
+            if packet.bytes.is_empty() {
+                if terminal_granule {
+                    return Ok(0);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "empty non-terminal Ogg-FLAC audio packet",
+                ));
+            }
+            validate_audio_packet(&packet)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
             self.output = packet.bytes;
         }
         let count = buffer.len().min(self.output.len() - self.output_pos);
@@ -519,9 +719,11 @@ fn append_metadata_packet(
 mod tests {
     use std::io::Cursor;
 
-    use zemer_core::{AudioDecoder, AudioSpec, SampleFormat, Samples};
+    use ogg::{OggPacketReader, OggPacketWriter, PAGE_FLAG_EOS};
+    use zemer_core::{AudioDecoder, AudioEncoder, AudioSpec, PcmBuffer, SampleFormat, Samples};
 
     use super::{OggFlacDecoder, trim_final_block};
+    use crate::{OggFlacEncoder, rewrite_ogg_metadata};
 
     fn ogg_crc(bytes: &[u8]) -> u32 {
         let mut crc = 0_u32;
@@ -546,13 +748,19 @@ mod tests {
     ];
 
     fn page(packet: &[u8], flags: u8, sequence: u32, granule: u64) -> Vec<u8> {
+        page_with_packets(&[packet], flags, sequence, granule)
+    }
+
+    fn page_with_packets(packets: &[&[u8]], flags: u8, sequence: u32, granule: u64) -> Vec<u8> {
         let mut lacing = Vec::new();
-        let mut remaining = packet.len();
-        while remaining >= 255 {
-            lacing.push(255);
-            remaining -= 255;
+        for packet in packets {
+            let mut remaining = packet.len();
+            while remaining >= 255 {
+                lacing.push(255);
+                remaining -= 255;
+            }
+            lacing.push(remaining as u8);
         }
-        lacing.push(remaining as u8);
         let mut output = vec![0; 27];
         output[..4].copy_from_slice(b"OggS");
         output[5] = flags;
@@ -561,7 +769,9 @@ mod tests {
         output[18..22].copy_from_slice(&sequence.to_le_bytes());
         output[26] = lacing.len() as u8;
         output.extend_from_slice(&lacing);
-        output.extend_from_slice(packet);
+        for packet in packets {
+            output.extend_from_slice(packet);
+        }
         let crc = ogg_crc(&output);
         output[22..26].copy_from_slice(&crc.to_le_bytes());
         output
@@ -590,6 +800,36 @@ mod tests {
             cursor += page_len;
             sequence += 1;
         }
+    }
+
+    fn two_frame_ogg_flac() -> (Vec<u8>, Vec<i16>) {
+        let spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
+        let samples: Vec<i16> = (0..4097)
+            .map(|index| (index * 29 % 65_536 - 32_768) as i16)
+            .collect();
+        let block = PcmBuffer::new(spec, Samples::I16(samples.clone())).unwrap();
+        let mut encoder = OggFlacEncoder::new(Vec::new(), spec).unwrap();
+        encoder.write_block(&block).unwrap();
+        encoder.finish().unwrap();
+        (encoder.into_inner(), samples)
+    }
+
+    fn adjust_audio_granules(input: &[u8], offset: u64, bad_terminal: bool) -> Vec<u8> {
+        let mut reader = OggPacketReader::new(Cursor::new(input));
+        let mut writer = OggPacketWriter::new(Vec::new(), 91);
+        while let Some((packet, owns_granule)) = reader.next_packet_with_granule().unwrap() {
+            let audio = packet.bytes.first() == Some(&0xff);
+            let mut granule = packet.page_granule_position;
+            if audio && granule != u64::MAX {
+                granule += offset;
+                if bad_terminal && owns_granule && packet.page_flags & PAGE_FLAG_EOS != 0 {
+                    granule += 1;
+                }
+            }
+            writer.write_packet(&packet.bytes, granule).unwrap();
+        }
+        writer.finish().unwrap();
+        writer.into_inner()
     }
 
     fn clear_streaminfo_total_samples(stream: &mut [u8]) {
@@ -649,6 +889,67 @@ mod tests {
     }
 
     #[test]
+    fn accepts_empty_terminal_ogg_packet_as_eos_granule_carrier() {
+        let mut input = ogg_flac();
+        let last_page = input
+            .windows(4)
+            .rposition(|bytes| bytes == b"OggS")
+            .unwrap();
+        input[last_page + 5] &= !PAGE_FLAG_EOS;
+        update_page_crc(&mut input[last_page..]);
+        input.extend(page(&[], PAGE_FLAG_EOS, 3, 1));
+
+        let mut decoder = OggFlacDecoder::new(Cursor::new(input)).unwrap();
+        assert_eq!(
+            decoder.read_frames(1).unwrap().unwrap().samples(),
+            &Samples::I16(vec![25_588, 10_416])
+        );
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_empty_nonterminal_ogg_audio_packets() {
+        let mut input = ogg_flac();
+        let last_page = input
+            .windows(4)
+            .rposition(|bytes| bytes == b"OggS")
+            .unwrap();
+        input[last_page + 5] &= !PAGE_FLAG_EOS;
+        update_page_crc(&mut input[last_page..]);
+        input.extend(page(&[], 0, 3, u64::MAX));
+
+        let mut decoder = OggFlacDecoder::new(Cursor::new(input.clone())).unwrap();
+        assert!(decoder.read_frames(1).is_err());
+        assert!(
+            rewrite_ogg_metadata(Cursor::new(input), &mut Vec::new(), &Default::default()).is_err()
+        );
+    }
+
+    #[test]
+    fn decodes_legacy_ogg_flac_packet_layout() {
+        let mut input = page(b"fLaC", 2, 0, 0);
+        let mut streaminfo = NATIVE[4..42].to_vec();
+        streaminfo[0] &= 0x7f;
+        input.extend(page(&streaminfo, 0, 1, 0));
+        let mut comment = vec![0x84, 0, 0, 8];
+        comment.extend_from_slice(&[0; 8]);
+        input.extend(page_with_packets(
+            &[&comment, &NATIVE[42..]],
+            PAGE_FLAG_EOS,
+            2,
+            1,
+        ));
+
+        let mut decoder = OggFlacDecoder::new(Cursor::new(input)).unwrap();
+        assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
+        assert_eq!(
+            decoder.read_frames(1).unwrap().unwrap().samples(),
+            &Samples::I16(vec![25_588, 10_416])
+        );
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    #[test]
     fn decodes_chained_links_and_keeps_the_first_link_metadata() {
         let mut input = ogg_flac();
         let mut second = ogg_flac();
@@ -689,20 +990,35 @@ mod tests {
     }
 
     #[test]
-    fn rejects_chained_links_with_different_audio_specifications() {
+    fn decodes_chained_links_with_different_audio_specifications() {
         let mut input = ogg_flac();
-        let mut second = ogg_flac();
+        let second_spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
+        let second_block = PcmBuffer::new(second_spec, Samples::I16(vec![123])).unwrap();
+        let mut second_encoder = OggFlacEncoder::new(Vec::new(), second_spec).unwrap();
+        second_encoder.write_block(&second_block).unwrap();
+        second_encoder.finish().unwrap();
+        let mut second = second_encoder.into_inner();
         set_stream_serial(&mut second, 8);
-        let packed_start = 27 + 1 + 27;
-        let packed = u64::from_be_bytes(second[packed_start..packed_start + 8].try_into().unwrap());
-        let packed = (packed & ((1_u64 << 44) - 1)) | (48_000_u64 << 44);
-        second[packed_start..packed_start + 8].copy_from_slice(&packed.to_be_bytes());
-        update_page_crc(&mut second[..79]);
         input.extend(second);
 
-        let mut decoder = OggFlacDecoder::new(Cursor::new(input)).unwrap();
-        assert_eq!(decoder.read_frames(8).unwrap().unwrap().frames(), 1);
-        assert!(decoder.read_frames(8).is_err());
+        let mut decoder = OggFlacDecoder::new(Cursor::new(input.clone())).unwrap();
+        let first = decoder.read_frames(8).unwrap().unwrap();
+        assert_eq!(first.spec().sample_rate(), 44_100);
+        assert_eq!(decoder.spec().sample_rate(), 44_100);
+        let second = decoder.read_frames(8).unwrap().unwrap();
+        assert_eq!(second.spec().sample_rate(), 48_000);
+        assert_eq!(decoder.spec().sample_rate(), 48_000);
+        assert!(decoder.read_frames(8).unwrap().is_none());
+
+        let mut decoder = OggFlacDecoder::new_seekable(Cursor::new(input)).unwrap();
+        decoder.seek_to_sample(1).unwrap();
+        let block = decoder.read_frames(8).unwrap().unwrap();
+        assert_eq!(block.spec().sample_rate(), 48_000);
+        assert_eq!(block.samples(), &Samples::I16(vec![123]));
+        assert_eq!(decoder.spec().sample_rate(), 48_000);
+        assert!(decoder.read_frames(8).unwrap().is_none());
+        decoder.seek_to_sample(0).unwrap();
+        assert_eq!(decoder.spec().sample_rate(), 44_100);
     }
 
     #[test]
@@ -733,13 +1049,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_final_granule_that_disagrees_with_streaminfo() {
-        let mut input = ogg_flac();
-        let page_start = input.len() - (27 + 1 + NATIVE.len() - 42);
-        input[page_start + 6..page_start + 14].copy_from_slice(&2_u64.to_le_bytes());
-        update_page_crc(&mut input[page_start..]);
-
+    fn decodes_nonzero_initial_granule_offset() {
+        let (input, expected) = two_frame_ogg_flac();
+        let input = adjust_audio_granules(&input, 100, false);
         let mut decoder = OggFlacDecoder::new(Cursor::new(input)).unwrap();
+        let mut actual = Vec::new();
+        while let Some(block) = decoder.read_frames(257).unwrap() {
+            let Samples::I16(samples) = block.samples() else {
+                panic!("offset Ogg-FLAC must decode to signed 16-bit PCM");
+            };
+            actual.extend_from_slice(samples);
+        }
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn rejects_terminal_granule_that_disagrees_with_initial_offset() {
+        let (input, _) = two_frame_ogg_flac();
+        let input = adjust_audio_granules(&input, 100, true);
+        let mut decoder = OggFlacDecoder::new(Cursor::new(input)).unwrap();
+        while decoder.read_frames(257).is_ok_and(|block| block.is_some()) {}
         assert!(decoder.read_frames(1).is_err());
     }
 
@@ -751,12 +1080,11 @@ mod tests {
         assert_eq!(decoder.read_frames(1).unwrap().unwrap().frames(), 1);
         assert!(decoder.read_frames(1).unwrap().is_none());
 
-        let mut input = ogg_flac();
+        let (mut input, _) = two_frame_ogg_flac();
+        input = adjust_audio_granules(&input, 100, true);
         clear_streaminfo_total_samples(&mut input);
-        let page_start = input.len() - (27 + 1 + NATIVE.len() - 42);
-        input[page_start + 6..page_start + 14].copy_from_slice(&2_u64.to_le_bytes());
-        update_page_crc(&mut input[page_start..]);
         let mut decoder = OggFlacDecoder::new(Cursor::new(input)).unwrap();
+        while decoder.read_frames(257).is_ok_and(|block| block.is_some()) {}
         assert!(decoder.read_frames(1).is_err());
     }
 

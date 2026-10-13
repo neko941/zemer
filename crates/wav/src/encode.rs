@@ -1,6 +1,9 @@
 use std::io::{Seek, SeekFrom, Write};
 
+use g711::{encode_alaw, encode_mulaw};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
+
+pub use g711::G711Encoding;
 
 const MAX_INFO_VALUE: usize = 1024 * 1024;
 const EXTENSIBLE_PCM_GUID: [u8; 16] = [
@@ -9,12 +12,6 @@ const EXTENSIBLE_PCM_GUID: [u8; 16] = [
 const EXTENSIBLE_FLOAT_GUID: [u8; 16] = [
     3, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
 ];
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum G711Encoding {
-    ALaw,
-    MuLaw,
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WavContainer {
@@ -548,49 +545,6 @@ fn write_g711_samples<W: Write>(
     Ok(())
 }
 
-fn encode_alaw(sample: i16) -> u8 {
-    const SEGMENT_ENDS: [i32; 8] = [0xff, 0x1ff, 0x3ff, 0x7ff, 0xfff, 0x1fff, 0x3fff, 0x7fff];
-    let sample = i32::from(sample);
-    let (magnitude, mask) = if sample >= 0 {
-        (sample, 0xd5)
-    } else {
-        (-sample - 1, 0x55)
-    };
-    let magnitude = magnitude.min(0x7fff);
-    let segment = SEGMENT_ENDS
-        .iter()
-        .position(|&end| magnitude <= end)
-        .unwrap_or(8);
-    let value = if segment >= 8 {
-        0x7f
-    } else if segment == 0 {
-        (magnitude >> 4) as u8
-    } else {
-        ((segment as i32) << 4 | ((magnitude >> (segment + 3)) & 0x0f)) as u8
-    };
-    value ^ mask
-}
-
-fn encode_mulaw(sample: i16) -> u8 {
-    const SEGMENT_ENDS: [i32; 8] = [0xff, 0x1ff, 0x3ff, 0x7ff, 0xfff, 0x1fff, 0x3fff, 0x7fff];
-    let sample = i32::from(sample);
-    let (magnitude, mask) = if sample >= 0 {
-        (sample, 0xff)
-    } else {
-        (-sample, 0x7f)
-    };
-    let magnitude = (magnitude.min(32_635) + 0x84).min(32_767);
-    let segment = SEGMENT_ENDS
-        .iter()
-        .position(|&end| magnitude <= end)
-        .unwrap_or(8);
-    if segment >= 8 {
-        return 0x7f ^ mask;
-    }
-    let value = ((segment as i32) << 4) | ((magnitude >> (segment + 3)) & 0x0f);
-    (value as u8) ^ mask
-}
-
 fn write_samples<W, const N: usize>(
     writer: &mut W,
     values: impl Iterator<Item = [u8; N]>,
@@ -622,7 +576,8 @@ mod tests {
         AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
     };
 
-    use super::{G711Encoding, WavContainer, WavWriter, encode_alaw, encode_mulaw};
+    use super::{G711Encoding, WavContainer, WavWriter};
+    use g711::{encode_alaw, encode_mulaw};
 
     #[derive(Default)]
     struct SparseWriter {

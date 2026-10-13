@@ -19,12 +19,13 @@ The workspace separates format-independent audio types from each format implemen
 | RIFF/WAVE IEEE float 32/64-bit | Supported | Read and write; RIFF INFO metadata read/write. WAVE_FORMAT_EXTENSIBLE float and optional channel masks are preserved. |
 | RIFF/WAVE G.711 A-law and μ-law | Supported | Read and write; RIFF INFO metadata read/write. Decodes to signed 16-bit PCM; writing requires explicit G.711 selection. |
 | RF64/WAVE | Supported | Read and write; RIFF INFO metadata read/write. Supports 64-bit file and data sizes; select explicitly for output. |
+| [AIFF / AIFC](crates/aiff/) | Partial | Reads AIFF/AIFC integer PCM, AIFC IEEE `fl32`/`fl64`, G.711 A-law/μ-law, and Apple IMA4; writes PCM/float, explicit G.711, and explicit IMA4 AIFC. IMA4 packets add up to 63 padded frames at end of stream. Maps `NAME`, `AUTH`, and repeated `ANNO` to common tags; reads/writes typed `COMT`. CLI inspect, convert, and metadata edit are available. Other compression codes and broader corpus remain open. |
 | CUE sheets for WAVE/AUDIO tracks | Supported | Read and write; track title and performer fields. Split referenced WAV audio into track WAVs and create CUE sheets for WAV tracks. |
 | Native FLAC | Supported | Streaming integer PCM encode (8/16/24/32-bit, verbatim or fixed-predictor Rice-coded frames) and decode with frame CRC and STREAMINFO MD5 verification; sample seeking for seekable readers (SEEKTABLE accelerated, forward-scan fallback); Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE/FLAC, and comment editing are available. |
-| Ogg-FLAC | Supported | Streaming decode and encode through the reusable `zemer-ogg` page/packet reader/writer; validates terminal granules, trims final-frame samples, and decodes chained links with matching audio specifications. Seekable readers can seek by restarting and decoding forward. The decoder exposes metadata from the first link. CLI inspection and conversion to WAVE/Ogg-FLAC are available. |
+| Ogg-FLAC | Supported | Streaming decode and encode through the reusable `zemer-ogg` page/packet reader/writer; reads the current mapping and the tested pre-1.1.1 legacy packet layout. Validates terminal granules including valid nonzero initial offsets, trims final-frame samples, and decodes chained links even when their audio specifications differ; `spec()` and each PCM block report the active link's specification. Seekable readers can seek by restarting and decoding forward. Metadata editing rewrites first-link Vorbis comments, normalizes legacy mappings to the current layout, and preserves FLAC audio packets. CLI inspection/conversion handles chains with one common audio specification; metadata editing updates the first link. |
 | WavPack | Supported | Streaming decode covers lossless PCM, IEEE float32, hybrid `.wvc` restoration, and native DSD profiles. Lossless integer PCM encoding supports 1–32 channels at 8/16/24/32 bits; float32 is bit-exact but stored uncompressed in WVX; raw native DSD encoding supports 1–32 channels. Integer PCM hybrid encoding writes standard-bitrate `.wv`+`.wvc` pairs; APEv2 text tags, CLI inspect, conversion, and metadata editing are supported. The official suite decoded 35 supported files (including 2 DSD and 16 correction-paired files), skipped 9 legacy files, and rejected all 4 malformed files. |
-| [DSF](crates/dsf/) | Partial | `zemer-dsf` reads and writes Sony DSF 1.01 raw one-bit DSD for supported layouts at 2.8224/5.6448 MHz; it reads ID3v2.3/v2.4 and writes common ID3v2.4 text tags. CLI inspect and bit-exact DSF ↔ native DSD WavPack conversion are supported. Artwork/unknown-frame preservation remains open. |
-| [DSDIFF / DFF](crates/dsdiff/) | Partial | Reads and writes uncompressed, interleaved raw DSD; supports title, artist, general and typed comments, and channel IDs, plus CLI inspect and DSD conversion. DST compression, markers, and unknown-chunk preservation are not implemented. |
+| [DSF](crates/dsf/) | Supported | Reads and writes Sony DSF 1.01 raw DSD in both one-bit and eight-bit storage order for mono through 5.1 at 2.8224/5.6448 MHz; reads common uncompressed ID3v2.2/v2.3/v2.4 text and writes common ID3v2.4 text. DSF-to-DSF conversion preserves complete bounded ID3 tags, and `zemer metadata edit` changes text while preserving artwork and opaque frames and copying encoded audio unchanged. ID3v2.2's reserved compression flag means the tag is ignored as a whole, per that version's specification; cross-container artwork transfer is not part of DSF container support. |
+| [DSDIFF / DFF](crates/dsdiff/) | Supported | Reads raw DSD across the full 1–65,535-channel DSDIFF `CHNL` field range and compressed DST (up to 64 channels at DSD64/128/256), validates optional frame CRCs, and writes raw DSD or compressed DST using a clean-room first-order predictor with valid mode-0 bypass fallback. Supports title, artist, general and typed comments, channel IDs, typed DIIN/MARK records, and audio/unknown-chunk-preserving metadata edits. All three complete 300-frame `DST_02_02` vectors pass bit-exactly; the first 10 frames of every available ISO vector also pass. |
 
 ## Roadmap
 
@@ -37,15 +38,18 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata, PCM, and DSD types for convenience.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
-- [`zemer-dsdiff`](crates/dsdiff/) (Rust crate `dsdiff`): raw DSDIFF `.dff` decoder and encoder for uncompressed DSD.
-- [`zemer-dsf`](crates/dsf/) (Rust crate `dsf`): DSF 1.01 raw one-bit DSD decoder and encoder for the documented profile, with common ID3 text-tag mapping.
-- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native FLAC streaming integer PCM encoder, decoder, seek API, and metadata rewriter with raw metadata-block access and typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
+- [`zemer-dst`](crates/dst/): reusable clean-room DST frame decoder and first-order encoder for DSD64/128/256 profiles.
+- [`zemer-dsdiff`](crates/dsdiff/) (Rust crate `dsdiff`): raw and compressed DST DSDIFF `.dff` decoder, plus raw DSD and compressed DST writers with bypass fallback.
+- [`zemer-dsf`](crates/dsf/) (Rust crate `dsf`): DSF 1.01 raw one-bit and eight-bit DSD decoder and encoder for the documented profile, with common ID3 text-tag mapping.
+- [`zemer-flac`](crates/flac/) (Rust crate `flac`): native/Ogg-FLAC streaming integer PCM encoders and decoders, native and Ogg seeking, Vorbis-comment rewriting, and raw metadata-block access with typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer with page CRC, sequence, and continuation validation.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE reader and writer.
+- [`zemer-aiff`](crates/aiff/) (Rust crate `aiff`): AIFF/AIFC PCM, float, G.711, and IMA4 reader/writer profile, including typed `COMT` records.
+- [`zemer-g711`](crates/g711/) (Rust crate `g711`): reusable ITU-T G.711 A-law/μ-law sample conversion used by WAVE and AIFF-C.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/native DSD decoding, lossless integer PCM, standard-bitrate integer PCM hybrid `.wv`+`.wvc` encoding, bit-exact float32, raw native DSD encoding, APEv2 text metadata reading and rewriting, and checksum validation.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, DSF/DSDIFF/native DSD WavPack transcoding, WAVE/FLAC/WavPack metadata editing, and CUE/WAV workflows.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion, DSF/DSDIFF/native DSD WavPack transcoding, WAVE/AIFF/DSF/DSDIFF/FLAC/Ogg-FLAC/WavPack metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 ## Documentation
@@ -94,18 +98,35 @@ cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
 cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
 cargo run -p zemer -- convert --format g711_alaw input.wav voice-alaw.wav
 cargo run -p zemer -- convert --format g711_mulaw input.wav voice-mulaw.wav
+cargo run -p zemer -- convert --format aifc_alaw input.wav voice-alaw.aifc
+cargo run -p zemer -- convert --format aifc_mulaw input.wav voice-mulaw.aifc
+cargo run -p zemer -- convert --format aifc_ima4 input.wav voice-ima4.aifc
 cargo run -p zemer -- convert --format flac input.wav output.flac
 cargo run -p zemer -- convert --format ogg_flac input.wav output.oga
 ```
 
-Edit RIFF INFO tags in WAVE or Vorbis comments in native FLAC while keeping
-unmentioned tags. Repeated `--set` values for the same key create repeated
+Copy native DSD between containers without passing through PCM. Select
+``dsdiff_dst`` to write compressed DST frames where the predictor reduces the
+frame, with valid bypass frames otherwise:
+
+```sh
+cargo run -p zemer -- convert --format dsf input.dff output.dsf
+cargo run -p zemer -- convert --format dsdiff_dst input.dsf output.dff
+cargo run -p zemer -- convert --format wavpack input.dsf output.wv
+```
+
+Edit RIFF INFO tags in WAVE, AIFF/AIFC text chunks, native or Ogg-FLAC Vorbis comments,
+or WavPack APEv2 text tags while keeping unmentioned tags. Repeated `--set` values for the same key create repeated
 fields; `--remove` removes all values for a key. The output path must be new.
-Metadata editing copies encoded audio without decoding or re-encoding it:
+Metadata editing preserves encoded audio without decoding or re-encoding it:
 
 ```sh
 zemer metadata edit --set "TITLE=New title" --set "ARTIST=Artist" --remove COMMENT input.flac updated.flac --json
 zemer metadata edit --set "TITLE=New title" input.wav updated.wav --json
+zemer metadata edit --set "TITLE=New title" input.aiff updated.aiff --json
+zemer metadata edit --set "TITLE=New title" input.dsf updated.dsf --json
+zemer metadata edit --set "TITLE=New title" input.dff updated.dff --json
+zemer metadata edit --set "TITLE=New title" input.oga updated.oga --json
 ```
 
 Split a WAVE-backed CUE sheet to numbered track WAVs, or create a CUE for WAV

@@ -6,6 +6,7 @@ mod md5;
 mod metadata;
 mod ogg;
 mod ogg_encode;
+mod ogg_rewrite;
 mod rewrite;
 
 pub use decode::FlacDecoder;
@@ -16,6 +17,7 @@ pub use metadata::{
 };
 pub use ogg::OggFlacDecoder;
 pub use ogg_encode::OggFlacEncoder;
+pub use ogg_rewrite::rewrite_ogg_metadata;
 pub use rewrite::rewrite_metadata;
 
 #[cfg(test)]

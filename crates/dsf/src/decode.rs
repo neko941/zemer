@@ -9,12 +9,14 @@ const FMT_CHUNK_SIZE: u64 = 52;
 const BLOCK_BYTES: usize = 4096;
 const MAX_CHANNELS: u32 = 6;
 
-/// Streams raw one-bit DSD samples from a DSF 1.01 file.
+/// Streams raw DSD samples from a DSF 1.01 file in either specified storage order.
 pub struct DsfDecoder<R> {
     reader: R,
     spec: DsdSpec,
     metadata: Metadata,
+    id3_tag: Option<Vec<u8>>,
     sample_count: u64,
+    bits_per_sample: u32,
     total_octets: u64,
     emitted_octets: u64,
     block_octets: usize,
@@ -59,7 +61,7 @@ impl<R: Read + Seek> DsfDecoder<R> {
             || !(1..=MAX_CHANNELS).contains(&channels)
             || !valid_channel_type(channel_type, channels)
             || !matches!(sample_rate, 2_822_400 | 5_644_800)
-            || bits_per_sample != 1
+            || !matches!(bits_per_sample, 1 | 8)
             || sample_count == 0
             || block_size != BLOCK_BYTES as u32
             || reserved != 0
@@ -95,10 +97,11 @@ impl<R: Read + Seek> DsfDecoder<R> {
             return Err(AudioError::InvalidFormat("invalid DSF data chunk bounds"));
         }
 
-        let metadata = if metadata_offset == 0 {
-            Metadata::default()
+        let (metadata, id3_tag) = if metadata_offset == 0 {
+            (Metadata::default(), None)
         } else {
-            read_metadata(&mut reader, metadata_offset, file_size)?
+            let (metadata, tag) = read_metadata(&mut reader, metadata_offset, file_size)?;
+            (metadata, Some(tag))
         };
         reader.seek(SeekFrom::Start(DSD_HEADER_SIZE + FMT_CHUNK_SIZE + 12))?;
         let channels = channels as usize;
@@ -118,7 +121,9 @@ impl<R: Read + Seek> DsfDecoder<R> {
             )
             .map_err(|error| AudioError::InvalidData(error.0))?,
             metadata,
+            id3_tag,
             sample_count,
+            bits_per_sample,
             total_octets: sample_count.div_ceil(8),
             emitted_octets: 0,
             block_octets: 0,
@@ -131,6 +136,11 @@ impl<R: Read + Seek> DsfDecoder<R> {
     /// Exact per-channel DSD bit count from the DSF `fmt ` chunk.
     pub fn sample_count(&self) -> u64 {
         self.sample_count
+    }
+
+    /// Returns the complete bounded ID3 tag bytes for lossless format-aware copying.
+    pub fn id3_tag(&self) -> Option<&[u8]> {
+        self.id3_tag.as_deref()
     }
 
     fn load_block(&mut self) -> Result<(), AudioError> {
@@ -150,9 +160,11 @@ impl<R: Read + Seek> DsfDecoder<R> {
             {
                 return Err(AudioError::InvalidData("nonzero DSF block padding"));
             }
-            self.channel_blocks[channel][..self.block_octets]
-                .iter_mut()
-                .for_each(|byte| *byte = byte.reverse_bits());
+            if self.bits_per_sample == 1 {
+                self.channel_blocks[channel][..self.block_octets]
+                    .iter_mut()
+                    .for_each(|byte| *byte = byte.reverse_bits());
+            }
             let final_samples = (self.sample_count % 8) as u8;
             if remaining_samples <= 8
                 && final_samples != 0

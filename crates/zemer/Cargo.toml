@@ -17,4 +17,6 @@ wav.workspace = true
 cue.workspace = true
 flac.workspace = true
 wavpack.workspace = true
+aiff.workspace = true
+g711.workspace = true
 dsdiff.workspace = true

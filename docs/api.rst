@@ -13,6 +13,12 @@ Format-independent PCM types and sample-format conversion:
 * ``convert_sample_format`` — conversion between integer PCM and IEEE float
   sample formats without resampling or channel remixing.
 
+Crate ``zemer-g711``
+--------------------
+
+* ``encode_alaw`` / ``decode_alaw`` and ``encode_mulaw`` / ``decode_mulaw`` —
+  reusable ITU-T G.711 sample conversion shared by WAVE and AIFF-C.
+
 Crate ``zemer-metadata``
 ------------------------
 
@@ -48,6 +54,22 @@ for convenience and compatibility:
 * ``transcode_dsd`` — bounded packed-octet copying between matching native DSD
   specifications, preserving supported metadata and exact sample counts.
 
+Rust library crate ``aiff`` (Cargo package ``zemer-aiff``)
+----------------------------------------------------------
+
+* ``AiffDecoder<R>`` — reads AIFF and AIFC ``NONE``/``twos``/``sowt`` PCM and AIFC
+  ``fl32``/``fl64`` float, G.711, and Apple IMA4 streams; it implements
+  ``AudioDecoder``.
+* ``AiffEncoder<W>`` — writes AIFF integer PCM or AIFC integer PCM/float,
+  explicitly selected G.711, or explicitly selected IMA4 streams; it implements
+  ``AudioEncoder`` and finalizes frame/chunk lengths at ``finish()``.
+* ``AiffKind`` — names the AIFF or AIFC output profile.
+* ``AiffComment`` — typed ``COMT`` record with timestamp, marker ID, and raw
+  text bytes; ``AiffDecoder::comments()`` reads records and
+  ``AiffEncoder::set_comments()`` writes them.
+* ``rewrite_metadata`` — replaces TITLE/ARTIST/COMMENT chunks while preserving
+  encoded audio, unknown chunks, and trailing bytes.
+
 Crate ``zemer-dsd``
 -------------------
 
@@ -67,19 +89,37 @@ Crate ``zemer-dsf``
   documented channel layouts at 2.8224/5.6448 MHz. Encoder input uses
   channel-interleaved, MSB-first octets; the writer serializes DSF's required
   per-channel blocks and LSB-first bytes.
-* The decoder reads common ID3v2.3/v2.4 text fields. The encoder writes ID3v2.4
+* The decoder reads common ID3v2.2/v2.3/v2.4 text fields. The encoder writes ID3v2.4
   UTF-8 text frames and stores unknown metadata keys in ``TXXX`` frames.
+* ``rewrite_metadata`` changes text frames while preserving artwork and opaque
+  frames and copying the encoded DSD data unchanged.
 
 Rust library crate ``dsdiff`` (Cargo package ``zemer-dsdiff``)
 ---------------------------------------------------------------
 
 * ``DsdiffDecoder<R>`` and ``DsdiffEncoder<W>`` — stream the DSDIFF 1.5 raw
-  uncompressed DSD profile without converting through PCM.
+  and compressed DST DSD profiles without converting through PCM. The writer
+  defaults to raw DSD; ``DsdiffEncoder::new_dst()`` compresses frames with a
+  first-order predictor when useful and falls back to valid mode-0 bypass
+  frames. ``DsdiffEncoder::new_dst_bypass()`` always writes uncompressed DST.
+  The reader validates optional DST frame CRCs.
 * The shared DSD buffers use interleaved channel octets, MSB-first. DSDIFF
   octet frames map directly to this representation.
 * Supported metadata fields are title, artist, comments, and channel IDs. The
-  format API retains typed ``COMT`` records; DST and other DSDIFF metadata
-  chunks are not decoded or written.
+  format API retains typed ``COMT`` and ``DIIN/MARK`` records; all three complete
+  300-frame DSD64/128/256 ``DST_02_02`` vectors match their references, as do
+  the first 10 frames of every available ISO vector. ``rewrite_metadata`` copies encoded audio and all
+  unchanged or unknown chunks byte-for-byte while editing title, artist, and
+  general comments. It takes a complete metadata snapshot; channel IDs remain
+  immutable.
+
+Crate ``zemer-dst``
+-------------------
+
+* ``decode_frame`` decodes one bounded DST frame to channel-major DSD octets;
+  ``encode_frame`` applies the clean-room first-order model and returns an error
+  when a valid smaller compressed frame cannot be produced. DSDIFF callers then
+  write a standard mode-0 bypass frame.
 
 Rust library crate ``cue`` (Cargo package ``zemer-cue``)
 --------------------------------------------------------
@@ -118,8 +158,9 @@ Rust library crate ``flac`` (Cargo package ``zemer-flac``)
   Vorbis comments into shared ``Metadata`` and exposes retained raw blocks via
   ``metadata_blocks()``.
 * ``OggFlacDecoder<R>`` — Ogg-FLAC mapping decoder using the same PCM and
-  metadata interface; chained links must share an audio specification. Use
-  ``new_seekable`` and ``seek_to_sample`` for restart-and-scan seeking.
+  metadata interface; chained links may change specification, and each block
+  reports the active link's format. Use ``new_seekable`` and
+  ``seek_to_sample`` for restart-and-scan seeking.
 * ``OggFlacEncoder<W>`` — streaming Ogg-FLAC writer for integer PCM. It emits
   one frame packet at a time and writes the final sample count to the EOS page.
 * ``FlacMetadataBlock`` — preserves the original metadata block type and
@@ -135,6 +176,9 @@ Rust library crate ``flac`` (Cargo package ``zemer-flac``)
 * ``FlacApplication`` — four-byte application ID and borrowed payload.
 * ``rewrite_metadata`` — replace or add Vorbis comments while preserving all
   other metadata blocks and copying encoded audio bytes without decoding them.
+* ``rewrite_ogg_metadata`` — edit the first chained link's Vorbis comments,
+  preserve later links and encoded FLAC audio packets, and repaginate the Ogg
+  stream.
 
 Rust library crate ``wavpack`` (Cargo package ``zemer-wavpack``)
 ------------------------------------------------------------------

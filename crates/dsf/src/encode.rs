@@ -2,16 +2,18 @@ use std::io::{Seek, SeekFrom, Write};
 
 use zemer_core::{AudioError, DsdBuffer, DsdEncoder, DsdSpec, Metadata};
 
-use crate::id3::encode_metadata;
+use crate::id3::{encode_metadata, parse_id3_tag};
 
 const BLOCK_BYTES: usize = 4096;
 const HEADER_BYTES: u64 = 92;
 
-/// Writes DSF 1.01 raw one-bit DSD in channel-block order.
+/// Writes DSF 1.01 raw DSD in channel-block order.
 pub struct DsfEncoder<W> {
     writer: W,
     spec: DsdSpec,
+    bits_per_sample: u32,
     metadata: Metadata,
+    id3_tag: Option<Vec<u8>>,
     channel_blocks: Vec<Vec<u8>>,
     last_octets: Vec<u8>,
     block_frames: usize,
@@ -22,8 +24,22 @@ pub struct DsfEncoder<W> {
 }
 
 impl<W: Write + Seek> DsfEncoder<W> {
-    pub fn new(mut writer: W, spec: DsdSpec) -> Result<Self, AudioError> {
+    pub fn new(writer: W, spec: DsdSpec) -> Result<Self, AudioError> {
+        Self::new_with_bits_per_sample(writer, spec, 1)
+    }
+
+    /// Writes DSF DSD octets in the selected one-bit or eight-bit storage order.
+    pub fn new_with_bits_per_sample(
+        mut writer: W,
+        spec: DsdSpec,
+        bits_per_sample: u32,
+    ) -> Result<Self, AudioError> {
         let channel_type = dsf_channel_type(spec)?;
+        if !matches!(bits_per_sample, 1 | 8) {
+            return Err(AudioError::Unsupported(
+                "DSF 1.01 supports one- or eight-bit DSD storage",
+            ));
+        }
         if !matches!(spec.bit_rate(), 2_822_400 | 5_644_800) {
             return Err(AudioError::Unsupported(
                 "DSF 1.01 supports 2.8224 and 5.6448 MHz DSD",
@@ -47,7 +63,7 @@ impl<W: Write + Seek> DsfEncoder<W> {
         header.extend_from_slice(&channel_type.to_le_bytes());
         header.extend_from_slice(&u32::from(spec.channels()).to_le_bytes());
         header.extend_from_slice(&spec.bit_rate().to_le_bytes());
-        header.extend_from_slice(&1_u32.to_le_bytes());
+        header.extend_from_slice(&bits_per_sample.to_le_bytes());
         header.extend_from_slice(&0_u64.to_le_bytes());
         header.extend_from_slice(&(BLOCK_BYTES as u32).to_le_bytes());
         header.extend_from_slice(&0_u32.to_le_bytes());
@@ -72,7 +88,9 @@ impl<W: Write + Seek> DsfEncoder<W> {
         Ok(Self {
             writer,
             spec,
+            bits_per_sample,
             metadata: Metadata::default(),
+            id3_tag: None,
             channel_blocks,
             last_octets,
             block_frames: 0,
@@ -85,6 +103,18 @@ impl<W: Write + Seek> DsfEncoder<W> {
 
     pub fn into_inner(self) -> W {
         self.writer
+    }
+
+    /// Copies a complete bounded ID3 tag without altering opaque frames.
+    pub fn set_id3_tag(&mut self, id3_tag: &[u8]) -> Result<(), AudioError> {
+        if self.finished || self.frames != 0 {
+            return Err(AudioError::InvalidData(
+                "DSF ID3 tag must be set before writing audio",
+            ));
+        }
+        self.metadata = parse_id3_tag(id3_tag)?;
+        self.id3_tag = Some(id3_tag.to_vec());
+        Ok(())
     }
 
     /// Sets the exact final per-channel DSD bit count after all octets are written.
@@ -142,7 +172,9 @@ impl<W: Write + Seek> DsfEncoder<W> {
         }
         self.flush_block()?;
         let data_end = self.writer.stream_position()?;
-        let tag = if self.metadata.iter().next().is_some() {
+        let tag = if let Some(id3_tag) = &self.id3_tag {
+            id3_tag.clone()
+        } else if self.metadata.iter().next().is_some() {
             encode_metadata(&self.metadata)?
         } else {
             Vec::new()
@@ -202,7 +234,11 @@ impl<W: Write + Seek> DsdEncoder for DsfEncoder<W> {
         let result = (|| {
             for frame in block.bytes().chunks_exact(channels) {
                 for (channel, &octet) in self.channel_blocks.iter_mut().zip(frame) {
-                    channel[self.block_frames] = octet.reverse_bits();
+                    channel[self.block_frames] = if self.bits_per_sample == 1 {
+                        octet.reverse_bits()
+                    } else {
+                        octet
+                    };
                 }
                 for (last_octet, &octet) in self.last_octets.iter_mut().zip(frame) {
                     *last_octet = octet;
@@ -243,6 +279,11 @@ impl<W: Write + Seek> DsdEncoder for DsfEncoder<W> {
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
         if self.finished {
             return Err(AudioError::InvalidData("DSF encoder is already finished"));
+        }
+        if self.id3_tag.is_some() && self.metadata != *metadata {
+            return Err(AudioError::Unsupported(
+                "cannot change parsed text while copying an opaque DSF ID3 tag",
+            ));
         }
         self.metadata = metadata.clone();
         Ok(())

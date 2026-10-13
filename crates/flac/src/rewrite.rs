@@ -65,7 +65,7 @@ pub fn rewrite_metadata<R: Read, W: Write>(
     Ok(())
 }
 
-fn read_vendor(data: &[u8]) -> Result<&[u8], AudioError> {
+pub(crate) fn read_vendor(data: &[u8]) -> Result<&[u8], AudioError> {
     let length_bytes: [u8; 4] = data
         .get(..4)
         .ok_or(AudioError::InvalidData("invalid FLAC Vorbis comment block"))?
