@@ -14,7 +14,7 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-g711`](crates/g711/) (Rust crate `g711`): shared G.711 A-law/μ-law sample encoder and decoder used by WAVE and AIFF-C.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer reused by Ogg-FLAC.
-- [`zemer-vorbis`](crates/vorbis/): clean-room Vorbis I crate in development; it currently parses identification and comment headers only and is not supported for audio decoding or encoding.
+- [`zemer-vorbis`](crates/vorbis/): clean-room Vorbis I crate in development; it parses identification, comment, and setup headers, but does not yet decode audio to PCM or encode audio.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
 - [`zemer-aiff`](crates/aiff/) (Rust crate `aiff`): AIFF/AIFC streaming PCM/float/G.711/IMA4 library crate. Reads AIFF and AIFC `NONE`/`twos`/`sowt` integer PCM, AIFC `fl32`/`fl64`, A-law/μ-law codes, and Apple IMA4 packets; writes AIFF integer PCM, AIFC integer PCM/float/G.711/IMA4, and typed `COMT` records; rewrites NAME/AUTH/ANNO tags without changing audio bytes.
