@@ -348,31 +348,34 @@ impl<W: Write + Seek> DsdEncoder for DsdiffEncoder<W> {
                 "too many DSDIFF comments without timestamps",
             ));
         }
-        let mut comments = Vec::new();
-        comments
-            .try_reserve_exact(comment_values.len())
-            .map_err(|_| AudioError::InvalidData("DSDIFF comments are too large"))?;
-        comments.extend(
-            comment_values
-                .iter()
-                .enumerate()
-                .map(|(index, text)| DsdiffComment {
-                    year: index as u16,
-                    month: 0,
-                    day: 0,
-                    hour: 0,
-                    minute: 0,
-                    kind: 0,
-                    reference: 0,
-                    text: text.clone(),
-                }),
-        );
-        comments.extend(
-            self.comments
-                .iter()
-                .filter(|comment| comment.kind != 0)
-                .cloned(),
-        );
+        let comments =
+            if comment_values == self.metadata.values("COMMENT") {
+                self.comments.clone()
+            } else {
+                let mut comments = Vec::new();
+                comments
+                    .try_reserve_exact(comment_values.len())
+                    .map_err(|_| AudioError::InvalidData("DSDIFF comments are too large"))?;
+                comments.extend(comment_values.iter().enumerate().map(|(index, text)| {
+                    DsdiffComment {
+                        year: index as u16,
+                        month: 0,
+                        day: 0,
+                        hour: 0,
+                        minute: 0,
+                        kind: 0,
+                        reference: 0,
+                        text: text.clone(),
+                    }
+                }));
+                comments.extend(
+                    self.comments
+                        .iter()
+                        .filter(|comment| comment.kind != 0)
+                        .cloned(),
+                );
+                comments
+            };
         validate_comments(&comments, usize::from(self.spec.channels()))?;
         let channel_ids = metadata.values("DSDIFF_CHANNEL_ID");
         let ids = if !channel_ids.is_empty() {
