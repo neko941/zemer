@@ -618,7 +618,20 @@ fn chains_independent_ogg_flac_links_with_different_specs_and_rewrites_first() {
     assert_eq!(second_frames, SECOND_FRAMES);
     assert!(decoder.read_frames(1).unwrap().is_none());
 
-    let mut seeker = OggFlacDecoder::new_seekable(Cursor::new(chained)).unwrap();
+    let mut seeker = OggFlacDecoder::new_seekable(Cursor::new(chained.clone())).unwrap();
+    seeker.seek_to_sample(FIRST_FRAMES - 1).unwrap();
+    let block = seeker.read_frames(1).unwrap().unwrap();
+    assert_eq!(block.spec(), first_spec);
+    let block = seeker.read_frames(1).unwrap().unwrap();
+    assert_eq!(block.spec(), second_spec);
+    let Samples::I16(samples) = block.samples() else {
+        panic!("the second chained link must decode to signed 16-bit PCM");
+    };
+    assert_eq!(
+        samples.as_slice(),
+        &[expected_stereo_sample(0), expected_stereo_sample(1)]
+    );
+
     seeker.seek_to_sample(FIRST_FRAMES).unwrap();
     let block = seeker.read_frames(23).unwrap().unwrap();
     assert_eq!(block.spec(), second_spec);
@@ -629,6 +642,14 @@ fn chains_independent_ogg_flac_links_with_different_specs_and_rewrites_first() {
     for (index, sample) in samples.iter().enumerate() {
         assert_eq!(*sample, expected_stereo_sample(index as u64));
     }
+
+    seeker.seek_to_sample(FIRST_FRAMES + SECOND_FRAMES).unwrap();
+    assert!(seeker.read_frames(1).unwrap().is_none());
+    assert!(
+        seeker
+            .seek_to_sample(FIRST_FRAMES + SECOND_FRAMES + 1)
+            .is_err()
+    );
 }
 
 #[test]
