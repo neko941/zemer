@@ -67,6 +67,9 @@ Rust library crate ``aiff`` (Cargo package ``zemer-aiff``)
 * ``AiffComment`` — typed ``COMT`` record with timestamp, marker ID, and raw
   text bytes; ``AiffDecoder::comments()`` reads records and
   ``AiffEncoder::set_comments()`` writes them.
+* ``AiffMarker`` — typed ``MARK`` record with unique positive ID, sample-frame
+  position, and raw Pascal-string name bytes; ``AiffDecoder::markers()`` reads
+  records and ``AiffEncoder::set_markers()`` writes them.
 * ``rewrite_metadata`` — replaces TITLE/ARTIST/COMMENT chunks while preserving
   encoded audio, unknown chunks, and trailing bytes.
 

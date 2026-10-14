@@ -18,7 +18,8 @@ while retaining non-text items. The official suite decoded all 35 supported
 files, skipped 9 legacy files, and rejected all 4 malformed files.
 The ``zemer-aiff`` crate reads AIFF/AIFC integer PCM and AIFC IEEE float32/64,
 and G.711 A-law/μ-law; it writes AIFF integer PCM and AIFC integer/float/G.711
-profiles. AIFF text chunks map to shared title, artist, and comment metadata.
+profiles. AIFF text chunks map to shared title, artist, and comment metadata;
+typed comments and sample-frame markers are also exposed and writable.
 The shared ``zemer-g711`` crate provides the companding functions for WAVE and
 AIFF-C.
 The ``zemer-dsf`` crate reads and writes raw DSF 1.01 DSD streams for its

@@ -4,6 +4,7 @@ use g711::{G711Encoding, encode_alaw, encode_mulaw};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::comment::{AiffComment, validate_comments, write_comments_chunk};
+use crate::marker::{AiffMarker, validate_markers, write_markers_chunk};
 
 pub struct AiffEncoder<W> {
     writer: W,
@@ -16,6 +17,7 @@ pub struct AiffEncoder<W> {
     data_bytes: u64,
     metadata: Metadata,
     comments: Vec<AiffComment>,
+    markers: Vec<AiffMarker>,
     g711: Option<G711Encoding>,
     ima4: bool,
     ima4_buffer: Vec<i16>,
@@ -196,6 +198,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             data_bytes: 8,
             metadata: Metadata::default(),
             comments: Vec::new(),
+            markers: Vec::new(),
             g711,
             ima4,
             ima4_buffer: Vec::new(),
@@ -244,8 +247,30 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 "AIFF comments must be set before audio samples",
             ));
         }
-        validate_combined_metadata(&self.metadata, comments)?;
-        self.comments = comments.to_vec();
+        validate_combined_metadata(&self.metadata, comments, &self.markers)?;
+        let mut copied = Vec::new();
+        copied
+            .try_reserve_exact(comments.len())
+            .map_err(|_| AudioError::InvalidData("AIFF COMT is too large"))?;
+        copied.extend_from_slice(comments);
+        self.comments = copied;
+        Ok(())
+    }
+
+    pub fn set_markers(&mut self, markers: &[AiffMarker]) -> Result<(), AudioError> {
+        if self.frames != 0 || self.finished {
+            return Err(AudioError::InvalidData(
+                "AIFF markers must be set before audio samples",
+            ));
+        }
+        validate_markers(markers)?;
+        validate_combined_metadata(&self.metadata, &self.comments, markers)?;
+        let mut copied = Vec::new();
+        copied
+            .try_reserve_exact(markers.len())
+            .map_err(|_| AudioError::InvalidData("AIFF MARK is too large"))?;
+        copied.extend_from_slice(markers);
+        self.markers = copied;
         Ok(())
     }
 
@@ -471,6 +496,15 @@ impl<W: Write + Seek> AiffEncoder<W> {
         if self.data_bytes & 1 != 0 {
             self.writer.write_all(&[0])?;
         }
+        if self
+            .markers
+            .iter()
+            .any(|marker| u64::from(marker.position) > self.frames)
+        {
+            return Err(AudioError::InvalidData(
+                "AIFF marker position exceeds the sample-frame count",
+            ));
+        }
         for (key, id) in [
             ("title", *b"NAME"),
             ("artist", *b"AUTH"),
@@ -484,6 +518,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             }
         }
         write_comments_chunk(&mut self.writer, &self.comments)?;
+        write_markers_chunk(&mut self.writer, &self.markers)?;
         let end = self.writer.stream_position()?;
         let form_size = end
             .checked_sub(8)
@@ -557,7 +592,7 @@ impl<W: Write + Seek> AudioEncoder for AiffEncoder<W> {
             ));
         }
         validate_metadata(metadata)?;
-        validate_combined_metadata(metadata, &self.comments)?;
+        validate_combined_metadata(metadata, &self.comments, &self.markers)?;
         self.metadata = metadata.clone();
         Ok(())
     }
@@ -604,6 +639,7 @@ pub(super) fn validate_metadata(metadata: &Metadata) -> Result<(), AudioError> {
 fn validate_combined_metadata(
     metadata: &Metadata,
     comments: &[AiffComment],
+    markers: &[AiffMarker],
 ) -> Result<(), AudioError> {
     let text_size = metadata
         .iter()
@@ -613,11 +649,19 @@ fn validate_combined_metadata(
         })
         .ok_or(AudioError::InvalidData("AIFF metadata size overflow"))?;
     let comment_size = validate_comments(comments)?;
+    let marker_size = validate_markers(markers)?;
     if text_size
         .checked_add(if comments.is_empty() {
             0
         } else {
             comment_size + 8
+        })
+        .and_then(|size| {
+            size.checked_add(if markers.is_empty() {
+                0
+            } else {
+                marker_size + 8
+            })
         })
         .is_none_or(|size| size > 16 * 1024 * 1024)
     {

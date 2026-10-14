@@ -4,6 +4,7 @@ use g711::{decode_alaw, decode_mulaw};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::comment::{AiffComment, parse_comments};
+use crate::marker::{AiffMarker, parse_markers};
 
 const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_COMM_BYTES: u64 = 1024;
@@ -26,6 +27,7 @@ pub struct AiffDecoder<R> {
     spec: AudioSpec,
     metadata: Metadata,
     comments: Vec<AiffComment>,
+    markers: Vec<AiffMarker>,
     aifc: bool,
     encoding: Encoding,
     bits: u16,
@@ -64,6 +66,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
         let mut sound = None;
         let mut metadata = Metadata::default();
         let mut comments = None;
+        let mut markers = None;
         let mut metadata_bytes = 0_u64;
         while reader.stream_position()? < file_end {
             let position = reader.stream_position()?;
@@ -171,6 +174,26 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     reader.read_exact(&mut bytes)?;
                     comments = Some(parse_comments(&bytes)?);
                 }
+                b"MARK" => {
+                    if markers.is_some() {
+                        return Err(AudioError::InvalidFormat("duplicate AIFF MARK chunk"));
+                    }
+                    metadata_bytes = metadata_bytes
+                        .checked_add(size)
+                        .ok_or(AudioError::InvalidFormat("AIFF metadata size overflow"))?;
+                    if metadata_bytes > MAX_METADATA_BYTES {
+                        return Err(AudioError::InvalidFormat("AIFF metadata exceeds 16 MiB"));
+                    }
+                    let read_size = usize::try_from(size)
+                        .map_err(|_| AudioError::InvalidFormat("AIFF MARK is too large"))?;
+                    let mut bytes = Vec::new();
+                    bytes
+                        .try_reserve_exact(read_size)
+                        .map_err(|_| AudioError::InvalidFormat("AIFF MARK is too large"))?;
+                    bytes.resize(read_size, 0);
+                    reader.read_exact(&mut bytes)?;
+                    markers = Some(parse_markers(&bytes)?);
+                }
                 _ => {}
             }
             reader.seek(SeekFrom::Start(end))?;
@@ -223,6 +246,15 @@ impl<R: Read + Seek> AiffDecoder<R> {
                 0,
             )
         };
+        let markers = markers.unwrap_or_default();
+        if markers
+            .iter()
+            .any(|marker| u64::from(marker.position) > decoded_frames)
+        {
+            return Err(AudioError::InvalidFormat(
+                "AIFF marker position exceeds the sample-frame count",
+            ));
+        }
         if data_offset
             .checked_add(audio_bytes)
             .is_none_or(|end| end > sound_end)
@@ -237,6 +269,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
             spec,
             metadata,
             comments: comments.unwrap_or_default(),
+            markers,
             aifc,
             encoding,
             bits,
@@ -255,6 +288,11 @@ impl<R: Read + Seek> AiffDecoder<R> {
 
     pub fn comments(&self) -> &[AiffComment] {
         &self.comments
+    }
+
+    /// Returns all typed MARK records in file order.
+    pub fn markers(&self) -> &[AiffMarker] {
+        &self.markers
     }
 
     fn read_samples(&mut self, samples: usize) -> Result<Samples, AudioError> {

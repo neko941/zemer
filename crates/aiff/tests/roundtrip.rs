@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use aiff::{AiffComment, AiffDecoder, AiffEncoder, rewrite_metadata};
+use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker, rewrite_metadata};
 use g711::{G711Encoding, decode_alaw, decode_mulaw, encode_alaw, encode_mulaw};
 use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
@@ -126,6 +126,77 @@ fn typed_comments_round_trip_timestamp_marker_and_odd_text() {
     let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
     assert_eq!(decoder.comments(), comments);
     assert_eq!(decoder.read_frames(8).unwrap().unwrap(), original);
+}
+
+#[test]
+fn typed_markers_round_trip_ids_positions_and_pascal_name_padding() {
+    let original = audio(SampleFormat::PcmI16);
+    let markers = vec![
+        AiffMarker {
+            id: 1,
+            position: 0,
+            name: b"start".to_vec(),
+        },
+        AiffMarker {
+            id: 7,
+            position: 2,
+            name: vec![b'e', b'n', b'd', 0xff],
+        },
+    ];
+    let mut encoder = AiffEncoder::new(Cursor::new(Vec::new()), original.spec()).unwrap();
+    encoder.set_markers(&markers).unwrap();
+    encoder.write_block(&original).unwrap();
+    let encoded = encoder.finish().unwrap().get_ref().clone();
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(decoder.markers(), markers);
+    assert_eq!(decoder.read_frames(8).unwrap().unwrap(), original);
+}
+
+#[test]
+fn validates_marker_ids_positions_and_chunk_structure() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap();
+    let marker = |id, position| AiffMarker {
+        id,
+        position,
+        name: Vec::new(),
+    };
+    let mut encoder = AiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    assert!(encoder.set_markers(&[marker(0, 0)]).is_err());
+    assert!(encoder.set_markers(&[marker(1, 0), marker(1, 0)]).is_err());
+    assert!(
+        encoder
+            .set_markers(&[AiffMarker {
+                id: 1,
+                position: 0,
+                name: vec![0; 256],
+            }])
+            .is_err()
+    );
+
+    let audio = PcmBuffer::new(spec, Samples::U8(vec![128])).unwrap();
+    let mut encoder = AiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_markers(&[marker(1, 2)]).unwrap();
+    encoder.write_block(&audio).unwrap();
+    assert!(encoder.finish().is_err());
+
+    let mut encoder = AiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.write_block(&audio).unwrap();
+    let mut encoded = encoder.finish().unwrap().get_ref().clone();
+    append_form_chunk(&mut encoded, b"MARK", &[0, 1]);
+    assert!(AiffDecoder::new(Cursor::new(encoded)).is_err());
+
+    let mut encoder = AiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.write_block(&audio).unwrap();
+    let mut encoded = encoder.finish().unwrap().get_ref().clone();
+    append_form_chunk(&mut encoded, b"MARK", &[0, 1, 0, 1, 0, 0, 0, 2, 1, b'x']);
+    assert!(AiffDecoder::new(Cursor::new(encoded)).is_err());
+
+    let mut encoder = AiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.write_block(&audio).unwrap();
+    let mut encoded = encoder.finish().unwrap().get_ref().clone();
+    append_form_chunk(&mut encoded, b"MARK", &[0, 0]);
+    append_form_chunk(&mut encoded, b"MARK", &[0, 0]);
+    assert!(AiffDecoder::new(Cursor::new(encoded)).is_err());
 }
 
 #[test]

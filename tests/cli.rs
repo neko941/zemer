@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use aiff::AiffDecoder;
+use aiff::{AiffDecoder, AiffEncoder, AiffMarker};
 use dsdiff::DsdiffDecoder;
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, OggFlacDecoder, OggFlacEncoder};
@@ -873,6 +873,41 @@ fn convert_inspects_and_converts_aiff_and_aifc() {
         let _ = fs::remove_file(output_path);
     }
     let _ = fs::remove_file(input_path);
+}
+
+#[test]
+fn aiff_conversion_to_aifc_preserves_typed_markers() {
+    let input_path = temporary_path().with_extension("aiff");
+    let output_path = temporary_path().with_extension("aifc");
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![10, 20, 30])).unwrap();
+    let markers = [AiffMarker {
+        id: 3,
+        position: 2,
+        name: b"cue point".to_vec(),
+    }];
+    let mut encoder = AiffEncoder::new(File::create(&input_path).unwrap(), spec).unwrap();
+    encoder.set_markers(&markers).unwrap();
+    encoder.write_block(&audio).unwrap();
+    encoder.finish().unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "aifc", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut decoder = AiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.markers(), markers);
+    assert_eq!(decoder.read_frames(3).unwrap().unwrap(), audio);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
 }
 
 #[test]

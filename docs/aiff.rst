@@ -29,6 +29,14 @@ and marker associations remain intact. At most one ``COMT`` chunk is accepted;
 record counts, text lengths, padding, and the aggregate metadata limit are
 validated.
 
+The typed ``AiffMarker`` API reads and writes the optional ``MARK`` chunk.
+Marker IDs are unique positive signed 16-bit values, positions count sample
+frames (including the valid end position), and names retain their Pascal-string
+bytes without assuming a text encoding. The decoder validates record bounds,
+padding, IDs, positions, and duplicate chunks. Same-format CLI conversion to
+AIFF or AIFC carries these markers to the output; the metadata rewrite also
+preserves the original MARK chunk byte-for-byte.
+
 Chunk bounds, odd-size padding, the AIFC version, the extended sample rate,
 SSND offsets, COMM frame counts, and metadata size are checked. ``SSND`` is
 required for non-empty audio and may be omitted when ``COMM`` declares zero
