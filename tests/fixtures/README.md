@@ -93,11 +93,18 @@ muxed with Zemer's Ogg writer. libsndfile 1.2.2 produced the paired Float32
 oracle; CI compares every sample within 0.002. The external encoder is used
 only to create this fixture and is not a Zemer dependency.
 
+`oxideav-vorbis-0_0_12-44100-2.ogg` was encoded from the same CC0 PCM excerpt
+by the independent Rust [oxideav-vorbis 0.0.12](https://crates.io/crates/oxideav-vorbis/0.0.12)
+encoder (MIT). libsndfile 1.2.2 decoded the file to the paired Float32 oracle;
+CI compares all 12,347 stereo frames within 0.002. The external crate was used
+only to create the fixture and is not a Zemer dependency.
+
 | Fixture | Frames | Channels | Ogg SHA-256 | PCM oracle SHA-256 |
 |---|---:|---:|---|---|
 | `wikimedia-cc0-example.ogg` | 163,328 | 2 | `c001d8980f0b964000a28a99c5cab3809ef65ecf1ba0ae00bc57cb1fc1440754` | `0c8af967233f45f8c4d0de28103f1a524ebe7c23f28a8bd28ecc9a387fd42d14` |
 | `wikimedia-cc0-432hz.ogg` | 356,352 | 2 | `eeace8b2c7564aeeca6ac2cbf2d45ad20896bde8fce934ade2f443f1eb667affd` | `5395e86f89f3f01c725520af9f471715f7638f45e08e24be7e59685cf429c97e` |
 | `rusty-vorbis-0_1_1-44100-2.ogg` | 12,347 | 2 | `e3c6fb4f2ff40e352d8c1263717a922e51cf665cd0e136e0b2281236d1e37ccd` | `32f9a5d4209f0b0f61c2fbd10bb7af992161fe31c2872ddf84bdba089232a869` |
+| `oxideav-vorbis-0_0_12-44100-2.ogg` | 12,347 | 2 | `0ff976d402c8abd8bc3b42f83e008afddb27015f55b35ef6c64dab24bceb0e7d` | `52fedbb8c2cecb0fd1b9cccd5c780096296cec1daeb7fea1fec4eb543216d23e` |
 
 Ten optional external [Xiph test vectors](https://people.xiph.org/~xiphmont/test-vectors/vorbis/)
 cover Floor 0, older encoder output, and silence. The four `lsp-test*.ogg`

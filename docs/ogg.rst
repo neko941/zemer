@@ -38,8 +38,10 @@ does not control bitrate. FFmpeg independently decodes two-second synthetic
 target-rate profiles for every channel count from 1–8 plus 192-kHz stereo; ffprobe reports exact
 durations, and channel-order-matched PCM has maximum per-channel RMS error
 below 0.0043. These measurements verify decoding and sample output, not
-perceived quality. Vorbis remains experimental until perceptual evaluation and
-wider non-Xiph input conformance are complete.
+perceived quality. Decoder interoperability fixtures also cover independent
+libVorbis and two Rust encoder implementations against libsndfile PCM oracles.
+Vorbis remains experimental until perceptual evaluation and wider external
+corpus conformance are complete.
 
 .. code-block:: rust
 

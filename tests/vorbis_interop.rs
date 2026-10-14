@@ -1192,6 +1192,16 @@ fn decodes_rusty_vorbis_encoder_output_against_libsndfile_oracle() {
 }
 
 #[test]
+fn decodes_oxideav_vorbis_encoder_output_against_libsndfile_oracle() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vorbis");
+    compare_external_pcm(
+        &fixtures.join("oxideav-vorbis-0_0_12-44100-2.ogg"),
+        &fixtures.join("oxideav-vorbis-0_0_12-44100-2.f32le"),
+        Some((44_100, 2, 12_347)),
+    );
+}
+
+#[test]
 #[ignore = "writes a generated Vorbis file to ZEMER_VORBIS_ENCODED_OUTPUT for an external decoder oracle"]
 fn encodes_reference_decoder_input_file() {
     let output = PathBuf::from(std::env::var_os("ZEMER_VORBIS_ENCODED_OUTPUT").unwrap());
