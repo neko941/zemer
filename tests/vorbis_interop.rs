@@ -1222,6 +1222,16 @@ fn decodes_wikimedia_cc0_legacy_vorbis_recording_against_libsndfile_oracle() {
 }
 
 #[test]
+fn decodes_public_domain_vorbis_percussion_recording_against_ffmpeg_oracle() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vorbis");
+    compare_external_pcm(
+        &fixtures.join("wikimedia-public-domain-sting.ogg"),
+        &fixtures.join("wikimedia-public-domain-sting.f32le"),
+        Some((44_100, 2, 139_990)),
+    );
+}
+
+#[test]
 fn decodes_full_length_music_recording_to_eof() {
     let input = include_bytes!("fixtures/vorbis/the-entertainer.ogg");
     let actual = read_vorbis_to_end(input).unwrap();

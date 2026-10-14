@@ -95,6 +95,13 @@ libsndfile 1.2.2 decoded all 356,352 frames to the paired Float32 oracle, and
 CI compares every sample within 0.002. Source and licensing:
 <https://commons.wikimedia.org/wiki/File:432.ogg>.
 
+`wikimedia-public-domain-sting.ogg` adds a 3.174-second stereo drum-roll and
+cymbal sting by Bart Nagel, released into the public domain on Wikimedia
+Commons. Its metadata identifies Xiph libVorbis I 20040629. FFmpeg 8.1 decodes
+all 139,990 frames to the paired Float32 oracle; the integration test compares
+every sample within 0.002. Source and rights record:
+<https://commons.wikimedia.org/wiki/File:Sting.ogg>.
+
 `the-entertainer.ogg` is Kevin MacLeod's 193.384-second, 44.1-kHz stereo
 performance of Scott Joplin's *The Entertainer*, licensed CC BY 4.0. The
 full-stream regression decodes all 8,528,256 frames to EOF and compares every
@@ -144,6 +151,7 @@ only to create the fixture and is not a Zemer dependency.
 |---|---:|---:|---|---|
 | `wikimedia-cc0-example.ogg` | 163,328 | 2 | `c001d8980f0b964000a28a99c5cab3809ef65ecf1ba0ae00bc57cb1fc1440754` | `0c8af967233f45f8c4d0de28103f1a524ebe7c23f28a8bd28ecc9a387fd42d14` |
 | `wikimedia-cc0-432hz.ogg` | 356,352 | 2 | `eeace8b2c7564aeeca6ac2cbf2d45ad20896bde8fce934ade2f443f1eb667affd` | `5395e86f89f3f01c725520af9f471715f7638f45e08e24be7e59685cf429c97e` |
+| `wikimedia-public-domain-sting.ogg` | 139,990 | 2 | `dcf5e021b3425ebdeac7a5baca216937d50d7afd91ed3d3273f6ec51faf71c38` | `5b8ac56bf3361e13e30f054f7131466bf9927f51d6b70d61f91394a11fe80ebb` |
 | `the-entertainer.ogg` | 8,528,256 | 2 | `f19ed758e6579a416f42145230a97b1333f49b24684f40936c3d5a9e46e94e69` | `a9188487861f8826493e5236bdaa8e7e631f9502866ca35a240ac272913b851f` |
 | `fur-elise.ogg` | 7,787,476 | 2 | `8deefb57df989a2b53a6bdd3e59813b6c34d61dca666caa39e53fa9597b378e3` | `ece0ca5a1ec706be50e3c502431a4dffae42693c65308ca6f7ac956cf3547442` |
 | `rusty-vorbis-0_1_1-44100-2.ogg` | 12,347 | 2 | `e3c6fb4f2ff40e352d8c1263717a922e51cf665cd0e136e0b2281236d1e37ccd` | `32f9a5d4209f0b0f61c2fbd10bb7af992161fe31c2872ddf84bdba089232a869` |
