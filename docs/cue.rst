@@ -1,7 +1,8 @@
 CUE sheets
 ==========
 
-The ``cue`` crate exposes a CUE sheet model separately from the WAV crate.
+The ``cue`` crate implements its WAVE/AUDIO CUE parser, model, and writer in
+Rust separately from the WAV crate. It does not use an external CUE parser.
 The optional CLI connects WAVE audio to CUE track boundaries:
 
 .. code-block:: console
@@ -23,4 +24,7 @@ The current workflow accepts UTF-8 or Shift-JIS text, ``FILE ... WAVE``, and
 ``TRACK ... AUDIO`` entries. CUE positions use 75 frames per second. A position
 must land exactly on a PCM sample frame; Zemer reports an error instead of
 rounding. The parser does not decode non-WAV files referenced by a CUE sheet or
-non-audio disc tracks.
+non-audio disc tracks. CUE inputs are limited to 16 MiB; the CLI enforces this
+limit before reading the complete sheet. Use ``CUEFile::to_cue_string()`` to
+serialize a model with validation for line breaks, timestamp ranges, and track
+references.

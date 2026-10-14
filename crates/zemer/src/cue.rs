@@ -1,7 +1,7 @@
 use std::{
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     ops::Range,
     path::{Path, PathBuf},
 };
@@ -43,7 +43,18 @@ pub fn run(args: &[OsString]) -> Result<CueReport, String> {
 }
 
 fn split(cue_path: &Path, output_dir: &Path) -> Result<CueReport, String> {
-    let bytes = fs::read(cue_path).map_err(|error| format!("{}: {error}", cue_path.display()))?;
+    let mut bytes = Vec::new();
+    File::open(cue_path)
+        .map_err(|error| format!("{}: {error}", cue_path.display()))?
+        .take(cue::MAX_CUE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("{}: {error}", cue_path.display()))?;
+    if bytes.len() > cue::MAX_CUE_BYTES {
+        return Err(format!(
+            "{}: CUE sheet exceeds the 16 MiB size limit",
+            cue_path.display()
+        ));
+    }
     let sheet = parse_wav(&bytes)?;
     let parent = cue_path.parent().unwrap_or_else(|| Path::new("."));
     let mut file_info = Vec::with_capacity(sheet.files.len());
@@ -189,6 +200,9 @@ fn split(cue_path: &Path, output_dir: &Path) -> Result<CueReport, String> {
                 .tracks
                 .push((output_sheet.files.len() - 1, track));
         }
+        let cue_text = output_sheet
+            .to_cue_string()
+            .map_err(|error| format!("{}: {error}", cue_out.display()))?;
         let mut output = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -196,7 +210,7 @@ fn split(cue_path: &Path, output_dir: &Path) -> Result<CueReport, String> {
             .map_err(|error| format!("{}: {error}", cue_out.display()))?;
         created.push(cue_out.clone());
         output
-            .write_all(output_sheet.to_string().as_bytes())
+            .write_all(cue_text.as_bytes())
             .map_err(|error| format!("{}: {error}", cue_out.display()))?;
         Ok(())
     })();
@@ -249,12 +263,15 @@ fn create(output: &Path, inputs: &[&Path]) -> Result<CueReport, String> {
         sheet.tracks.push((sheet.files.len() - 1, track));
     }
     sheet.performer = artist;
+    let cue_text = sheet
+        .to_cue_string()
+        .map_err(|error| format!("{}: {error}", output.display()))?;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(output)
         .map_err(|error| format!("{}: {error}", output.display()))?;
-    if let Err(error) = file.write_all(sheet.to_string().as_bytes()) {
+    if let Err(error) = file.write_all(cue_text.as_bytes()) {
         let _ = fs::remove_file(output);
         return Err(format!("{}: {error}", output.display()));
     }

@@ -65,5 +65,4 @@ wavpack = { package = "zemer-wavpack", path = "crates/wavpack", version = "0.7.0
 aiff = { package = "zemer-aiff", path = "crates/aiff", version = "0.7.0" }
 g711 = { package = "zemer-g711", path = "crates/g711", version = "0.7.0" }
 vorbis = { package = "zemer-vorbis", path = "crates/vorbis", version = "0.7.0" }
-cue-rw = "0.3.0"
 encoding_rs = "=0.8.35"

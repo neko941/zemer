@@ -1416,6 +1416,28 @@ fn cue_split_and_create_preserve_track_samples_and_metadata() {
 }
 
 #[test]
+fn cue_split_rejects_oversized_sheets_before_creating_output() {
+    let cue_path = temporary_path().with_extension("cue");
+    let output_dir = temporary_directory();
+    File::create(&cue_path)
+        .unwrap()
+        .set_len(cue::MAX_CUE_BYTES as u64 + 1)
+        .unwrap();
+
+    let output = Command::new(cli_path())
+        .args(["cue", "split"])
+        .arg(&cue_path)
+        .arg(&output_dir)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("16 MiB"));
+    assert!(!output_dir.exists());
+    let _ = fs::remove_file(cue_path);
+}
+
+#[test]
 fn dsd_cli_inspects_and_transcodes_wavpack_and_dsf_without_pcm() {
     let input = temporary_path().with_extension("wv");
     let dsf_path = temporary_path().with_extension("dsf");

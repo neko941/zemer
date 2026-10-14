@@ -5,7 +5,7 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 ## Workspace crates
 
 - [`zemer-core`](crates/core/): shared PCM/DSD decoder and encoder interfaces; re-exports metadata and audio buffer types.
-- [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
+- [`zemer-cue`](crates/cue/) (Rust crate `cue`): clean-room WAVE/AUDIO CUE parser, writer, and checked sector/sample-frame conversion; UTF-8/Shift-JIS input is capped at 16 MiB.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
 - [`zemer-dst`](crates/dst/): reusable clean-room DST frame decoder and first-order encoder for DSD64/128/256 profiles.
 - [`zemer-dsdiff`](crates/dsdiff/) (Rust crate `dsdiff`): streams raw DSD across the full 1–65,535-channel DSDIFF `CHNL` range and compressed DST (up to 64 channels at DSD64/128/256, including optional frame CRC checks), and writes raw DSD or DST frames compressed with a clean-room first-order predictor when useful, falling back to valid processing-mode-0 bypass frames. CLI output selects compressed DST with `--format dsdiff_dst`. It supports title, artist, general/typed COMT comments, channel IDs, and typed DIIN/MARK records. Same-format CLI conversion retains typed comments and markers. Metadata edits preserve audio and unchanged/unknown chunks. All three complete 300-frame `DST_02_02` vectors pass bit-exactly; the first 10 frames of every available ISO DST vector also pass.

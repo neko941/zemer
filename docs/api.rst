@@ -129,7 +129,9 @@ Rust library crate ``cue`` (Cargo package ``zemer-cue``)
 
 * CUE track/file models and checked conversion from 75 Hz cue frames to sample
   frame positions.
-* UTF-8 and Shift-JIS CUE text parsing for WAVE files and AUDIO tracks.
+* Clean-room UTF-8 and Shift-JIS CUE parsing/serialization for WAVE files and
+  AUDIO tracks, with a 16 MiB input bound and ``CUEFile::to_cue_string()``
+  validation.
 
 Rust library crate ``wav`` (Cargo package ``zemer-wav``)
 ------------------------------------------------------------
