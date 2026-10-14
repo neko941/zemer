@@ -95,6 +95,17 @@ libsndfile 1.2.2 decoded all 356,352 frames to the paired Float32 oracle, and
 CI compares every sample within 0.002. Source and licensing:
 <https://commons.wikimedia.org/wiki/File:432.ogg>.
 
+`the-entertainer.ogg` is Kevin MacLeod's 193.384-second, 44.1-kHz stereo
+performance of Scott Joplin's *The Entertainer*, licensed CC BY 4.0. The
+full-stream regression decodes all 8,528,256 frames to EOF and compares eight
+widely spaced stereo checkpoints with FFmpeg 8.1 output within 0.002. The
+unmodified source is 4,278,460 bytes (SHA-256
+`f19ed758e6579a416f42145230a97b1333f49b24684f40936c3d5a9e46e94e69`).
+Attribution: Kevin MacLeod, “The Entertainer” (Scott Joplin composition),
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), via
+[Wikimedia Commons](https://commons.wikimedia.org/wiki/File:The_Entertainer_by_Kevin_MacLeod.ogg);
+no changes made.
+
 `rusty-vorbis-0_1_1-44100-2.ogg` was encoded by the independent Rust
 [rusty_vorbis 0.1.1](https://crates.io/crates/rusty_vorbis/0.1.1) encoder
 (Apache-2.0) from a 12,347-frame excerpt of the CC0 recording above, then

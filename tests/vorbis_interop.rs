@@ -1187,6 +1187,52 @@ fn decodes_wikimedia_cc0_legacy_vorbis_recording_against_libsndfile_oracle() {
 }
 
 #[test]
+fn decodes_full_length_music_recording_to_eof() {
+    let input = include_bytes!("fixtures/vorbis/the-entertainer.ogg");
+    let mut decoder = VorbisDecoder::new(Cursor::new(input)).unwrap();
+    assert_eq!(decoder.spec().sample_rate(), 44_100);
+    assert_eq!(decoder.spec().channels(), 2);
+
+    let checkpoints = [
+        (44_100_u64, -0.036354333_f32, -0.061334714_f32),
+        (441_000, -0.08148202, 0.17448518),
+        (1_000_000, -0.04061488, -0.013750873),
+        (2_000_000, 0.051570583, 0.014090111),
+        (4_000_000, 0.007970317, 0.0050636274),
+        (6_000_000, 0.36787045, -0.13500367),
+        (8_000_000, 0.16786188, 0.16580611),
+        (8_528_255, 4.571_484e-8, 1.994_09e-8),
+    ];
+    let mut next_checkpoint = 0;
+    let mut frames = 0_u64;
+    while let Some(block) = decoder.read_frames(4_096).unwrap() {
+        let Samples::F32(samples) = block.samples() else {
+            panic!("Vorbis decoder did not return float32 PCM");
+        };
+        assert!(samples.iter().all(|sample| sample.is_finite()));
+        let block_end = frames + block.frames() as u64;
+        while let Some(&(frame, left, right)) = checkpoints.get(next_checkpoint) {
+            if frame >= block_end {
+                break;
+            }
+            let offset = usize::try_from((frame - frames) * 2).unwrap();
+            assert!(
+                (samples[offset] - left).abs() < 0.002,
+                "left channel at frame {frame}"
+            );
+            assert!(
+                (samples[offset + 1] - right).abs() < 0.002,
+                "right channel at frame {frame}"
+            );
+            next_checkpoint += 1;
+        }
+        frames = block_end;
+    }
+    assert_eq!(frames, 8_528_256);
+    assert_eq!(next_checkpoint, checkpoints.len());
+}
+
+#[test]
 fn decodes_rusty_vorbis_encoder_output_against_libsndfile_oracle() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vorbis");
     compare_external_pcm(
