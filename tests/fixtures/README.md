@@ -362,6 +362,16 @@ test checks its full-stream FNV-1a 64-bit digest `1b9480cf175d6580` before and
 after Ogg metadata rewriting. Ogg-FLAC fixture SHA-256:
 `20a8311eb71e2675de49fa287ef1c0929962838a6dffd76bbf52851c85d70f5d`.
 
+`ogg-flac-david-allen-voice.oga` is a 12.73-second English voice introduction
+by David Allen, recorded and uploaded by 1Veertje, and dedicated under CC0 1.0
+on [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:David_Allen_-_voice_-_en.ogg).
+It is 44.1 kHz, stereo, signed 16-bit, and 561,254 frames. FFmpeg 8.1 decodes
+it to a 2,245,016-byte s16le oracle (SHA-256
+`cfedee2e6b9ee5c5b2984f19b23b90d34b4d5f5a6b25cc10fb369fb304d43d80`); the
+test checks its full-stream FNV-1a 64-bit digest `66d73cd4a324cdb1` before and
+after metadata rewriting. Ogg-FLAC fixture SHA-256:
+`8b4c7537960adf92542cf7de846de545911f9e2143b6a51857c03cbf47671513`.
+
 Two additional Ogg-FLAC fixtures were encoded by the system libFLAC 1.4.3
 reference encoder. Their PCM is deterministic synthetic data, and integration
 tests verify every decoded sample against the source formula rather than a

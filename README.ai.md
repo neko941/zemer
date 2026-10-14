@@ -35,8 +35,8 @@ profiles across channel counts 1–8, up to 7.1 24-bit at 192 kHz, including lar
 packets continued across Ogg pages. Two synthetic Ogg-FLAC files from the
 libFLAC 1.4.3 reference encoder add 8-bit mono and 32-bit 7.1 coverage. The
 official CC0 native-FLAC corpus also
-round-trips through Zemer's Ogg-FLAC encoder and decoder. Ten current-mapping
-real-source vectors, including four bundled CC0/public-domain Commons or NASA
+round-trips through Zemer's Ogg-FLAC encoder and decoder. Eleven current-mapping
+real-source vectors, including five bundled CC0/public-domain Commons or NASA
 recordings, have been checked against known PCM oracles; two pre-1.1.1 legacy
 samples were compared with libFLAC PCM oracles. Optional ignored tests use
 external temporary files. Broader Ogg-FLAC source and encoder coverage remains

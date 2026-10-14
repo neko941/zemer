@@ -444,31 +444,9 @@ fn decodes_and_rewrites_nasa_martian_dust_devil_fixture() {
     const FRAMES: u64 = 1_295_695;
     const PCM_FNV1A64: u64 = 0xcb02_a204_7c6f_0a19;
     const TITLE: &str = "NASA Ogg-FLAC rewrite regression";
-    let decode_pcm_digest = |bytes: &[u8], expected_title: Option<&str>| {
-        let mut decoder = OggFlacDecoder::new(Cursor::new(bytes)).unwrap();
-        assert_eq!(
-            decoder.spec(),
-            AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap()
-        );
-        if let Some(title) = expected_title {
-            assert_eq!(decoder.metadata().values("TITLE"), [title]);
-        }
-        let mut frames = 0;
-        let mut digest = 0xcbf2_9ce4_8422_2325;
-        while let Some(block) = decoder.read_frames(2_048).unwrap() {
-            let Samples::I16(samples) = block.samples() else {
-                panic!("NASA Ogg-FLAC fixture must decode to signed 16-bit PCM");
-            };
-            for byte in samples.iter().flat_map(|sample| sample.to_le_bytes()) {
-                digest = (digest ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-            }
-            frames += (samples.len() / 2) as u64;
-        }
-        (frames, digest)
-    };
 
     let input = include_bytes!("fixtures/ogg-flac-nasa-dust-devil.oga");
-    let (frames, digest) = decode_pcm_digest(input, None);
+    let (frames, digest) = decode_s16le_pcm_digest(input, 48_000, 2, None);
     assert_eq!(frames, FRAMES);
     assert_eq!(digest, PCM_FNV1A64);
 
@@ -476,7 +454,7 @@ fn decodes_and_rewrites_nasa_martian_dust_devil_fixture() {
     metadata.insert("TITLE", TITLE);
     let mut rewritten = Vec::new();
     rewrite_ogg_metadata(Cursor::new(input), &mut rewritten, &metadata).unwrap();
-    let (frames, digest) = decode_pcm_digest(&rewritten, Some(TITLE));
+    let (frames, digest) = decode_s16le_pcm_digest(&rewritten, 48_000, 2, Some(TITLE));
     assert_eq!(frames, FRAMES);
     assert_eq!(digest, PCM_FNV1A64);
 }
@@ -486,31 +464,9 @@ fn decodes_and_rewrites_cc0_gymnopedie_ogg_flac_fixture() {
     const FRAMES: u64 = 3_442_678;
     const PCM_FNV1A64: u64 = 0x1b94_80cf_175d_6580;
     const TITLE: &str = "CC0 Gymnopedie Ogg-FLAC rewrite regression";
-    let decode_pcm_digest = |bytes: &[u8], expected_title: Option<&str>| {
-        let mut decoder = OggFlacDecoder::new(Cursor::new(bytes)).unwrap();
-        assert_eq!(
-            decoder.spec(),
-            AudioSpec::new(22_050, 2, SampleFormat::PcmI16).unwrap()
-        );
-        if let Some(title) = expected_title {
-            assert_eq!(decoder.metadata().values("TITLE"), [title]);
-        }
-        let mut frames = 0;
-        let mut digest = 0xcbf2_9ce4_8422_2325;
-        while let Some(block) = decoder.read_frames(2_048).unwrap() {
-            let Samples::I16(samples) = block.samples() else {
-                panic!("Gymnopedie Ogg-FLAC fixture must decode to signed 16-bit PCM");
-            };
-            for byte in samples.iter().flat_map(|sample| sample.to_le_bytes()) {
-                digest = (digest ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
-            }
-            frames += (samples.len() / 2) as u64;
-        }
-        (frames, digest)
-    };
 
     let input = include_bytes!("fixtures/ogg-flac-gymnopedie.oga");
-    let (frames, digest) = decode_pcm_digest(input, None);
+    let (frames, digest) = decode_s16le_pcm_digest(input, 22_050, 2, None);
     assert_eq!(frames, FRAMES);
     assert_eq!(digest, PCM_FNV1A64);
 
@@ -518,7 +474,27 @@ fn decodes_and_rewrites_cc0_gymnopedie_ogg_flac_fixture() {
     metadata.insert("TITLE", TITLE);
     let mut rewritten = Vec::new();
     rewrite_ogg_metadata(Cursor::new(input), &mut rewritten, &metadata).unwrap();
-    let (frames, digest) = decode_pcm_digest(&rewritten, Some(TITLE));
+    let (frames, digest) = decode_s16le_pcm_digest(&rewritten, 22_050, 2, Some(TITLE));
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+}
+
+#[test]
+fn decodes_and_rewrites_cc0_david_allen_speech_ogg_flac_fixture() {
+    const FRAMES: u64 = 561_254;
+    const PCM_FNV1A64: u64 = 0x66d7_3cd4_a324_cdb1;
+    const TITLE: &str = "CC0 David Allen speech rewrite regression";
+
+    let input = include_bytes!("fixtures/ogg-flac-david-allen-voice.oga");
+    let (frames, digest) = decode_s16le_pcm_digest(input, 44_100, 2, None);
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", TITLE);
+    let mut rewritten = Vec::new();
+    rewrite_ogg_metadata(Cursor::new(input), &mut rewritten, &metadata).unwrap();
+    let (frames, digest) = decode_s16le_pcm_digest(&rewritten, 44_100, 2, Some(TITLE));
     assert_eq!(frames, FRAMES);
     assert_eq!(digest, PCM_FNV1A64);
 }
@@ -658,6 +634,34 @@ fn decode_i24_fixture(bytes: &[u8], sample_rate: u32, channels: u16, frames: u64
     assert!(decoder.read_frames(1).unwrap().is_none());
     assert_eq!(actual.len(), (frames * u64::from(channels)) as usize);
     actual
+}
+
+fn decode_s16le_pcm_digest(
+    bytes: &[u8],
+    sample_rate: u32,
+    channels: u16,
+    expected_title: Option<&str>,
+) -> (u64, u64) {
+    let mut decoder = OggFlacDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(
+        decoder.spec(),
+        AudioSpec::new(sample_rate, channels, SampleFormat::PcmI16).unwrap()
+    );
+    if let Some(title) = expected_title {
+        assert_eq!(decoder.metadata().values("TITLE"), [title]);
+    }
+    let mut frames = 0;
+    let mut digest = 0xcbf2_9ce4_8422_2325;
+    while let Some(block) = decoder.read_frames(2_048).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("Ogg-FLAC fixture must decode to signed 16-bit PCM");
+        };
+        for byte in samples.iter().flat_map(|sample| sample.to_le_bytes()) {
+            digest = (digest ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        frames += (samples.len() / usize::from(channels)) as u64;
+    }
+    (frames, digest)
 }
 
 fn expected_sample(index: u64) -> i32 {
