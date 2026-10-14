@@ -500,6 +500,26 @@ fn decodes_and_rewrites_cc0_david_allen_speech_ogg_flac_fixture() {
 }
 
 #[test]
+fn decodes_and_rewrites_libflac_1_3_0_cc_by_sa_toilet_flush_fixture() {
+    const FRAMES: u64 = 317_827;
+    const PCM_FNV1A64: u64 = 0xf534_fae5_f393_257a;
+    const TITLE: &str = "libFLAC 1.3.0 Ogg-FLAC rewrite regression";
+
+    let input = include_bytes!("fixtures/ogg-flac-toilet-flush.oga");
+    let (frames, digest) = decode_s16le_pcm_digest(input, 44_100, 2, None);
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", TITLE);
+    let mut rewritten = Vec::new();
+    rewrite_ogg_metadata(Cursor::new(input), &mut rewritten, &metadata).unwrap();
+    let (frames, digest) = decode_s16le_pcm_digest(&rewritten, 44_100, 2, Some(TITLE));
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+}
+
+#[test]
 #[ignore = "requires the public-domain Wapichan Ogg-FLAC sample and libFLAC PCM oracle paths in ZEMER_OGG_FLAC_WAPICHAN_SAMPLE and ZEMER_OGG_FLAC_WAPICHAN_PCM"]
 fn decodes_external_public_domain_wapichan_speech_against_libflac_pcm_oracle() {
     const FRAMES: u64 = 2_867_200;

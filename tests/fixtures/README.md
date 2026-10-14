@@ -372,6 +372,17 @@ test checks its full-stream FNV-1a 64-bit digest `66d73cd4a324cdb1` before and
 after metadata rewriting. Ogg-FLAC fixture SHA-256:
 `8b4c7537960adf92542cf7de846de545911f9e2143b6a51857c03cbf47671513`.
 
+`ogg-flac-toilet-flush.oga` is DrTrumpet's 7.2-second toilet-flush recording,
+dedicated under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
+on [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Toilet-flush.ogg).
+The Commons metadata identifies reference libFLAC 1.3.0 as the encoder. It is
+44.1 kHz stereo signed 16-bit PCM with 317,827 frames. FFmpeg 8.1 decodes it to
+a 1,271,308-byte s16le oracle (SHA-256
+`2c1c2834a58460e5cbdc4c7d4dd98049abbad1a2b3b78a6e8359ad0075c7abb1`); the
+test checks its full-stream FNV-1a 64-bit digest `f534fae5f393257a` before and
+after metadata rewriting. Ogg-FLAC fixture SHA-256:
+`5887c1f52365f56dc752900c4e7fe5c32132c27ddcfd3783f63354b0ec60f49c`.
+
 Two additional Ogg-FLAC fixtures were encoded by the system libFLAC 1.4.3
 reference encoder. Their PCM is deterministic synthetic data, and integration
 tests verify every decoded sample against the source formula rather than a
