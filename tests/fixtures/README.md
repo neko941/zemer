@@ -270,9 +270,15 @@ rate. Two-second synthetic profiles may average above the requested rate
 because the setup header is large; the target is a per-audio-packet budget.
 
 The optional ignored test `decodes_external_ogg_flac_against_ffmpeg_pcm_oracle`
-checks the external FFmpeg sample `01_-_dungeon.ogg` against a separate
-FFmpeg-generated signed 16-bit PCM oracle. The sample and oracle are provided
-through `ZEMER_OGG_FLAC_SAMPLE` and `ZEMER_OGG_FLAC_PCM`; neither is bundled.
+checks the unbundled `01_-_dungeon.ogg` sample against signed 16-bit PCM
+extracted from `dungeon.wav`. It decoded as 44.1 kHz stereo with 3,730,860
+frames and passed on server5 at `ef17955`. The sample's origin and redistribution
+rights are undocumented, so the Ogg and WAV files remain external and must not
+be bundled. Set `ZEMER_OGG_FLAC_SAMPLE` and `ZEMER_OGG_FLAC_PCM` to local copies
+of the Ogg and raw PCM. Source SHA-256:
+`be67d426aa7f4f5e44788527a5e1a013fd91a03c57ed1509b384f6eee96cabba`; WAVE SHA-256:
+`d63c45932a8021f609b879163d43e6de017ad2ade491ab498c7da4ea5d4527ff`; raw PCM
+SHA-256: `1730b770dbde17d07593babbe47b1a8fc0c5d64ac79408495bbdbc62940c3285`.
 
 The optional ignored test `decodes_archived_commons_white_noise_ogg_flac_against_ffmpeg`
 checks the archived 21 April 2008 revision of [White noise.ogg on Wikimedia
