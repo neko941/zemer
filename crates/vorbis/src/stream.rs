@@ -34,6 +34,10 @@ impl<R: Read> VorbisStreamReader<R> {
         Self::from_packets(OggPacketReader::new(reader))
     }
 
+    pub(crate) fn into_inner(self) -> R {
+        self.packets.into_inner()
+    }
+
     fn from_packets(mut packets: OggPacketReader<R>) -> Result<Self, AudioError> {
         let identification_packet = next_header_packet(&mut packets)?;
         if !identification_packet.page_is_first
@@ -63,11 +67,12 @@ impl<R: Read> VorbisStreamReader<R> {
         })
     }
 
-    pub(crate) fn next_stream(self) -> Result<Option<Self>, AudioError> {
-        self.packets
-            .next_stream()?
-            .map(Self::from_packets)
-            .transpose()
+    pub(crate) fn next_stream_or_inner(self) -> Result<(Option<Self>, Option<R>), AudioError> {
+        let (packets, reader) = self.packets.next_stream_or_inner()?;
+        match packets {
+            Some(packets) => Ok((Some(Self::from_packets(packets)?), None)),
+            None => Ok((None, reader)),
+        }
     }
 
     pub const fn identification(&self) -> &VorbisIdentificationHeader {

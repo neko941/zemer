@@ -388,6 +388,56 @@ fn decodes_from_short_reads_with_interrupted_io() {
 }
 
 #[test]
+fn seekable_vorbis_decoder_restarts_across_chained_links() {
+    const LINK_FRAMES: u64 = 20_000;
+    let first_link = generated_mono_vorbis();
+    let second_link = generated_stereo_vorbis();
+    let expected_first = read_vorbis_to_end(&first_link).unwrap();
+    let expected_second = read_vorbis_to_end(&second_link).unwrap();
+    let mut chained = first_link;
+    chained.extend_from_slice(&second_link);
+    let mut input = Cursor::new([b"prefix".as_slice(), chained.as_slice()].concat());
+    input.set_position(6);
+    let mut decoder = VorbisDecoder::new_seekable(input).unwrap();
+
+    decoder.seek_to_sample(LINK_FRAMES + 257).unwrap();
+    assert_eq!(decoder.spec().channels(), 2);
+    let mut actual = Vec::new();
+    while let Some(block) = decoder.read_frames(733).unwrap() {
+        let Samples::F32(samples) = block.samples() else {
+            panic!("Vorbis decoder did not return Float32 PCM");
+        };
+        actual.extend_from_slice(samples);
+    }
+    assert_eq!(actual, expected_second[514..]);
+
+    decoder.seek_to_sample(8_193).unwrap();
+    let block = decoder.read_frames(257).unwrap().unwrap();
+    let Samples::F32(samples) = block.samples() else {
+        panic!("Vorbis decoder did not return Float32 PCM");
+    };
+    assert_eq!(samples, &expected_first[8_193..8_450]);
+
+    decoder.seek_to_sample(0).unwrap();
+    let block = decoder.read_frames(1).unwrap().unwrap();
+    let Samples::F32(samples) = block.samples() else {
+        panic!("Vorbis decoder did not return Float32 PCM");
+    };
+    assert_eq!(samples, &expected_first[..1]);
+
+    decoder.seek_to_sample(LINK_FRAMES * 2).unwrap();
+    assert!(decoder.read_frames(1).unwrap().is_none());
+    assert!(decoder.seek_to_sample(LINK_FRAMES * 2 + 1).is_err());
+    assert!(decoder.read_frames(1).unwrap().is_none());
+    decoder.seek_to_sample(0).unwrap();
+    let block = decoder.read_frames(1).unwrap().unwrap();
+    let Samples::F32(samples) = block.samples() else {
+        panic!("Vorbis decoder did not return Float32 PCM");
+    };
+    assert_eq!(samples, &expected_first[..1]);
+}
+
+#[test]
 fn truncated_comment_header_does_not_prevent_audio_decode() {
     let original = generated_stereo_vorbis();
     let truncated_comment = replace_vorbis_packet(&original, 1, b"\x03vorbis\x00");

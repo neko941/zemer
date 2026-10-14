@@ -27,6 +27,13 @@ boundary checks are not claims of high-channel interoperability coverage. The
 `Vorbis I specification <https://xiph.org/vorbis/doc/Vorbis_I_spec.html>`_
 allows up to 255 channels.
 
+For seekable inputs, construct ``VorbisDecoder`` with ``new_seekable`` and use
+``seek_to_sample`` to move to a decoded frame offset. Seeking restarts from the
+reader's initial position and decodes/discards earlier audio, so it is linear
+in the requested offset. Offsets count decoded frames across chained links;
+the audio specification changes when playback reaches a link with different
+parameters.
+
 The experimental ``VorbisEncoder`` supports a fixed-precision scalar-residue
 profile that omits 16-bin partitions quantized entirely to zero, and a nominal
 target-bitrate profile. The bitrate profile caps each audio packet to the
