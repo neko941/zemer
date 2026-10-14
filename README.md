@@ -36,7 +36,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 ## Workspace crates
 
 - [`zemer-core`](crates/core/): shared decoder/encoder interfaces; re-exports metadata, PCM, and DSD types for convenience.
-- [`zemer-cue`](crates/cue/) (Rust crate `cue`): CUE sheet types and checked sector/sample-frame conversion.
+- [`zemer-cue`](crates/cue/) (Rust crate `cue`): clean-room WAVE/AUDIO CUE parser and writer with checked sector/sample-frame conversion; UTF-8/Shift-JIS input is capped at 16 MiB.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
 - [`zemer-dst`](crates/dst/): reusable clean-room DST frame decoder and first-order encoder for DSD64/128/256 profiles.
 - [`zemer-dsdiff`](crates/dsdiff/) (Rust crate `dsdiff`): raw and compressed DST DSDIFF `.dff` decoder, plus raw DSD and compressed DST writers with bypass fallback.
