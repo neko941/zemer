@@ -91,7 +91,7 @@ impl<R: Read + Seek> DsfDecoder<R> {
             || data_size != expected_data_size
             || data_end > file_size
             || (metadata_offset == 0 && data_end != file_size)
-            || (metadata_offset != 0 && metadata_offset < data_end)
+            || (metadata_offset != 0 && metadata_offset != data_end)
             || (metadata_offset != 0 && metadata_offset >= file_size)
         {
             return Err(AudioError::InvalidFormat("invalid DSF data chunk bounds"));

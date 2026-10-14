@@ -11,6 +11,8 @@ use wav::{WavContainer, WavDecoder, WavWriter};
 use zemer_core::AudioSpec;
 use zemer_core::{AudioDecoder, AudioEncoder, AudioError, Metadata};
 
+const MAX_FILENAME_TITLE_BYTES: usize = 200;
+
 pub struct CueReport {
     pub action: &'static str,
     pub cue_path: PathBuf,
@@ -408,6 +410,15 @@ fn safe_filename(title: &str) -> String {
         })
         .collect();
     let name = name.trim().trim_end_matches('.');
+    let mut end = 0;
+    for (index, character) in name.char_indices() {
+        let next = index + character.len_utf8();
+        if next > MAX_FILENAME_TITLE_BYTES {
+            break;
+        }
+        end = next;
+    }
+    let name = &name[..end];
     if name.is_empty() {
         "Track".to_owned()
     } else {
@@ -445,4 +456,20 @@ fn relative_file(base: &Path, input: &Path) -> Result<String, String> {
 
 fn audio_error(error: AudioError, path: &Path) -> String {
     format!("{}: {error}", path.display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_FILENAME_TITLE_BYTES, safe_filename};
+
+    #[test]
+    fn safe_filename_truncates_at_a_utf8_boundary() {
+        let ascii = safe_filename(&"a".repeat(300));
+        assert_eq!(ascii.len(), MAX_FILENAME_TITLE_BYTES);
+
+        let unicode = safe_filename(&"🎵".repeat(100));
+        assert!(unicode.len() <= MAX_FILENAME_TITLE_BYTES);
+        assert!(unicode.is_char_boundary(unicode.len()));
+        assert_eq!(safe_filename(&format!("{}Title", " ".repeat(250))), "Title");
+    }
 }

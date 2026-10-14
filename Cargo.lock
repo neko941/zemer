@@ -28,6 +28,8 @@ dependencies = [
  "zemer-dsf",
  "zemer-flac",
  "zemer-g711",
+ "zemer-ogg",
+ "zemer-vorbis",
  "zemer-wav",
  "zemer-wavpack",
 ]
@@ -118,6 +120,8 @@ dependencies = [
  "zemer-dst",
  "zemer-flac",
  "zemer-g711",
+ "zemer-ogg",
+ "zemer-vorbis",
  "zemer-wav",
  "zemer-wavpack",
 ]
@@ -127,6 +131,7 @@ name = "zemer-vorbis"
 version = "0.7.0"
 dependencies = [
  "zemer-core",
+ "zemer-ogg",
 ]
 
 [[package]]

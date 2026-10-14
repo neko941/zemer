@@ -111,10 +111,10 @@ impl<'a> EntropyDecoder<'a> {
             value
         };
 
-        if channel == 0
-            && let Some(hybrid) = self.hybrid.as_mut()
-        {
-            hybrid.prepare_frame()?;
+        if channel == 0 {
+            if let Some(hybrid) = self.hybrid.as_mut() {
+                hybrid.prepare_frame()?;
+            }
         }
 
         let medians = &mut self.medians[channel];

@@ -1,12 +1,101 @@
 use std::{
-    fs::File,
+    fs::{self, File},
     io::{BufReader, Cursor, Read},
+    process::Command,
 };
 
-use flac::{OggFlacDecoder, rewrite_ogg_metadata};
-use zemer_core::{AudioDecoder, AudioSpec, Metadata, SampleFormat, Samples};
+use flac::{OggFlacDecoder, OggFlacEncoder, rewrite_ogg_metadata};
+use zemer_core::{
+    AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
+};
 
 const FRAMES: u64 = 24_000;
+
+#[test]
+#[ignore = "requires FFmpeg at ZEMER_FFMPEG"]
+fn zemer_ogg_flac_encodings_decode_exactly_with_ffmpeg() {
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to the FFmpeg binary");
+    let profiles = [
+        (8_000, 1, SampleFormat::PcmU8, "u8", "pcm_u8"),
+        (48_000, 2, SampleFormat::PcmI16, "s16le", "pcm_s16le"),
+        (96_000, 6, SampleFormat::PcmI24, "s24le", "pcm_s24le"),
+        (192_000, 8, SampleFormat::PcmI32, "s32le", "pcm_s32le"),
+    ];
+
+    for (case, (rate, channels, format, raw_format, codec)) in profiles.into_iter().enumerate() {
+        const FRAMES: usize = 8_197;
+        let spec = AudioSpec::new(rate, channels, format).unwrap();
+        let count = FRAMES * usize::from(channels);
+        let samples = match format {
+            SampleFormat::PcmU8 => Samples::U8((0..count).map(|i| i as u8).collect()),
+            SampleFormat::PcmI16 => Samples::I16(
+                (0..count)
+                    .map(|i| (i as i32 * 7_919 - 32_768) as i16)
+                    .collect(),
+            ),
+            SampleFormat::PcmI24 => Samples::I24(
+                (0..count)
+                    .map(|i| ((i as i64 * 104_729) % (1 << 24) - (1 << 23)) as i32)
+                    .collect(),
+            ),
+            SampleFormat::PcmI32 => Samples::I32(
+                (0..count)
+                    .map(|i| (i as u32).wrapping_mul(1_000_003).wrapping_add(0x1234_5678) as i32)
+                    .collect(),
+            ),
+            SampleFormat::Float32 | SampleFormat::Float64 => unreachable!(),
+        };
+        let expected = raw_pcm_bytes(&samples);
+        let mut encoder = OggFlacEncoder::new(Vec::new(), spec).unwrap();
+        encoder
+            .write_block(&PcmBuffer::new(spec, samples).unwrap())
+            .unwrap();
+        encoder.finish().unwrap();
+
+        let path = std::env::temp_dir().join(format!(
+            "zemer-ogg-flac-encode-{}-{case}.oga",
+            std::process::id()
+        ));
+        fs::write(&path, encoder.into_inner()).unwrap();
+        let decoded = Command::new(&ffmpeg)
+            .args(["-v", "error", "-i"])
+            .arg(&path)
+            .args([
+                "-map", "0:a:0", "-f", raw_format, "-acodec", codec, "pipe:1",
+            ])
+            .output()
+            .unwrap();
+        let _ = fs::remove_file(path);
+        assert!(
+            decoded.status.success(),
+            "FFmpeg failed to decode {rate}-Hz {channels}-channel {format:?}: {}",
+            String::from_utf8_lossy(&decoded.stderr)
+        );
+        assert_eq!(decoded.stdout, expected, "profile {format:?} at {rate} Hz");
+    }
+}
+
+fn raw_pcm_bytes(samples: &Samples) -> Vec<u8> {
+    match samples {
+        Samples::U8(values) => values.clone(),
+        Samples::I16(values) => values
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect(),
+        Samples::I24(values) => values
+            .iter()
+            .flat_map(|sample| {
+                let bytes = sample.to_le_bytes();
+                [bytes[0], bytes[1], bytes[2]]
+            })
+            .collect(),
+        Samples::I32(values) => values
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect(),
+        Samples::F32(_) | Samples::F64(_) => unreachable!(),
+    }
+}
 
 #[test]
 fn decodes_ffmpeg_ogg_flac_pages_bit_exactly_in_small_reads() {
@@ -171,6 +260,72 @@ fn decodes_external_ogg_flac_against_ffmpeg_pcm_oracle() {
         0,
         "PCM oracle has trailing samples"
     );
+}
+
+#[test]
+#[ignore = "requires the public-domain Commons Ogg-FLAC sample and FFmpeg PCM oracle paths in ZEMER_OGG_FLAC_WHITE_NOISE_SAMPLE and ZEMER_OGG_FLAC_WHITE_NOISE_PCM"]
+fn decodes_archived_commons_white_noise_ogg_flac_against_ffmpeg() {
+    const FRAMES: u64 = 480_000;
+    let input = std::env::var_os("ZEMER_OGG_FLAC_WHITE_NOISE_SAMPLE")
+        .expect("set ZEMER_OGG_FLAC_WHITE_NOISE_SAMPLE to the archived Commons file");
+    let oracle = std::env::var_os("ZEMER_OGG_FLAC_WHITE_NOISE_PCM")
+        .expect("set ZEMER_OGG_FLAC_WHITE_NOISE_PCM to FFmpeg's s16le PCM output");
+    let mut decoder = OggFlacDecoder::new(File::open(input).unwrap()).unwrap();
+    assert_eq!(
+        decoder.spec(),
+        AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap()
+    );
+    let mut oracle = BufReader::new(File::open(oracle).unwrap());
+    let mut frames = 0;
+    while let Some(block) = decoder.read_frames(2_048).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("Commons white-noise Ogg-FLAC must decode to signed 16-bit PCM");
+        };
+        let mut bytes = vec![0; samples.len() * 2];
+        oracle.read_exact(&mut bytes).unwrap();
+        for (sample, expected) in samples.iter().zip(bytes.chunks_exact(2)) {
+            assert_eq!(*sample, i16::from_le_bytes([expected[0], expected[1]]));
+        }
+        frames += samples.len() as u64;
+    }
+    assert_eq!(frames, FRAMES);
+    let mut trailing = [0; 1];
+    assert_eq!(oracle.read(&mut trailing).unwrap(), 0);
+}
+
+#[test]
+#[ignore = "requires the CC BY-SA Commons Ogg-FLAC sample and FFmpeg PCM oracle paths in ZEMER_OGG_FLAC_DISSONANCE_SAMPLE and ZEMER_OGG_FLAC_DISSONANCE_PCM"]
+fn decodes_commons_libflac_1_2_1_dissonance_against_ffmpeg() {
+    const FRAMES: u64 = 1_440_000;
+    let input = std::env::var_os("ZEMER_OGG_FLAC_DISSONANCE_SAMPLE")
+        .expect("set ZEMER_OGG_FLAC_DISSONANCE_SAMPLE to the Commons Ogg-FLAC file");
+    let oracle = std::env::var_os("ZEMER_OGG_FLAC_DISSONANCE_PCM")
+        .expect("set ZEMER_OGG_FLAC_DISSONANCE_PCM to FFmpeg's s24le PCM output");
+    let mut decoder = OggFlacDecoder::new(File::open(input).unwrap()).unwrap();
+    assert_eq!(
+        decoder.spec(),
+        AudioSpec::new(48_000, 2, SampleFormat::PcmI24).unwrap()
+    );
+    let mut oracle = BufReader::new(File::open(oracle).unwrap());
+    let mut frames = 0;
+    while let Some(block) = decoder.read_frames(2_048).unwrap() {
+        let Samples::I24(samples) = block.samples() else {
+            panic!("Commons dissonance Ogg-FLAC must decode to signed 24-bit PCM");
+        };
+        let mut bytes = vec![0; samples.len() * 3];
+        oracle.read_exact(&mut bytes).unwrap();
+        for (sample, expected) in samples.iter().zip(bytes.chunks_exact(3)) {
+            let sign = if expected[2] & 0x80 == 0 { 0 } else { 0xff };
+            assert_eq!(
+                *sample,
+                i32::from_le_bytes([expected[0], expected[1], expected[2], sign])
+            );
+        }
+        frames += (samples.len() / 2) as u64;
+    }
+    assert_eq!(frames, FRAMES);
+    let mut trailing = [0; 1];
+    assert_eq!(oracle.read(&mut trailing).unwrap(), 0);
 }
 
 #[test]

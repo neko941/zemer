@@ -1015,6 +1015,34 @@ mod tests {
     }
 
     #[test]
+    fn rejects_inconsistent_byte_rate() {
+        let audio = PcmBuffer::new(
+            AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap(),
+            Samples::U8(vec![128]),
+        )
+        .unwrap();
+        let mut bytes = write_wav(Cursor::new(Vec::new()), &audio)
+            .unwrap()
+            .into_inner();
+        bytes[28..32].copy_from_slice(&7_999_u32.to_le_bytes());
+
+        assert!(WavDecoder::new(Cursor::new(bytes)).is_err());
+    }
+
+    #[test]
+    fn rejects_trailing_bytes_in_info_list() {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF\0\0\0\0WAVE");
+        bytes.extend_from_slice(b"fmt \x10\0\0\0\x01\0\x01\0\x40\x1f\0\0\x40\x1f\0\0\x01\0\x08\0");
+        bytes.extend_from_slice(b"LIST\x11\0\0\0INFOINAM\x04\0\0\0TestX\0");
+        bytes.extend_from_slice(b"data\x01\0\0\0\x80\0");
+        let size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&size.to_le_bytes());
+
+        assert!(WavDecoder::new(Cursor::new(bytes)).is_err());
+    }
+
+    #[test]
     fn writer_pads_odd_data_chunks_and_counts_padding_in_riff_size() {
         let audio = PcmBuffer::new(
             AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap(),

@@ -1,7 +1,7 @@
-use crate::bitstream::BitReader;
+use crate::bitstream::{BitReader, BitWriter};
 use zemer_core::{AudioError, Metadata};
 
-const COMMENT_LIMIT: usize = 16 * 1024 * 1024;
+pub(crate) const COMMENT_LIMIT: usize = 16 * 1024 * 1024;
 const IDENTIFICATION_PREFIX: &[u8] = b"\x01vorbis";
 const COMMENT_PREFIX: &[u8] = b"\x03vorbis";
 
@@ -103,14 +103,14 @@ impl VorbisCommentHeader {
         for _ in 0..count {
             let comment = read_utf8(packet, &mut cursor)?;
             let Some((key, value)) = comment.split_once('=') else {
-                return Err(AudioError::InvalidFormat("invalid Vorbis comment field"));
+                continue;
             };
             if key.is_empty()
                 || key
                     .bytes()
                     .any(|byte| !(0x20..=0x7d).contains(&byte) || byte == b'=')
             {
-                return Err(AudioError::InvalidFormat("invalid Vorbis comment name"));
+                continue;
             }
             metadata.insert(key, value.to_owned());
         }
@@ -130,6 +130,82 @@ impl VorbisCommentHeader {
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
     }
+}
+
+pub(crate) fn encode_comment_header(
+    vendor: &str,
+    metadata: &Metadata,
+) -> Result<Vec<u8>, AudioError> {
+    let comment_count = metadata
+        .iter()
+        .try_fold(0_usize, |count, (_, values)| {
+            count.checked_add(values.len())
+        })
+        .filter(|&count| count <= u32::MAX as usize)
+        .ok_or(AudioError::InvalidData("too many Vorbis comments"))?;
+    let mut packet = Vec::new();
+    packet
+        .try_reserve_exact(11)
+        .map_err(|_| AudioError::InvalidData("Vorbis comment allocation failed"))?;
+    packet.extend_from_slice(COMMENT_PREFIX);
+    append_string(&mut packet, vendor)?;
+    append_u32(&mut packet, comment_count)?;
+    for (key, values) in metadata.iter() {
+        if key.is_empty()
+            || key
+                .bytes()
+                .any(|byte| !(0x20..=0x7d).contains(&byte) || byte == b'=')
+        {
+            return Err(AudioError::InvalidData("invalid Vorbis comment name"));
+        }
+        for value in values {
+            let field_size = key
+                .len()
+                .checked_add(1)
+                .and_then(|size| size.checked_add(value.len()))
+                .ok_or(AudioError::InvalidData("Vorbis comment length overflow"))?;
+            append_length(&mut packet, field_size)?;
+            append_bytes(&mut packet, key.as_bytes())?;
+            append_bytes(&mut packet, b"=")?;
+            append_bytes(&mut packet, value.as_bytes())?;
+        }
+    }
+    let mut framing = BitWriter::new();
+    framing.write_bit(true)?;
+    append_bytes(&mut packet, &framing.into_bytes())?;
+    Ok(packet)
+}
+
+fn append_string(packet: &mut Vec<u8>, value: &str) -> Result<(), AudioError> {
+    append_length(packet, value.len())?;
+    append_bytes(packet, value.as_bytes())
+}
+
+fn append_length(packet: &mut Vec<u8>, length: usize) -> Result<(), AudioError> {
+    let length = u32::try_from(length)
+        .map_err(|_| AudioError::InvalidData("Vorbis comment field is too large"))?;
+    append_bytes(packet, &length.to_le_bytes())
+}
+
+fn append_u32(packet: &mut Vec<u8>, value: usize) -> Result<(), AudioError> {
+    let value =
+        u32::try_from(value).map_err(|_| AudioError::InvalidData("too many Vorbis comments"))?;
+    append_bytes(packet, &value.to_le_bytes())
+}
+
+fn append_bytes(packet: &mut Vec<u8>, bytes: &[u8]) -> Result<(), AudioError> {
+    let new_len = packet
+        .len()
+        .checked_add(bytes.len())
+        .filter(|&length| length <= COMMENT_LIMIT)
+        .ok_or(AudioError::InvalidData(
+            "Vorbis comment header exceeds the 16 MiB limit",
+        ))?;
+    packet
+        .try_reserve(new_len - packet.len())
+        .map_err(|_| AudioError::InvalidData("Vorbis comment allocation failed"))?;
+    packet.extend_from_slice(bytes);
+    Ok(())
 }
 
 fn signed_bitrate(bytes: &[u8]) -> Option<i32> {
@@ -162,7 +238,9 @@ fn read_utf8<'a>(packet: &'a [u8], cursor: &mut usize) -> Result<&'a str, AudioE
 
 #[cfg(test)]
 mod tests {
-    use super::{VorbisCommentHeader, VorbisIdentificationHeader};
+    use zemer_core::Metadata;
+
+    use super::{VorbisCommentHeader, VorbisIdentificationHeader, encode_comment_header};
 
     fn identification() -> [u8; 30] {
         let mut packet = [0; 30];
@@ -205,6 +283,9 @@ mod tests {
         packet = identification();
         packet[28] = 0x65;
         assert!(VorbisIdentificationHeader::parse(&packet).is_err());
+        packet = identification();
+        packet[28] = 0xe6;
+        assert!(VorbisIdentificationHeader::parse(&packet).is_err());
     }
 
     #[test]
@@ -218,9 +299,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_truncated_invalid_and_unframed_comments() {
+    fn ignores_unstructured_fields_but_rejects_truncated_and_unframed_comments() {
         assert!(VorbisCommentHeader::parse(b"\x03vorbis").is_err());
-        assert!(VorbisCommentHeader::parse(&comment(&["INVALID"])).is_err());
+        let header =
+            VorbisCommentHeader::parse(&comment(&["INVALID", "TITLE=Song", "=empty"])).unwrap();
+        assert_eq!(header.metadata().values("TITLE"), ["Song"]);
+        assert!(header.metadata().values("").is_empty());
         let mut packet = comment(&[]);
         *packet.last_mut().unwrap() = 0;
         assert!(VorbisCommentHeader::parse(&packet).is_err());
@@ -237,5 +321,27 @@ mod tests {
                 .values("TITLE"),
             ["Song"]
         );
+    }
+
+    #[test]
+    fn writes_utf8_and_repeated_comment_fields() {
+        let mut metadata = Metadata::default();
+        metadata.insert("title", "Song 🎵");
+        metadata.insert("artist", "Band");
+        metadata.insert("artist", "Guest");
+
+        let encoded = encode_comment_header("Zemer", &metadata).unwrap();
+        let parsed = VorbisCommentHeader::parse(&encoded).unwrap();
+
+        assert_eq!(parsed.vendor(), "Zemer");
+        assert_eq!(parsed.metadata().values("TITLE"), ["Song 🎵"]);
+        assert_eq!(parsed.metadata().values("artist"), ["Band", "Guest"]);
+    }
+
+    #[test]
+    fn rejects_unrepresentable_comment_names() {
+        let mut metadata = Metadata::default();
+        metadata.insert("BAD=KEY", "value");
+        assert!(encode_comment_header("Zemer", &metadata).is_err());
     }
 }

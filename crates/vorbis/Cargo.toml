@@ -10,4 +10,5 @@ rust-version.workspace = true
 name = "vorbis"
 
 [dependencies]
+ogg.workspace = true
 zemer-core.workspace = true

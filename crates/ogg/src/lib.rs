@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     io::{self, Read},
 };
 
@@ -8,6 +8,8 @@ mod write;
 pub use write::OggPacketWriter;
 
 pub const DEFAULT_MAX_PACKET_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum number of sequential logical streams tracked by one reader.
+pub const MAX_CHAINED_STREAMS: usize = 65_536;
 pub const PAGE_FLAG_CONTINUED: u8 = 0x01;
 pub const PAGE_FLAG_BOS: u8 = 0x02;
 pub const PAGE_FLAG_EOS: u8 = 0x04;
@@ -39,7 +41,9 @@ pub struct OggPacketReader<R> {
     partial_starts_page: bool,
     first_page: bool,
     ended: bool,
+    eos_granule_position: Option<u64>,
     pending: VecDeque<(OggPacket, bool)>,
+    chained_serials: HashSet<u32>,
 }
 
 impl<R: Read> OggPacketReader<R> {
@@ -57,13 +61,20 @@ impl<R: Read> OggPacketReader<R> {
             partial_starts_page: false,
             first_page: true,
             ended: false,
+            eos_granule_position: None,
             pending: VecDeque::new(),
+            chained_serials: HashSet::new(),
         }
     }
 
     /// Returns the serial number of the current logical stream after its first page is read.
     pub fn stream_serial(&self) -> Option<u32> {
         self.serial
+    }
+
+    /// Returns the granule position of the terminal page after that page is read.
+    pub fn eos_granule_position(&self) -> Option<u64> {
+        self.eos_granule_position
     }
 
     /// Returns the next complete packet, or `None` after this stream's EOS page.
@@ -90,7 +101,8 @@ impl<R: Read> OggPacketReader<R> {
     }
 
     /// Starts the next sequential logical stream after this stream's EOS page.
-    /// Returns `None` only when the input ends exactly at that page.
+    /// Returns `None` only when the input ends exactly at that page. Reused
+    /// serial numbers across the chained streams are rejected.
     pub fn next_stream(self) -> io::Result<Option<Self>> {
         if !self.ended || !self.partial.is_empty() || !self.pending.is_empty() {
             return Err(invalid_ogg(
@@ -98,6 +110,7 @@ impl<R: Read> OggPacketReader<R> {
             ));
         }
         let mut next = Self::with_packet_limit(self.reader, self.max_packet_bytes);
+        next.chained_serials = self.chained_serials;
         Ok(next.read_page()?.then_some(next))
     }
 
@@ -129,25 +142,48 @@ impl<R: Read> OggPacketReader<R> {
         let serial = u32::from_le_bytes(header[14..18].try_into().unwrap());
         let sequence = u32::from_le_bytes(header[18..22].try_into().unwrap());
         let segment_count = usize::from(header[26]);
-        let mut lacing = vec![0; segment_count];
-        self.reader.read_exact(&mut lacing)?;
-        let body_len: usize = lacing.iter().map(|&length| usize::from(length)).sum();
-        let mut body = vec![0; body_len];
-        self.reader.read_exact(&mut body)?;
-
-        let mut page = Vec::with_capacity(27 + segment_count + body_len);
+        let lacing_end = 27 + segment_count;
+        let mut page = Vec::new();
+        page.try_reserve_exact(lacing_end)
+            .map_err(|_| io::Error::other("Ogg page allocation failed"))?;
         page.extend_from_slice(&header);
-        page.extend_from_slice(&lacing);
-        page.extend_from_slice(&body);
+        page.resize(lacing_end, 0);
+        self.reader.read_exact(&mut page[27..])?;
+        let body_len: usize = page[27..lacing_end]
+            .iter()
+            .map(|&length| usize::from(length))
+            .sum();
+        page.try_reserve_exact(body_len)
+            .map_err(|_| io::Error::other("Ogg page allocation failed"))?;
+        let page_len = lacing_end + body_len;
+        page.resize(page_len, 0);
+        self.reader.read_exact(&mut page[lacing_end..])?;
         let expected_crc = u32::from_le_bytes(header[22..26].try_into().unwrap());
         page[22..26].fill(0);
         if ogg_crc(&page) != expected_crc {
             return Err(invalid_ogg("Ogg page CRC mismatch"));
         }
+        let lacing = &page[27..lacing_end];
+        let body = &page[lacing_end..];
+        let complete_packets = lacing.iter().filter(|&&lace| lace < 255).count();
+        self.pending
+            .try_reserve(complete_packets)
+            .map_err(|_| io::Error::other("Ogg packet queue allocation failed"))?;
 
         if self.first_page {
             if flags & PAGE_FLAG_BOS == 0 || sequence != 0 {
                 return Err(invalid_ogg("invalid Ogg beginning-of-stream page"));
+            }
+            if self.chained_serials.len() >= MAX_CHAINED_STREAMS {
+                return Err(invalid_ogg(
+                    "Ogg chained stream count exceeds the configured limit",
+                ));
+            }
+            self.chained_serials
+                .try_reserve(1)
+                .map_err(|_| io::Error::other("Ogg stream serial allocation failed"))?;
+            if !self.chained_serials.insert(serial) {
+                return Err(invalid_ogg("duplicate Ogg stream serial number"));
             }
             self.serial = Some(serial);
             self.sequence = Some(sequence);
@@ -181,7 +217,9 @@ impl<R: Read> OggPacketReader<R> {
                 .checked_add(len)
                 .filter(|size| *size <= self.max_packet_bytes)
                 .ok_or_else(|| invalid_ogg("Ogg packet exceeds the configured limit"))?;
-            self.partial.reserve(new_len - self.partial.len());
+            self.partial
+                .try_reserve(new_len - self.partial.len())
+                .map_err(|_| io::Error::other("Ogg packet allocation failed"))?;
             self.partial.extend_from_slice(&body[cursor..cursor + len]);
             cursor += len;
             if lace < 255 {
@@ -206,6 +244,7 @@ impl<R: Read> OggPacketReader<R> {
                 return Err(invalid_ogg("Ogg EOS page ends in a partial packet"));
             }
             self.ended = true;
+            self.eos_granule_position = Some(granule_position);
         }
         Ok(true)
     }
@@ -234,9 +273,20 @@ fn invalid_ogg(message: &'static str) -> io::Error {
 mod tests {
     use std::io::Cursor;
 
-    use super::{OggPacketReader, PAGE_FLAG_BOS, PAGE_FLAG_EOS, ogg_crc};
+    use super::{MAX_CHAINED_STREAMS, OggPacketReader, PAGE_FLAG_BOS, PAGE_FLAG_EOS, ogg_crc};
 
     fn page(body: &[u8], lacing: &[u8], flags: u8, sequence: u32, granule: u64) -> Vec<u8> {
+        page_with_serial(body, lacing, flags, 7, sequence, granule)
+    }
+
+    fn page_with_serial(
+        body: &[u8],
+        lacing: &[u8],
+        flags: u8,
+        serial: u32,
+        sequence: u32,
+        granule: u64,
+    ) -> Vec<u8> {
         assert_eq!(
             body.len(),
             lacing.iter().map(|&n| usize::from(n)).sum::<usize>()
@@ -245,7 +295,7 @@ mod tests {
         output[..4].copy_from_slice(b"OggS");
         output[5] = flags;
         output[6..14].copy_from_slice(&granule.to_le_bytes());
-        output[14..18].copy_from_slice(&7_u32.to_le_bytes());
+        output[14..18].copy_from_slice(&serial.to_le_bytes());
         output[18..22].copy_from_slice(&sequence.to_le_bytes());
         output[26] = lacing.len() as u8;
         output.extend_from_slice(lacing);
@@ -265,6 +315,44 @@ mod tests {
         assert_eq!(packet.page_granule_position, 3);
         assert!(packet.page_is_first && packet.starts_page && packet.ends_page);
         assert!(reader.next_packet().unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_every_truncated_page_prefix() {
+        let valid = page(&[1, 2, 3], &[3], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 3);
+        for length in 0..valid.len() {
+            let result = OggPacketReader::new(Cursor::new(&valid[..length])).next_packet();
+            assert!(
+                result.is_err(),
+                "accepted truncated page prefix of {length} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_every_truncated_continued_packet_prefix() {
+        let mut valid = page(
+            &vec![0x5a; 255],
+            &[255],
+            PAGE_FLAG_BOS,
+            0,
+            super::NO_GRANULE_POSITION,
+        );
+        valid.extend(page(
+            &[0xa5],
+            &[1],
+            super::PAGE_FLAG_CONTINUED | PAGE_FLAG_EOS,
+            1,
+            256,
+        ));
+
+        for length in 0..valid.len() {
+            let result = OggPacketReader::new(Cursor::new(&valid[..length])).next_packet();
+            assert!(
+                result.is_err(),
+                "accepted truncated continued-packet prefix of {length} bytes"
+            );
+        }
     }
 
     #[test]
@@ -350,10 +438,90 @@ mod tests {
     }
 
     #[test]
+    fn rejects_malformed_page_headers_and_packet_continuations() {
+        let mut bad_capture = page(&[1], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 1);
+        bad_capture[0] = b'X';
+        assert!(
+            OggPacketReader::new(Cursor::new(bad_capture))
+                .next_packet()
+                .is_err()
+        );
+
+        let mut bad_version = page(&[1], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 1);
+        bad_version[4] = 1;
+        assert!(
+            OggPacketReader::new(Cursor::new(bad_version))
+                .next_packet()
+                .is_err()
+        );
+
+        let mut reserved_flags = page(&[1], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 1);
+        reserved_flags[5] |= 0x08;
+        assert!(
+            OggPacketReader::new(Cursor::new(reserved_flags))
+                .next_packet()
+                .is_err()
+        );
+
+        let spurious_continuation = page(
+            &[1],
+            &[1],
+            PAGE_FLAG_BOS | super::PAGE_FLAG_CONTINUED | PAGE_FLAG_EOS,
+            0,
+            1,
+        );
+        assert!(
+            OggPacketReader::new(Cursor::new(spurious_continuation))
+                .next_packet()
+                .is_err()
+        );
+
+        let mut missing_continuation = page(&vec![0; 255], &[255], PAGE_FLAG_BOS, 0, u64::MAX);
+        missing_continuation.extend(page(&[1], &[1], PAGE_FLAG_EOS, 1, 256));
+        assert!(
+            OggPacketReader::new(Cursor::new(missing_continuation))
+                .next_packet()
+                .is_err()
+        );
+
+        let eos_with_partial_packet =
+            page(&vec![0; 255], &[255], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 1);
+        assert!(
+            OggPacketReader::new(Cursor::new(eos_with_partial_packet))
+                .next_packet()
+                .is_err()
+        );
+    }
+
+    #[test]
     fn enforces_configured_packet_bound() {
         let input = page(&[1, 2], &[2], 6, 0, 2);
         let mut reader = OggPacketReader::with_packet_limit(Cursor::new(input), 1);
         assert!(reader.next_packet().is_err());
+    }
+
+    #[test]
+    fn page_reader_does_not_panic_on_single_bit_mutations_with_valid_crc() {
+        let valid = page(&[0x55], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 1);
+        for byte in 0..valid.len() {
+            if (22..26).contains(&byte) {
+                continue;
+            }
+            for bit in 0..u8::BITS {
+                let mut mutated = valid.clone();
+                mutated[byte] ^= 1 << bit;
+                mutated[22..26].fill(0);
+                let crc = ogg_crc(&mutated);
+                mutated[22..26].copy_from_slice(&crc.to_le_bytes());
+                assert!(
+                    std::panic::catch_unwind(|| {
+                        OggPacketReader::new(Cursor::new(mutated)).next_packet()
+                    })
+                    .is_ok(),
+                    "Ogg page parser panicked after flipping bit {bit} of byte {byte}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -379,6 +547,43 @@ mod tests {
         let mut reader = OggPacketReader::new(Cursor::new(input));
         assert_eq!(reader.next_packet().unwrap().unwrap().bytes, [1]);
         assert!(reader.next_packet().unwrap().is_none());
+        assert!(reader.next_stream().is_err());
+
+        let second_serial = page_with_serial(&[2], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 8, 0, 1);
+        let duplicate_serial = page_with_serial(&[3], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 7, 0, 1);
+        let mut input = page(&[1], &[1], PAGE_FLAG_BOS | PAGE_FLAG_EOS, 0, 1);
+        input.extend_from_slice(&second_serial);
+        input.extend_from_slice(&duplicate_serial);
+        let mut reader = OggPacketReader::new(Cursor::new(input));
+        assert_eq!(reader.next_packet().unwrap().unwrap().bytes, [1]);
+        assert!(reader.next_packet().unwrap().is_none());
+        let mut second = reader.next_stream().unwrap().unwrap();
+        assert_eq!(second.next_packet().unwrap().unwrap().bytes, [2]);
+        assert!(second.next_packet().unwrap().is_none());
+        assert!(second.next_stream().is_err());
+    }
+
+    #[test]
+    fn bounds_the_number_of_chained_streams() {
+        let mut input = Vec::new();
+        for serial in 0..=MAX_CHAINED_STREAMS as u32 {
+            input.extend_from_slice(&page_with_serial(
+                &[0],
+                &[1],
+                PAGE_FLAG_BOS | PAGE_FLAG_EOS,
+                serial,
+                0,
+                0,
+            ));
+        }
+
+        let mut reader = OggPacketReader::new(Cursor::new(input));
+        for stream in 0..MAX_CHAINED_STREAMS {
+            assert!(reader.next_packet().unwrap().is_some());
+            if stream + 1 < MAX_CHAINED_STREAMS {
+                reader = reader.next_stream().unwrap().unwrap();
+            }
+        }
         assert!(reader.next_stream().is_err());
     }
 }

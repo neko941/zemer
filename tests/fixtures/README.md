@@ -30,10 +30,259 @@ Each PCM SHA-256 is independently reproduced by FFmpeg decoding. FFmpeg is
 used only to create the synthetic interoperability fixtures; no FFmpeg code
 or runtime dependency is included.
 
+The ignored test `zemer_ogg_flac_encodings_decode_exactly_with_ffmpeg` checks
+Zemer-generated Ogg-FLAC at 8-bit mono/8 kHz, 16-bit stereo/48 kHz, 24-bit
+5.1/96 kHz, and 32-bit 7.1/192 kHz. Set `ZEMER_FFMPEG` to the FFmpeg binary
+and run `cargo test --test ogg_flac_interop
+zemer_ogg_flac_encodings_decode_exactly_with_ffmpeg -- --ignored --exact`.
+The test compares the decoded PCM bytes with the original encoder input.
+
+## Ogg Vorbis reference profiles
+
+The ``vorbis/`` fixtures were encoded by libvorbisenc through libsndfile 1.2.2
+and decoded to Float32 PCM oracles by libsndfile. They contain deterministic
+synthetic tones plus seeded low-level noise, with distinct frequencies per
+channel. The normal ``tests/vorbis_interop.rs`` suite compares every decoded
+sample against the oracle with a maximum absolute error below 0.002; no
+external codec library is used by Zemer or required by CI.
+The integration suite also flips one bit in each byte of the independent
+44.1-kHz stereo setup header and asserts the parser never panics.
+
+| Sample rate | Channels | Frames | Ogg SHA-256 | PCM oracle SHA-256 |
+|---:|---:|---:|---|---|
+| 8 kHz | 1 | 12,347 | ``e094c14410706bc0215cdfa8cd7cf9c7ca770b765e73b9578fbefb9c8435e340`` | ``5fbdd31396af7852870741752bdf9d1cc56015e3d76a2e520bd002b8be2b28`` |
+| 44.1 kHz | 2 | 12,347 | ``facf7e729f6d4cd50ed283ca4a2924d96c5f4f2c2a5e788f6456101d5943a480`` | ``1bcf85bb5ec4582f794ff97299747cc3afaf0a3ce612de49cf7ad6a91bb04d51`` |
+| 32 kHz | 3 | 12,347 | ``b5b3b00e88ec1efbc715c97e83b3271400ba38467a5d70862da4a150200fcdab`` | ``d0e725ead42e93057b67d2f5e716c125721e3de972d803af89298cb46800e77b`` |
+| 48 kHz | 6 | 12,347 | ``57c4a0002098353644855ffac9b3d17ac9894266200cbb1bdc9419f567496968`` | ``48a4884fcea56f24a2d26dc326e908bdbb9c336cbdd0601375eaa6927b599b90`` |
+| 96 kHz | 8 | 12,347 | ``7d35aa211a4a90db9efb22f006154b84054d16642a9cd45e8acdb8db74616ee9`` | ``a1cf0d54d2d0001813805cf68b593da8a00c04de9503ac9bbddab40a3270bbb7`` |
+
+`libsndfile-192000-2.ogg` adds 12,347 stereo frames at 192 kHz, written by
+libsndfile 1.2.2's Ogg/Vorbis encoder from distinct 18,137-Hz and 67,021-Hz
+tones. FFmpeg 4.2.2's native Vorbis decoder produced the paired Float32 oracle;
+CI compares every sample within 0.002. The Ogg SHA-256 is
+``c578feec7ee2a7dec9c0ddda90b5f62726833d9e096bf31433b7f21e195a6da2`` and the
+oracle SHA-256 is ``30716604a95e0eeaf24781ed2d639640723303722c158d52a7668dc7d7bdbee5``.
+
+Two extra reference streams were encoded with `oggenc` from vorbis-tools
+1.4.2/libVorbis 1.3.7. They use distinct channel tones, harmonics, and short
+transients, covering channel counts missing from the initial libvorbisenc
+profiles. `libsndfile` decoded each stream to a Float32 oracle; normal CI
+compares every sample within 0.002.
+
+| Sample rate | Channels | Frames | Ogg SHA-256 | PCM oracle SHA-256 |
+|---:|---:|---:|---|---|
+| 22.05 kHz | 4 | 18,211 | ``fc4597e4840795902122f8bd46332a31d178952671da977f00d4bc4b1f6044a5`` | ``b15f548bcbb580fd51add5b3bf53959662b6ff09e30ac02fce06d117f687a1fa`` |
+| 44.1 kHz | 5 | 30,017 | ``47eb2b7e8c5dee630f302a44abb44ce6f8ed79c6644cfdf848d2cca2a36f2c8d`` | ``2db5c50cc1dccf5b921d6dbe672d54bc413681264905f22d7d462a78311f651d`` |
+
+`wikimedia-cc0-example.ogg` adds a real 44.1-kHz stereo recording licensed
+under CC0 1.0 by its author on Wikimedia Commons. The file metadata identifies
+Xiph libVorbis I 1.3.3 as its encoder. libsndfile 1.2.2 decoded its 163,328
+frames to the paired Float32 oracle; CI compares every sample within 0.002.
+Source and licensing: <https://commons.wikimedia.org/wiki/File:Example_sound_file_in_Ogg_Vorbis_format.ogg>.
+
+`wikimedia-cc0-432hz.ogg` adds an 8.08-second 432-Hz stereo recording under
+CC0 1.0; its metadata records the older Xiph libVorbis I 20020717 encoder.
+libsndfile 1.2.2 decoded all 356,352 frames to the paired Float32 oracle, and
+CI compares every sample within 0.002. Source and licensing:
+<https://commons.wikimedia.org/wiki/File:432.ogg>.
+
+`rusty-vorbis-0_1_1-44100-2.ogg` was encoded by the independent Rust
+[rusty_vorbis 0.1.1](https://crates.io/crates/rusty_vorbis/0.1.1) encoder
+(Apache-2.0) from a 12,347-frame excerpt of the CC0 recording above, then
+muxed with Zemer's Ogg writer. libsndfile 1.2.2 produced the paired Float32
+oracle; CI compares every sample within 0.002. The external encoder is used
+only to create this fixture and is not a Zemer dependency.
+
+| Fixture | Frames | Channels | Ogg SHA-256 | PCM oracle SHA-256 |
+|---|---:|---:|---|---|
+| `wikimedia-cc0-example.ogg` | 163,328 | 2 | `c001d8980f0b964000a28a99c5cab3809ef65ecf1ba0ae00bc57cb1fc1440754` | `0c8af967233f45f8c4d0de28103f1a524ebe7c23f28a8bd28ecc9a387fd42d14` |
+| `wikimedia-cc0-432hz.ogg` | 356,352 | 2 | `eeace8b2c7564aeeca6ac2cbf2d45ad20896bde8fce934ade2f443f1eb667affd` | `5395e86f89f3f01c725520af9f471715f7638f45e08e24be7e59685cf429c97e` |
+| `rusty-vorbis-0_1_1-44100-2.ogg` | 12,347 | 2 | `e3c6fb4f2ff40e352d8c1263717a922e51cf665cd0e136e0b2281236d1e37ccd` | `32f9a5d4209f0b0f61c2fbd10bb7af992161fe31c2872ddf84bdba089232a869` |
+
+Ten optional external [Xiph test vectors](https://people.xiph.org/~xiphmont/test-vectors/vorbis/)
+cover Floor 0, older encoder output, and silence. The four `lsp-test*.ogg`
+vectors each decoded to 874,606 stereo frames at 44.1 kHz; `rc3-test.ogg` to
+934,732 stereo frames; `beta3-test.ogg` to 11,076,156 stereo frames;
+`beta4-test.ogg` to 6,952,960 mono frames; `bimS-silence.ogg` to 1,754,165
+stereo frames; `rc1-test.ogg` to 6,276,900 stereo frames; and `rc2-test.ogg`
+to 7,188,888 stereo frames. All matched separate libsndfile Float32 oracles
+within the integration test's 0.002 maximum absolute error on server5. The
+vector and oracle files stay outside this repository; run the ignored profile
+test with a five-column manifest in `ZEMER_VORBIS_CORPUS`.
+
+Three more Xiph vectors also match full libsndfile PCM oracles: `1.0-test.ogg`
+(18,220,356 stereo frames at 44.1 kHz), `1.0.1-test.ogg` (8,199,660 stereo
+frames at 44.1 kHz), and `48k-mono.ogg` (515,234 mono frames at 48 kHz).
+These vectors and their oracles remain external.
+
+Five additional standalone Xiph vectors match full libsndfile PCM oracles:
+`mono.ogg` (13,693,480 mono frames), `sleepzor.ogg` (9,442,944 stereo
+frames), `highrate-test.ogg` (12,098,100 stereo frames), `moog.ogg`
+(10,546,956 stereo frames), and `rc2-test2.ogg` (7,061,880 stereo frames),
+all at 44.1 kHz. `out-of-spec-blocksize.ogg` also matches its complete
+libsndfile Float32 oracle at 44.1 kHz, with 9,333,952 stereo frames. The
+complete external set now has 19 standalone vectors.
+Both official chained vectors also pass independent per-link comparisons:
+`chain-test1.ogg` is stereo then mono (2,062,410 and 888,832 frames), while
+`chain-test2.ogg` is mono then stereo with the same respective link lengths.
+These corpus files and PCM oracles remain external.
+
+The newer Xiph `combustion.ogg` and `make.ogg` vectors put audio packets on
+the page that completes the setup header. The [Vorbis I Ogg mapping](https://xiph.org/vorbis/doc/Vorbis_I_spec.html)
+requires the first audio packet to start on a fresh page, so these streams are
+excluded from exact PCM-oracle comparisons; independent decoders can trim
+different leading samples. `unused-mode-test.ogg` reaches an audio packet
+whose mode index is outside the stream's setup modes and is rejected by the
+decoder.
+
+Do not use Xiph's `test-short.ogg` as an exact PCM oracle. Its page that
+completes the setup header also contains audio packets, although the [Vorbis I
+Ogg mapping](https://xiph.org/vorbis/doc/Vorbis_I_spec.html) requires the first
+audio packet to start on a fresh page. The full
+Zemer decode matches the file's terminal granule, while libsndfile and
+libvorbisfile discard different leading portions from this nonconforming
+stream. Xiph's `test-short2.ogg` is truncated and correctly fails during page
+reading.
+
+Do not use Xiph's `chain-test3.ogg` for an exact PCM comparison. Its first
+link completes the setup header and begins audio on the same Ogg page, so
+independent decoders discard different leading samples; the later 48-kHz mono
+link is byte-identical to the separately tested `48k-mono.ogg`. Xiph's
+`one-entry-codebook-test.ogg` ends 1,153 bytes before its final Ogg page is
+complete, and `singlemap-test.ogg` has no EOS page. The decoder rejects these
+incomplete streams at their malformed tails. `unused-mode-test.ogg` reaches an
+audio packet whose mode index is outside the setup modes and is also rejected.
+The ignored `rejects_malformed_external_xiph_vectors` test checks all five
+through EOF using `ZEMER_VORBIS_ONE_ENTRY_TRUNCATED`,
+`ZEMER_VORBIS_SINGLEMAP_MISSING_EOS`, `ZEMER_VORBIS_UNUSED_MODE`,
+`ZEMER_VORBIS_COMBUSTION_PAGE_SHARING`, and
+`ZEMER_VORBIS_MAKE_PAGE_SHARING`; none are bundled. The last two exercise the
+same setup-page/audio-page mapping violation described above.
+
+The ignored test `encodes_reference_decoder_channel_profiles` writes the
+fixed-profile encoder output for 1–8 channels at 8–96 kHz. The existing
+libsndfile checks cover 1, 2, 3, 6, and 8 channels; FFmpeg 4.2.2 independently
+decodes the added 4- and 5-channel, 44.1-kHz streams and 7-channel, 48-kHz
+stream to exactly 8,193 frames each. To regenerate the files, set
+`ZEMER_VORBIS_ENCODED_PROFILE_PREFIX` and run:
+
+```powershell
+cargo test -p zemer-tests --test vorbis_interop encodes_reference_decoder_channel_profiles -- --ignored --exact
+```
+
+The ignored test `encodes_target_bitrate_profiles_for_external_validation`
+writes two-second target-rate streams and their interleaved Float32 inputs for
+1–8 channels: mono 32 kHz/32 kbit/s, stereo 44.1 kHz/96 kbit/s, 3-channel
+48 kHz/128 kbit/s, 4-channel 48 kHz/192 kbit/s, 5-channel 48 kHz/256 kbit/s,
+5.1 48 kHz/256 and 320 kbit/s, 7-channel 48 kHz/384 kbit/s, 7.1 96
+kHz/512 kbit/s, and stereo 192 kHz/384 kbit/s. Set
+`ZEMER_VORBIS_RATE_PROFILE_PREFIX` to a path prefix and run:
+
+```powershell
+cargo test -p zemer-tests --test vorbis_interop encodes_target_bitrate_profiles_for_external_validation -- --ignored --exact
+```
+
+FFmpeg independently decodes target-rate output for every channel count from
+1 through 8, plus stereo at 192 kHz. FFmpeg 8.1 checks cover the original mono 32 kHz/32 kbit/s,
+stereo 44.1 kHz/96 kbit/s, 5.1 48 kHz/256 kbit/s, and 7.1 96 kHz/512 kbit/s
+profiles; FFmpeg 4.2.2 checks cover the expanded matrix, including 5.1 at 320
+kbit/s. Its `ffprobe` reports exact two-second stream durations; matching
+channels by minimum RMS gives a maximum per-channel RMS error below 0.0043
+across the first nine profiles. The stereo 192-kHz/384-kbit/s profile is also
+decoded with matching channels and exact duration. When exporting
+raw PCM with FFmpeg 4.2.2, pass `-t 2`: its raw mono decode otherwise emits
+1,536 codec-padding samples past the terminal granule despite reporting a
+64,000-frame duration. Its default multichannel PCM output uses WAVE order,
+while the encoder input is in Vorbis order; map Vorbis channel indexes to
+FFmpeg/WAVE indexes as `[0, 2, 1, 4, 5, 3]` for 5.1 and
+`[0, 2, 1, 6, 7, 4, 5, 3]` for 7.1 when comparing samples. On the original
+four generated signals, actual two-second file rates were 61.92, 129.39,
+300.18, and 550.95 kbit/s; mapped RMS errors were 0.00369, 0.00319, 0.00364,
+and 0.00340. Headers account for the elevated average rate on these short
+streams; the encoder caps each audio packet using the target rate. These
+synthetic results establish decoder interoperability, not perceived audio
+quality.
+
+The target-rate encoder now writes a 31-point adaptive Floor 1 spectral
+envelope, following the piecewise-linear Floor 1 model in the
+[Vorbis I specification](https://www.xiph.org/vorbis/doc/Vorbis_I_spec.html).
+A music-source check uses the first 30 seconds of Keith Adler's
+[`Promise.ogg` on Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Promise.ogg),
+listed there as public domain worldwide. The
+source is not bundled; its SHA-1 is
+`a9017a0eda837a3308c7ae9e573cbd4b55328036`. Decode the original once to a
+Float32 WAV and PCM oracle, encode with Zemer, then decode each output with
+FFmpeg 8.1:
+
+```powershell
+ffmpeg -i Promise.ogg -t 30 -c:a pcm_f32le Promise-30s.wav
+ffmpeg -i Promise.ogg -t 30 -f f32le -acodec pcm_f32le source.f32le
+cargo run -p zemer -- convert --format vorbis --bitrate 64 Promise-30s.wav zemer-64.ogg
+cargo run -p zemer -- convert --format vorbis --bitrate 128 Promise-30s.wav zemer-128.ogg
+cargo run -p zemer -- convert --format vorbis --bitrate 192 Promise-30s.wav zemer-192.ogg
+ffmpeg -i zemer-64.ogg -f f32le -acodec pcm_f32le zemer-64.f32le
+ffmpeg -i zemer-128.ogg -f f32le -acodec pcm_f32le zemer-128.f32le
+ffmpeg -i zemer-192.ogg -f f32le -acodec pcm_f32le zemer-192.f32le
+```
+
+For a near-rate-matched libvorbis reference, encode the same Float32 WAV with
+FFmpeg requests of 72, 160, and 256 kbit/s, then decode those Ogg files to
+interleaved Float32 PCM in the same way:
+
+```powershell
+ffmpeg -i Promise-30s.wav -c:a libvorbis -b:a 72k ref-72.ogg
+ffmpeg -i Promise-30s.wav -c:a libvorbis -b:a 160k ref-160.ogg
+ffmpeg -i Promise-30s.wav -c:a libvorbis -b:a 256k ref-256.ogg
+ffmpeg -i ref-72.ogg -f f32le -acodec pcm_f32le ref-72.f32le
+ffmpeg -i ref-160.ogg -f f32le -acodec pcm_f32le ref-160.f32le
+ffmpeg -i ref-256.ogg -f f32le -acodec pcm_f32le ref-256.f32le
+```
+
+Measured rates include Ogg and setup headers; each error is
+`sqrt(mean((decoded - source)^2))` across all samples.
+
+| Encoder request | Zemer measured rate / RMS | libvorbis measured rate / RMS |
+|---:|---:|---:|
+| 64 kbit/s | 65.83 kbit/s / 0.00871945 | 62.50 kbit/s / 0.01949767 (72 kbit/s request) |
+| 128 kbit/s | 130.03 kbit/s / 0.00288764 | 125.87 kbit/s / 0.00594757 (160 kbit/s request) |
+| 192 kbit/s | 194.22 kbit/s / 0.00149066 | 191.25 kbit/s / 0.00331207 (256 kbit/s request) |
+
+FFmpeg decoded each file to exactly 1,323,000 stereo frames. On this one
+ambient track, Zemer had lower sample error at near-matched rates. This is an
+objective PCM comparison, not a listening or perceptual-quality test. Zemer's
+fixed 12-bit profile measured 1031.59 kbit/s with RMS error 0.00015123 on the
+same source, showing the rate profile's quality advantage at a much lower
+rate. Two-second synthetic profiles may average above the requested rate
+because the setup header is large; the target is a per-audio-packet budget.
+
 The optional ignored test `decodes_external_ogg_flac_against_ffmpeg_pcm_oracle`
 checks the external FFmpeg sample `01_-_dungeon.ogg` against a separate
 FFmpeg-generated signed 16-bit PCM oracle. The sample and oracle are provided
 through `ZEMER_OGG_FLAC_SAMPLE` and `ZEMER_OGG_FLAC_PCM`; neither is bundled.
+
+The optional ignored test `decodes_archived_commons_white_noise_ogg_flac_against_ffmpeg`
+checks the archived 21 April 2008 revision of [White noise.ogg on Wikimedia
+Commons](https://commons.wikimedia.org/wiki/File:White_noise.ogg). Its file
+history describes the revision as a GNU Octave-generated, lossless Ogg-FLAC
+encoding; the Commons page marks the work public domain. The [archived
+revision](https://upload.wikimedia.org/wikipedia/commons/archive/a/aa/20080421032449%21White_noise.ogg)
+is mono, 48 kHz, 16-bit, and 480,000 frames. Generate a signed 16-bit
+little-endian oracle with FFmpeg, then set
+`ZEMER_OGG_FLAC_WHITE_NOISE_SAMPLE` and `ZEMER_OGG_FLAC_WHITE_NOISE_PCM` to the
+archived sample and oracle paths. Neither file is bundled. Source SHA-256:
+`265850a669a94f90d60de84dbc1dc9e4afbe6977221b0209f9bc01899dcc7092`; FFmpeg
+oracle SHA-256: `ce0460c933fc79c34841a34151209535e71ca0042c505794f52840e44f247e42`.
+
+The optional ignored test `decodes_commons_libflac_1_2_1_dissonance_against_ffmpeg`
+checks [Dissonance A220-A440 bandlimited sawtooths](https://commons.wikimedia.org/wiki/File:Dissonance_A220-A440_bandlimited_sawtooths_1.9_MHz_downsampled.oga),
+created by Omegatron and licensed CC BY-SA 3.0. The file history identifies
+reference libFLAC 1.2.1 as the encoder and says the two-channel signal was
+downsampled to 48 kHz. It decodes as 24-bit PCM with 1,440,000 frames. Generate
+an s24le oracle with FFmpeg, then set `ZEMER_OGG_FLAC_DISSONANCE_SAMPLE` and
+`ZEMER_OGG_FLAC_DISSONANCE_PCM` to the source and oracle paths; neither is
+bundled. The audio is unmodified. Source SHA-256:
+`80913192f574ffcafbd1e0e380f4b1db7499abe5ec120a4638438dba9e7a309e`; oracle
+SHA-256: `a35d1a3b56833384f212f898dffc238874e79a494260d72edac0f9a083eb2512`.
 
 The optional ignored test `decodes_external_commons_ogg_flac_against_libflac_pcm_oracle`
 checks the 2011 current-mapping upload of Jono Bacon's `Free Software Song 2`

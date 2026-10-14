@@ -2,10 +2,13 @@ use std::io::{Read, Seek, SeekFrom};
 
 use zemer_core::{AudioError, DsdBuffer, DsdDecoder, DsdSpec, Metadata};
 
-use crate::{DsdiffComment, DsdiffMarker, marker::validate_markers};
+use crate::{
+    DsdiffComment, DsdiffMarker,
+    marker::{MAX_TEXT_BYTES, add_marker_text_length, validate_markers},
+};
 
 const MAX_DST_CHANNELS: usize = 64;
-const MAX_TEXT_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_DSD_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_MARKERS: usize = 100_000;
 const MAX_DST_FRAMES: usize = 4_000_000;
 
@@ -17,6 +20,10 @@ pub struct DsdiffDecoder<R> {
     comments: Vec<DsdiffComment>,
     markers: Vec<DsdiffMarker>,
     audio: AudioData,
+}
+
+fn bounded_output_frames(requested: usize, channels: usize) -> usize {
+    requested.min(MAX_DSD_OUTPUT_BYTES / channels)
 }
 
 impl<R: Read + Seek> DsdiffDecoder<R> {
@@ -234,6 +241,7 @@ impl<R: Read + Seek> DsdDecoder for DsdiffDecoder<R> {
             ));
         }
         let channels = usize::from(self.spec.channels());
+        let max_octet_frames = bounded_output_frames(max_octet_frames, channels);
         let bytes = match &mut self.audio {
             AudioData::Raw {
                 data_start,
@@ -338,6 +346,21 @@ impl<R: Read + Seek> DsdDecoder for DsdiffDecoder<R> {
         Ok(Some(
             DsdBuffer::new(self.spec, bytes).map_err(|error| AudioError::InvalidData(error.0))?,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_DSD_OUTPUT_BYTES, bounded_output_frames};
+
+    #[test]
+    fn bounds_dsd_output_by_bytes_even_at_maximum_channel_count() {
+        let channels = usize::from(u16::MAX);
+        let frames = bounded_output_frames(8192, channels);
+
+        assert_eq!(frames, 256);
+        assert!(frames * channels <= MAX_DSD_OUTPUT_BYTES);
+        assert_eq!(bounded_output_frames(8192, 2), 8192);
     }
 }
 
@@ -684,11 +707,11 @@ fn read_di_in<R: Read + Seek>(
 ) -> Result<(), AudioError> {
     let mut saw_title = false;
     let mut saw_artist = false;
-    let mut total_marker_text = 0_u64;
+    let mut total_marker_text = 0_usize;
     while reader.stream_position()? < chunk.end {
         let text = read_chunk_header(reader, chunk.end)?;
         if &text.id == b"MARK" {
-            if text.size < 22 || text.size - 22 > MAX_TEXT_BYTES {
+            if text.size < 22 || text.size - 22 > MAX_TEXT_BYTES as u64 {
                 return Err(AudioError::InvalidFormat("invalid DSDIFF marker size"));
             }
             let mut header = [0; 22];
@@ -699,7 +722,7 @@ fn read_di_in<R: Read + Seek>(
                     "invalid DSDIFF marker text length",
                 ));
             }
-            add_marker_text_length(&mut total_marker_text, length as u64)?;
+            add_marker_text_length(&mut total_marker_text, length)?;
             if markers.len() == MAX_MARKERS {
                 return Err(AudioError::InvalidData("too many DSDIFF markers"));
             }
@@ -730,7 +753,7 @@ fn read_di_in<R: Read + Seek>(
             if text.size < 4 {
                 return Err(AudioError::InvalidFormat("truncated DSDIFF text length"));
             }
-            if text.size - 4 > MAX_TEXT_BYTES {
+            if text.size - 4 > MAX_TEXT_BYTES as u64 {
                 return Err(AudioError::InvalidData(
                     "DSDIFF text metadata exceeds its limit",
                 ));
@@ -780,16 +803,6 @@ fn read_di_in<R: Read + Seek>(
     Ok(())
 }
 
-fn add_marker_text_length(total: &mut u64, length: u64) -> Result<(), AudioError> {
-    *total = total
-        .checked_add(length)
-        .filter(|&value| value <= MAX_TEXT_BYTES)
-        .ok_or(AudioError::InvalidData(
-            "DSDIFF marker text exceeds its aggregate limit",
-        ))?;
-    Ok(())
-}
-
 fn read_comments<R: Read + Seek>(
     reader: &mut R,
     chunk: Chunk,
@@ -815,7 +828,7 @@ fn read_comments<R: Read + Seek>(
         let length = u64::from(u32::from_be_bytes(header[10..14].try_into().unwrap()));
         total_text = total_text
             .checked_add(length)
-            .filter(|&total| total <= MAX_TEXT_BYTES)
+            .filter(|&total| total <= MAX_TEXT_BYTES as u64)
             .ok_or(AudioError::InvalidData(
                 "DSDIFF comment text exceeds its limit",
             ))?;
@@ -888,18 +901,5 @@ fn speaker_mask(channels: &[[u8; 4]]) -> Option<u32> {
             Some(0x3f)
         }
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{MAX_TEXT_BYTES, add_marker_text_length};
-
-    #[test]
-    fn marker_text_has_an_aggregate_allocation_limit() {
-        let mut total = 0;
-        add_marker_text_length(&mut total, MAX_TEXT_BYTES - 1).unwrap();
-        assert!(add_marker_text_length(&mut total, 2).is_err());
-        assert_eq!(total, MAX_TEXT_BYTES - 1);
     }
 }

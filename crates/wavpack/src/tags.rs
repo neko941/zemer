@@ -28,7 +28,7 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write>(
         .map_or(id3v1_start.unwrap_or(file_end), |(start, _, _)| *start);
 
     reader.seek(SeekFrom::Start(0))?;
-    copy(&mut reader.by_ref().take(copy_end), &mut writer)?;
+    copy_exact(&mut reader, &mut writer, copy_end)?;
 
     let mut tag = tag_region.map_or_else(ApeTag::new, |(_, _, tag)| tag);
     tag.replace_text_metadata(metadata)
@@ -42,7 +42,21 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write>(
 
     if let Some(start) = id3v1_start {
         reader.seek(SeekFrom::Start(start))?;
-        copy(&mut reader, &mut writer)?;
+        copy_exact(&mut reader, &mut writer, file_end - start)?;
+    }
+    Ok(())
+}
+
+fn copy_exact<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    length: u64,
+) -> Result<(), AudioError> {
+    let copied = copy(&mut reader.take(length), writer)?;
+    if copied != length {
+        return Err(AudioError::InvalidFormat(
+            "WavPack file ended during metadata rewrite",
+        ));
     }
     Ok(())
 }
@@ -137,7 +151,7 @@ fn has_id3v1<R: Read + Seek>(reader: &mut R, file_end: u64) -> Result<Option<u64
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, Read, Seek, SeekFrom};
 
     use super::*;
     use zemer_metadata::apev2::ApeTag;
@@ -151,6 +165,37 @@ mod tests {
             bytes.extend_from_slice(&trailer);
         }
         bytes
+    }
+
+    struct EarlyEofAfterRestart {
+        reader: Cursor<Vec<u8>>,
+        read_limit: u64,
+        restarted: bool,
+    }
+
+    impl Read for EarlyEofAfterRestart {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            if self.restarted && self.reader.position() >= self.read_limit {
+                return Ok(0);
+            }
+            let limit = if self.restarted {
+                usize::try_from(self.read_limit - self.reader.position())
+                    .unwrap_or(usize::MAX)
+                    .min(output.len())
+            } else {
+                output.len()
+            };
+            self.reader.read(&mut output[..limit])
+        }
+    }
+
+    impl Seek for EarlyEofAfterRestart {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            if position == SeekFrom::Start(0) {
+                self.restarted = true;
+            }
+            self.reader.seek(position)
+        }
     }
 
     #[test]
@@ -222,5 +267,23 @@ mod tests {
                 .metadata(),
             metadata
         );
+    }
+
+    #[test]
+    fn rewrite_fails_if_the_source_ends_during_a_known_length_copy() {
+        let mut original_metadata = Metadata::default();
+        original_metadata.insert("title", "Old");
+        let mut tag = ApeTag::new();
+        tag.replace_text_metadata(&original_metadata).unwrap();
+        let source = file_with_tag(&tag, false);
+        let reader = EarlyEofAfterRestart {
+            reader: Cursor::new(source),
+            read_limit: 8,
+            restarted: false,
+        };
+        let mut output = Vec::new();
+
+        assert!(rewrite_metadata(reader, &mut output, &Metadata::default()).is_err());
+        assert_eq!(output.len(), 8);
     }
 }

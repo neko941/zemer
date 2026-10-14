@@ -13,13 +13,15 @@ use dsdiff::{DsdiffDecoder, DsdiffEncoder};
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
 use g711::G711Encoding;
+use ogg::OggPacketReader;
+use vorbis::{VorbisDecoder, VorbisEncoder};
 use wav::{WavContainer, WavDecoder, WavWriter};
 use wavpack::{
     WavPackDecoder, WavPackDsdDecoder, WavPackDsdEncoder, WavPackEncoder, WavPackHybridEncoder,
 };
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioError, AudioSpec, DsdDecoder, DsdEncoder, DsdSpec, Metadata,
-    SampleFormat, convert_sample_format, transcode_dsd,
+    SampleFormat, Samples, convert_sample_format, transcode_dsd,
 };
 
 #[path = "cue.rs"]
@@ -64,6 +66,7 @@ enum OutputFormat {
     G711(G711Encoding),
     Flac,
     OggFlac,
+    Vorbis,
     WavPack,
     Aiff,
     Aifc,
@@ -75,14 +78,20 @@ enum OutputFormat {
 }
 
 impl OutputFormat {
-    fn input_sample_format(self) -> Option<SampleFormat> {
+    fn input_sample_format(self, source: SampleFormat) -> Option<SampleFormat> {
         match self {
             Self::Samples(format) => Some(format),
             Self::G711(_) => Some(SampleFormat::PcmI16),
             Self::AifcG711(_) => Some(SampleFormat::PcmI16),
             Self::AifcIma4 => Some(SampleFormat::PcmI16),
+            Self::Flac | Self::OggFlac | Self::Aiff
+                if matches!(source, SampleFormat::Float32 | SampleFormat::Float64) =>
+            {
+                Some(SampleFormat::PcmI24)
+            }
             Self::Flac => None,
             Self::OggFlac => None,
+            Self::Vorbis => Some(SampleFormat::Float32),
             Self::WavPack => None,
             Self::Aiff => None,
             Self::Aifc => None,
@@ -97,6 +106,7 @@ impl OutputFormat {
             Self::G711(G711Encoding::MuLaw) => "g711_mulaw",
             Self::Flac => "flac",
             Self::OggFlac => "ogg_flac",
+            Self::Vorbis => "vorbis",
             Self::WavPack => "wavpack",
             Self::Aiff => "aiff",
             Self::Aifc => "aifc",
@@ -361,6 +371,7 @@ fn edit_audio_metadata(
     } = open_decoder(&input)?;
     if format != "flac"
         && format != "ogg-flac"
+        && format != "ogg-vorbis"
         && format != "wav"
         && format != "wavpack"
         && format != "aiff"
@@ -368,7 +379,7 @@ fn edit_audio_metadata(
     {
         return Err(CliError {
             kind: "unsupported",
-            message: "metadata editing supports WAVE, AIFF/AIFC, DSF, DSDIFF, native FLAC, Ogg-FLAC, and WavPack files"
+            message: "metadata editing supports WAVE, AIFF/AIFC, DSF, DSDIFF, native FLAC, Ogg-FLAC, Ogg Vorbis, and WavPack files"
                 .to_owned(),
         });
     }
@@ -390,6 +401,7 @@ fn edit_audio_metadata(
         match format {
             "flac" => flac::rewrite_metadata(input_file, &mut output_file, &metadata),
             "ogg-flac" => flac::rewrite_ogg_metadata(input_file, &mut output_file, &metadata),
+            "ogg-vorbis" => vorbis::rewrite_metadata(input_file, &mut output_file, &metadata),
             "wav" => wav::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
             "aiff" | "aifc" => aiff::rewrite_metadata(input_file, &mut output_file, &metadata),
             "wavpack" => wavpack::rewrite_metadata(input_file, &mut output_file, &metadata),
@@ -550,13 +562,17 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         return convert_dsd(input, output, format, decoder, id3_tag, comments, markers)
             .map(|(report, path)| CommandReport::ConvertDsd(report, path));
     }
-    if bitrate.is_some() && !matches!(format, OutputFormat::WavPack) {
+    if bitrate.is_some()
+        && (!matches!(format, OutputFormat::WavPack | OutputFormat::Vorbis)
+            || bitrate.is_some_and(|value| !(24..=9600).contains(&value)))
+    {
         return Err(usage_error());
     }
     if matches!(
         format,
         OutputFormat::Flac
             | OutputFormat::OggFlac
+            | OutputFormat::Vorbis
             | OutputFormat::WavPack
             | OutputFormat::Aiff
             | OutputFormat::Aifc
@@ -599,6 +615,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "aifc_ima4" => Some(OutputFormat::AifcIma4),
         "flac" => Some(OutputFormat::Flac),
         "ogg_flac" => Some(OutputFormat::OggFlac),
+        "vorbis" => Some(OutputFormat::Vorbis),
         "wavpack" => Some(OutputFormat::WavPack),
         "aiff" => Some(OutputFormat::Aiff),
         "aifc" => Some(OutputFormat::Aifc),
@@ -622,7 +639,14 @@ fn convert_audio(
         ..
     } = open_decoder(&input)?;
     let input_spec = decoder.spec();
-    let spec = if let Some(sample_format) = format.input_sample_format() {
+    let spec = if matches!(format, OutputFormat::Vorbis) {
+        AudioSpec::new(
+            input_spec.sample_rate(),
+            input_spec.channels(),
+            SampleFormat::Float32,
+        )
+        .map_err(|error| cli_audio_error(error.into(), &input))?
+    } else if let Some(sample_format) = format.input_sample_format(input_spec.sample_format()) {
         AudioSpec::new_with_speaker_mask(
             input_spec.sample_rate(),
             input_spec.channels(),
@@ -641,7 +665,9 @@ fn convert_audio(
             kind: "io",
             message: format!("{}: {error}", output.display()),
         })?;
-    let correction_output = bitrate_kbps.map(|_| output.with_extension("wvc"));
+    let correction_output = matches!(format, OutputFormat::WavPack)
+        .then(|| bitrate_kbps.map(|_| output.with_extension("wvc")))
+        .flatten();
     if correction_output.as_deref() == Some(output.as_path()) {
         let _ = fs::remove_file(&output);
         return Err(usage_error());
@@ -692,6 +718,21 @@ fn convert_audio(
             OutputFormat::OggFlac => {
                 let mut encoder = OggFlacEncoder::new(output_file, spec)
                     .map_err(|error| cli_audio_error(error, &output))?;
+                encoder
+                    .set_metadata(decoder.metadata())
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                Box::new(encoder)
+            }
+            OutputFormat::Vorbis => {
+                let mut encoder = if let Some(bitrate_kbps) = bitrate_kbps {
+                    let bitrate = bitrate_kbps.checked_mul(1000).ok_or_else(|| {
+                        cli_audio_error(AudioError::InvalidData("Vorbis bitrate overflow"), &output)
+                    })?;
+                    VorbisEncoder::new_with_target_bitrate(output_file, spec, bitrate)
+                } else {
+                    VorbisEncoder::new(output_file, spec)
+                }
+                .map_err(|error| cli_audio_error(error, &output))?;
                 encoder
                     .set_metadata(decoder.metadata())
                     .map_err(|error| cli_audio_error(error, &output))?;
@@ -783,12 +824,18 @@ fn convert_audio(
             .map_err(|error| cli_audio_error(error, &input))?
         {
             let block_frames = block.frames() as u64;
-            let converted = if let Some(sample_format) = format.input_sample_format() {
+            let mut converted = if let Some(sample_format) =
+                format.input_sample_format(input_spec.sample_format())
+            {
                 convert_sample_format(&block, sample_format)
                     .map_err(|error| cli_audio_error(error.into(), &input))?
             } else {
                 block
             };
+            if matches!(format, OutputFormat::Vorbis) {
+                converted = vorbis_channel_order(&converted, spec)
+                    .map_err(|error| cli_audio_error(error, &input))?;
+            }
             encoder
                 .write_block(&converted)
                 .map_err(|error| cli_audio_error(error, &output))?;
@@ -807,6 +854,7 @@ fn convert_audio(
             format: match format {
                 OutputFormat::Flac => "flac",
                 OutputFormat::OggFlac => "ogg-flac",
+                OutputFormat::Vorbis => "ogg-vorbis",
                 OutputFormat::WavPack => "wavpack",
                 OutputFormat::Aiff => "aiff",
                 OutputFormat::Aifc => "aifc",
@@ -829,6 +877,7 @@ fn convert_audio(
                 format,
                 OutputFormat::Flac
                     | OutputFormat::OggFlac
+                    | OutputFormat::Vorbis
                     | OutputFormat::WavPack
                     | OutputFormat::Aiff
                     | OutputFormat::Aifc
@@ -848,6 +897,55 @@ fn convert_audio(
         }
     }
     result
+}
+
+fn vorbis_channel_order(
+    audio: &zemer_core::PcmBuffer,
+    output_spec: AudioSpec,
+) -> Result<zemer_core::PcmBuffer, AudioError> {
+    let channels = usize::from(audio.spec().channels());
+    if output_spec.channels() != audio.spec().channels()
+        || output_spec.sample_rate() != audio.spec().sample_rate()
+        || output_spec.sample_format() != SampleFormat::Float32
+    {
+        return Err(AudioError::InvalidData(
+            "Vorbis channel-order output specification does not match input",
+        ));
+    }
+    let Samples::F32(samples) = audio.samples() else {
+        return Err(AudioError::InvalidData(
+            "Vorbis channel ordering expects Float32 PCM",
+        ));
+    };
+
+    // WAVE extensible channels are stored in ascending speaker-mask bit order.
+    // Vorbis I's channel order differs for several common multichannel layouts.
+    let channel_order: &[usize] = match (audio.spec().speaker_mask(), channels) {
+        (None, _) | (Some(0x0000_0004), 1) | (Some(0x0000_0003), 2) => {
+            return zemer_core::PcmBuffer::new(output_spec, Samples::F32(samples.clone()))
+                .map_err(Into::into);
+        }
+        (Some(0x0000_0007), 3) => &[0, 2, 1],
+        (Some(0x0000_0033), 4) => &[0, 1, 2, 3],
+        (Some(0x0000_0037), 5) => &[0, 2, 1, 3, 4],
+        (Some(0x0000_003f), 6) => &[0, 2, 1, 4, 5, 3],
+        (Some(0x0000_070f), 7) => &[0, 2, 1, 5, 6, 4, 3],
+        (Some(0x0000_063f), 8) => &[0, 2, 1, 6, 7, 4, 5, 3],
+        (Some(_), _) => {
+            return Err(AudioError::Unsupported(
+                "WAVE speaker mask has no standard Vorbis channel mapping",
+            ));
+        }
+    };
+
+    let mut reordered = Vec::new();
+    reordered
+        .try_reserve_exact(samples.len())
+        .map_err(|_| AudioError::InvalidData("Vorbis channel allocation failed"))?;
+    for frame in samples.chunks_exact(channels) {
+        reordered.extend(channel_order.iter().map(|&source| frame[source]));
+    }
+    zemer_core::PcmBuffer::new(output_spec, Samples::F32(reordered)).map_err(Into::into)
 }
 
 fn wave_metadata(metadata: &Metadata) -> Metadata {
@@ -1083,13 +1181,36 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_markers: None,
         })
     } else if is_ogg {
-        let decoder = OggFlacDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
-        Ok(AudioInput {
-            decoder: Box::new(decoder),
-            format: "ogg-flac",
-            container: None,
-            aiff_markers: None,
-        })
+        let is_vorbis = {
+            let mut packets = OggPacketReader::new(&mut file);
+            let packet = packets
+                .next_packet()
+                .map_err(|error| cli_audio_error(error.into(), path))?
+                .ok_or_else(|| {
+                    cli_audio_error(AudioError::InvalidFormat("empty Ogg stream"), path)
+                })?;
+            packet.bytes.starts_with(b"\x01vorbis")
+        };
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| cli_audio_error(error.into(), path))?;
+        if is_vorbis {
+            let decoder = VorbisDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
+            Ok(AudioInput {
+                decoder: Box::new(decoder),
+                format: "ogg-vorbis",
+                container: None,
+                aiff_markers: None,
+            })
+        } else {
+            let decoder =
+                OggFlacDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
+            Ok(AudioInput {
+                decoder: Box::new(decoder),
+                format: "ogg-flac",
+                container: None,
+                aiff_markers: None,
+            })
+        }
     } else if is_wavpack {
         let decoder =
             WavPackDecoder::new_seekable(file).map_err(|error| cli_audio_error(error, path))?;
@@ -1191,7 +1312,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|aifc_alaw|aifc_mulaw|aifc_ima4|flac|ogg_flac|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600>] [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|aifc_alaw|aifc_mulaw|aifc_ima4|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600 kbps for Vorbis/WavPack>] [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 
@@ -1388,7 +1509,9 @@ fn json_string(value: &str) -> String {
 mod tests {
     use std::io::{self, Cursor, Read};
 
-    use super::{has_signature, json_string};
+    use super::{
+        AudioSpec, SampleFormat, Samples, has_signature, json_string, vorbis_channel_order,
+    };
 
     struct OneByteAtATime<R>(R);
 
@@ -1417,5 +1540,49 @@ mod tests {
     fn treats_truncated_signature_as_non_match() {
         let mut reader = OneByteAtATime(Cursor::new(b"fLa"));
         assert!(!has_signature(&mut reader, b"fLaC").unwrap());
+    }
+
+    #[test]
+    fn maps_standard_wave_speaker_masks_to_vorbis_channel_order() {
+        let cases: &[(u16, u32, &[f32])] = &[
+            (1, 0x0004, &[0.0]),
+            (2, 0x0003, &[0.0, 1.0]),
+            (3, 0x0007, &[0.0, 2.0, 1.0]),
+            (4, 0x0033, &[0.0, 1.0, 2.0, 3.0]),
+            (5, 0x0037, &[0.0, 2.0, 1.0, 3.0, 4.0]),
+            (6, 0x003f, &[0.0, 2.0, 1.0, 4.0, 5.0, 3.0]),
+            (7, 0x070f, &[0.0, 2.0, 1.0, 5.0, 6.0, 4.0, 3.0]),
+            (8, 0x063f, &[0.0, 2.0, 1.0, 6.0, 7.0, 4.0, 5.0, 3.0]),
+        ];
+        for &(channels, mask, expected) in cases {
+            let input_spec = AudioSpec::new_with_speaker_mask(
+                48_000,
+                channels,
+                SampleFormat::Float32,
+                Some(mask),
+            )
+            .unwrap();
+            let output_spec = AudioSpec::new(48_000, channels, SampleFormat::Float32).unwrap();
+            let source = (0..channels).map(f32::from).collect();
+            let audio = zemer_core::PcmBuffer::new(input_spec, Samples::F32(source)).unwrap();
+
+            let reordered = vorbis_channel_order(&audio, output_spec).unwrap();
+            assert_eq!(reordered.spec(), output_spec);
+            assert_eq!(reordered.samples(), &Samples::F32(expected.to_vec()));
+        }
+    }
+
+    #[test]
+    fn rejects_unrecognized_wave_speaker_masks_for_vorbis() {
+        let input_spec =
+            AudioSpec::new_with_speaker_mask(48_000, 3, SampleFormat::Float32, Some(0x000b))
+                .unwrap();
+        let output_spec = AudioSpec::new(48_000, 3, SampleFormat::Float32).unwrap();
+        let audio = zemer_core::PcmBuffer::new(input_spec, Samples::F32(vec![0.0; 3])).unwrap();
+
+        assert!(matches!(
+            vorbis_channel_order(&audio, output_spec),
+            Err(zemer_core::AudioError::Unsupported(_))
+        ));
     }
 }
