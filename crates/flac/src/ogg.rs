@@ -906,7 +906,7 @@ mod tests {
             .unwrap();
         input[last_page + 5] &= !PAGE_FLAG_EOS;
         update_page_crc(&mut input[last_page..]);
-        input.extend(page(&[], PAGE_FLAG_EOS, 3, 1));
+        input.extend(page(&[], PAGE_FLAG_EOS, 3, 0));
 
         let mut decoder = OggFlacDecoder::new(Cursor::new(input)).unwrap();
         assert_eq!(

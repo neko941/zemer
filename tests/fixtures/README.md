@@ -3,7 +3,8 @@
 `ogg-flac-granule-trim.oga` contains a generated 512-frame, 44.1 kHz, mono
 16-bit sine wave. The native FLAC stream was encoded with the host's
 `libsndfile` 1.x FLAC encoder, then wrapped according to Xiph's Ogg-FLAC 1.0
-mapping; the EOS granule was set to 509 and the Ogg page CRC recomputed.
+mapping; the EOS granule is last-sample index 508 and the Ogg page CRC is
+recomputed.
 
 `ogg-flac-granule-oracle.pcm` is the full 512-frame little-endian signed
 16-bit PCM output from libsndfile decoding that native FLAC stream. Tests
