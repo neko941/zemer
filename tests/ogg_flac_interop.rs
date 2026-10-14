@@ -263,19 +263,17 @@ fn decodes_external_ogg_flac_against_ffmpeg_pcm_oracle() {
 }
 
 #[test]
-#[ignore = "requires the public-domain Commons Ogg-FLAC sample and FFmpeg PCM oracle paths in ZEMER_OGG_FLAC_WHITE_NOISE_SAMPLE and ZEMER_OGG_FLAC_WHITE_NOISE_PCM"]
 fn decodes_archived_commons_white_noise_ogg_flac_against_ffmpeg() {
     const FRAMES: u64 = 480_000;
-    let input = std::env::var_os("ZEMER_OGG_FLAC_WHITE_NOISE_SAMPLE")
-        .expect("set ZEMER_OGG_FLAC_WHITE_NOISE_SAMPLE to the archived Commons file");
-    let oracle = std::env::var_os("ZEMER_OGG_FLAC_WHITE_NOISE_PCM")
-        .expect("set ZEMER_OGG_FLAC_WHITE_NOISE_PCM to FFmpeg's s16le PCM output");
-    let mut decoder = OggFlacDecoder::new(File::open(input).unwrap()).unwrap();
+    let mut decoder = OggFlacDecoder::new(Cursor::new(include_bytes!(
+        "fixtures/ogg-flac-white-noise.oga"
+    )))
+    .unwrap();
     assert_eq!(
         decoder.spec(),
         AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap()
     );
-    let mut oracle = BufReader::new(File::open(oracle).unwrap());
+    let mut oracle = Cursor::new(include_bytes!("fixtures/ogg-flac-white-noise.s16le"));
     let mut frames = 0;
     while let Some(block) = decoder.read_frames(2_048).unwrap() {
         let Samples::I16(samples) = block.samples() else {

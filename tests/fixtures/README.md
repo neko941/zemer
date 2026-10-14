@@ -280,18 +280,17 @@ of the Ogg and raw PCM. Source SHA-256:
 `d63c45932a8021f609b879163d43e6de017ad2ade491ab498c7da4ea5d4527ff`; raw PCM
 SHA-256: `1730b770dbde17d07593babbe47b1a8fc0c5d64ac79408495bbdbc62940c3285`.
 
-The optional ignored test `decodes_archived_commons_white_noise_ogg_flac_against_ffmpeg`
-checks the archived 21 April 2008 revision of [White noise.ogg on Wikimedia
+`ogg-flac-white-noise.oga` is the archived 21 April 2008 revision of [White
+noise.ogg on Wikimedia
 Commons](https://commons.wikimedia.org/wiki/File:White_noise.ogg). Its file
 history describes the revision as a GNU Octave-generated, lossless Ogg-FLAC
-encoding; the Commons page marks the work public domain. The [archived
+encoding; the uploader released the work into the public domain. The [archived
 revision](https://upload.wikimedia.org/wikipedia/commons/archive/a/aa/20080421032449%21White_noise.ogg)
-is mono, 48 kHz, 16-bit, and 480,000 frames. Generate a signed 16-bit
-little-endian oracle with FFmpeg, then set
-`ZEMER_OGG_FLAC_WHITE_NOISE_SAMPLE` and `ZEMER_OGG_FLAC_WHITE_NOISE_PCM` to the
-archived sample and oracle paths. Neither file is bundled. Source SHA-256:
-`265850a669a94f90d60de84dbc1dc9e4afbe6977221b0209f9bc01899dcc7092`; FFmpeg
-oracle SHA-256: `ce0460c933fc79c34841a34151209535e71ca0042c505794f52840e44f247e42`.
+is mono, 48 kHz, 16-bit, and 480,000 frames. The test compares every decoded
+sample against an FFmpeg 8.1 signed 16-bit little-endian oracle. The Ogg fixture
+is 979,572 bytes; the PCM oracle is 960,000 bytes. Source SHA-256:
+`265850a669a94f90d60de84dbc1dc9e4afbe6977221b0209f9bc01899dcc7092`; oracle
+SHA-256: `ce0460c933fc79c34841a34151209535e71ca0042c505794f52840e44f247e42`.
 
 The optional ignored test `decodes_commons_libflac_1_2_1_dissonance_against_ffmpeg`
 checks [Dissonance A220-A440 bandlimited sawtooths](https://commons.wikimedia.org/wiki/File:Dissonance_A220-A440_bandlimited_sawtooths_1.9_MHz_downsampled.oga),
