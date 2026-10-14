@@ -109,6 +109,51 @@ fn decodes_ffmpeg_ogg_flac_pages_bit_exactly_in_small_reads() {
 }
 
 #[test]
+fn seeks_across_sparse_multichannel_flac_subframes() {
+    const FRAMES: u64 = 131_072;
+    const CHANNELS: u16 = 8;
+    const RUN: u64 = 16_384;
+    const PCM_FNV1A64: u64 = 0x7613_b95f_079d_d482;
+
+    let input = include_bytes!("fixtures/ogg-flac-sparse-7_1.oga");
+    let (frames, digest) = decode_s16le_pcm_digest(input, 48_000, CHANNELS, None);
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+
+    let mut decoder = OggFlacDecoder::new_seekable(Cursor::new(input)).unwrap();
+    assert_eq!(
+        decoder.spec(),
+        AudioSpec::new(48_000, CHANNELS, SampleFormat::PcmI16).unwrap()
+    );
+    let mut targets = vec![0, FRAMES - 23];
+    for channel in 1..u64::from(CHANNELS) {
+        targets.extend([channel * RUN - 11, channel * RUN]);
+    }
+    for target in targets {
+        decoder.seek_to_sample(target).unwrap();
+        let block = decoder.read_frames(23).unwrap().unwrap();
+        assert_eq!(block.frames(), 23.min((FRAMES - target) as usize));
+        let Samples::I16(samples) = block.samples() else {
+            panic!("sparse 7.1 Ogg-FLAC fixture must decode to signed 16-bit PCM");
+        };
+        for (offset, actual) in samples.iter().enumerate() {
+            let frame = target + (offset / usize::from(CHANNELS)) as u64;
+            let channel = (offset % usize::from(CHANNELS)) as u64;
+            let expected = if frame / RUN == channel {
+                ((frame * 7_919 + channel * 104_729) % 60_001) as i32 - 30_000
+            } else {
+                0
+            };
+            assert_eq!(
+                i32::from(*actual),
+                expected,
+                "frame {frame}, channel {channel}"
+            );
+        }
+    }
+}
+
+#[test]
 fn decodes_ffmpeg_stereo_ogg_flac_exactly() {
     const FRAMES: u64 = 8_197;
     let mut decoder = OggFlacDecoder::new(Cursor::new(include_bytes!(

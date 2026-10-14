@@ -383,6 +383,15 @@ test checks its full-stream FNV-1a 64-bit digest `f534fae5f393257a` before and
 after metadata rewriting. Ogg-FLAC fixture SHA-256:
 `5887c1f52365f56dc752900c4e7fe5c32132c27ddcfd3783f63354b0ec60f49c`.
 
+`ogg-flac-sparse-7_1.oga` is a synthetic 131,072-frame, 48 kHz, 7.1-channel
+16-bit stream encoded by FFmpeg 8.1. Exactly one channel carries deterministic
+nonzero samples during each 16,384-frame interval while all other channels are
+silent. The regression checks all samples against their generating formula,
+then seeks immediately before and at each channel transition and near EOF. It
+covers the silent-channel run-length seeking case reported in [Xiph FLAC issue
+#262](https://github.com/xiph/flac/issues/262). Ogg-FLAC fixture SHA-256:
+`a97b48124453436b5a0bce7ee44a20cdcf619b7d5c72089d134c68811143b001`.
+
 Two additional Ogg-FLAC fixtures were encoded by the system libFLAC 1.4.3
 reference encoder. Their PCM is deterministic synthetic data, and integration
 tests verify every decoded sample against the source formula rather than a

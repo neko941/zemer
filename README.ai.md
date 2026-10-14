@@ -32,7 +32,9 @@ target sample; this path is linear. The optional official CC0 FLAC testbench
 also round-trips accepted cases through the Ogg-FLAC encoder and decoder.
 Independent FFmpeg-generated Ogg-FLAC PCM oracles cover eight synthetic
 profiles across channel counts 1–8, up to 7.1 24-bit at 192 kHz, including large
-packets continued across Ogg pages. Two synthetic Ogg-FLAC files from the
+packets continued across Ogg pages. A separate sparse 7.1 profile verifies full
+PCM and seeking immediately before and after silent-channel run transitions.
+Two synthetic Ogg-FLAC files from the
 libFLAC 1.4.3 reference encoder add 8-bit mono and 32-bit 7.1 coverage. The
 official CC0 native-FLAC corpus also
 round-trips through Zemer's Ogg-FLAC encoder and decoder. Twelve current-mapping
