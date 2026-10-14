@@ -33,6 +33,8 @@ path = "crates/zemer/src/main.rs"
 
 [dependencies]
 zemer-core.workspace = true
+ogg.workspace = true
+vorbis.workspace = true
 dsf.workspace = true
 wav.workspace = true
 cue.workspace = true
