@@ -164,7 +164,7 @@ fn encode_arithmetic(symbols: &[(u8, bool)]) -> Result<BitWriter, AudioError> {
             ));
         }
 
-        let mut shift = 0;
+        let mut shift = 0_u8;
         while range < 2048 {
             range <<= 1;
             shift += 1;
@@ -206,7 +206,7 @@ fn encode_arithmetic(symbols: &[(u8, bool)]) -> Result<BitWriter, AudioError> {
 
 struct ArithmeticStep {
     split: u16,
-    shift: u32,
+    shift: u8,
     symbol: bool,
 }
 
@@ -224,8 +224,8 @@ impl BitWriter {
         }
     }
 
-    fn push(&mut self, (value, count): (u16, u32)) {
-        self.write(u32::from(value), count as usize);
+    fn push(&mut self, (value, count): (u16, u8)) {
+        self.write(u32::from(value), usize::from(count));
     }
 
     fn push_bit(&mut self, bit: bool) {
@@ -300,12 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn encodes_and_decodes_the_64_channel_dst_profile() {
+    fn encodes_and_decodes_the_64_channel_dst_profiles() {
         let channels = 64;
-        let frame_bytes = 4_704;
-        let dsd = vec![0xff; channels * frame_bytes];
-        let encoded = encode_frame(&dsd, channels, frame_bytes).unwrap();
-        assert!(encoded.len() < dsd.len());
-        assert_eq!(decode_frame(&encoded, channels, frame_bytes).unwrap(), dsd);
+        for frame_bytes in [4_704, 9_408, 18_816] {
+            let dsd = vec![0xff; channels * frame_bytes];
+            let encoded = encode_frame(&dsd, channels, frame_bytes).unwrap();
+            assert!(encoded.len() < dsd.len());
+            assert_eq!(decode_frame(&encoded, channels, frame_bytes).unwrap(), dsd);
+        }
     }
 }

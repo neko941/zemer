@@ -172,14 +172,17 @@ impl<W: Write + Seek> DsfEncoder<W> {
         }
         self.flush_block()?;
         let data_end = self.writer.stream_position()?;
-        let tag = if let Some(id3_tag) = &self.id3_tag {
-            id3_tag.clone()
-        } else if self.metadata.iter().next().is_some() {
-            encode_metadata(&self.metadata)?
+        let encoded_tag = if self.id3_tag.is_none() && self.metadata.iter().next().is_some() {
+            Some(encode_metadata(&self.metadata)?)
         } else {
-            Vec::new()
+            None
         };
-        self.writer.write_all(&tag)?;
+        let tag = self
+            .id3_tag
+            .as_deref()
+            .or(encoded_tag.as_deref())
+            .unwrap_or_default();
+        self.writer.write_all(tag)?;
         let file_size = self.writer.stream_position()?;
         let metadata_offset = if tag.is_empty() { 0 } else { data_end };
         let sample_count = self.sample_count.unwrap_or(self.frames * 8);

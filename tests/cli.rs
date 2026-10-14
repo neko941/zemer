@@ -11,6 +11,8 @@ use dsdiff::DsdiffDecoder;
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, OggFlacDecoder, OggFlacEncoder};
 use g711::{decode_alaw, decode_mulaw, encode_alaw, encode_mulaw};
+use ogg::OggPacketReader;
+use vorbis::{VorbisCommentHeader, VorbisDecoder};
 use wav::{write_wav, write_wav_with_metadata};
 use wavpack::{WavPackDecoder, WavPackDsdDecoder};
 use zemer_core::{
@@ -22,6 +24,38 @@ static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
 fn cli_path() -> std::ffi::OsString {
     env!("CARGO_BIN_EXE_zemer_test_cli").into()
+}
+
+fn vorbis_link_comment_packets(bytes: &[u8]) -> Vec<Vec<u8>> {
+    let mut reader = OggPacketReader::new(Cursor::new(bytes));
+    let mut comments = Vec::new();
+    loop {
+        assert!(reader.next_packet().unwrap().is_some());
+        comments.push(reader.next_packet().unwrap().unwrap().bytes);
+        assert!(reader.next_packet().unwrap().is_some());
+        while reader.next_packet().unwrap().is_some() {}
+        let Some(next) = reader.next_stream().unwrap() else {
+            break;
+        };
+        reader = next;
+    }
+    comments
+}
+
+fn assert_integer_pcm_output<D: AudioDecoder>(mut decoder: D, expected_frames: usize) {
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI24);
+    assert_eq!(decoder.metadata().values("TITLE"), ["Vorbis CLI title"]);
+    let mut frames = 0;
+    let mut has_audio = false;
+    while let Some(block) = decoder.read_frames(8192).unwrap() {
+        let Samples::I24(samples) = block.samples() else {
+            panic!("float input was not converted to PCM24");
+        };
+        frames += block.frames();
+        has_audio |= samples.iter().any(|&sample| sample != 0);
+    }
+    assert_eq!(frames, expected_frames);
+    assert!(has_audio);
 }
 
 fn temporary_path() -> PathBuf {
@@ -1296,6 +1330,477 @@ fn metadata_edit_rewrites_ogg_flac_comments_without_changing_audio() {
 }
 
 #[test]
+fn vorbis_cli_inspects_converts_and_edits_comments() {
+    let input_path = temporary_path();
+    let vorbis_path = temporary_path().with_extension("oga");
+    let decoded_wav_path = temporary_path();
+    let target_bitrate_path = temporary_path().with_extension("oga");
+    let edited_path = temporary_path().with_extension("ogg");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(
+            (0..8193)
+                .flat_map(|frame| {
+                    let phase = std::f64::consts::TAU * 440.0 * f64::from(frame) / 44_100.0;
+                    [
+                        (phase.sin() * 20_000.0) as i16,
+                        (phase.cos() * 12_000.0) as i16,
+                    ]
+                })
+                .collect(),
+        ),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("title", "Vorbis CLI title");
+    metadata.insert("artist", "Remove me");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "vorbis", "--json"])
+        .arg(&input_path)
+        .arg(&vorbis_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    assert!(String::from_utf8_lossy(&converted.stdout).contains("\"format\":\"ogg-vorbis\""));
+    {
+        let converted_decoder = VorbisDecoder::new(File::open(&vorbis_path).unwrap()).unwrap();
+        assert_eq!(
+            converted_decoder.metadata().values("TITLE"),
+            ["Vorbis CLI title"]
+        );
+        assert_eq!(converted_decoder.metadata().values("ARTIST"), ["Remove me"]);
+    }
+
+    let decoded_wav = Command::new(cli_path())
+        .args(["convert", "--format", "pcm_i16", "--json"])
+        .arg(&vorbis_path)
+        .arg(&decoded_wav_path)
+        .output()
+        .unwrap();
+    assert!(
+        decoded_wav.status.success(),
+        "{}",
+        String::from_utf8_lossy(&decoded_wav.stderr)
+    );
+    assert!(String::from_utf8_lossy(&decoded_wav.stdout).contains("\"format\":\"wav\""));
+    let mut wav_decoder = wav::WavDecoder::new(File::open(&decoded_wav_path).unwrap()).unwrap();
+    assert_eq!(wav_decoder.spec(), audio.spec());
+    assert_eq!(wav_decoder.metadata().values("TITLE"), ["Vorbis CLI title"]);
+    let mut wav_samples = Vec::new();
+    let mut wav_frames = 0;
+    while let Some(block) = wav_decoder.read_frames(733).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("CLI Vorbis-to-WAVE conversion did not write PCM16 samples");
+        };
+        wav_samples.extend_from_slice(samples);
+        wav_frames += block.frames();
+    }
+    assert_eq!(wav_frames, audio.frames());
+    let Samples::I16(source) = audio.samples() else {
+        unreachable!();
+    };
+    let max_roundtrip_error = wav_samples
+        .iter()
+        .zip(source)
+        .map(|(actual, source)| (i32::from(*actual) - i32::from(*source)).unsigned_abs())
+        .max()
+        .unwrap_or_default();
+    assert!(
+        max_roundtrip_error < 3_277,
+        "maximum CLI Vorbis-to-WAVE sample error {max_roundtrip_error}"
+    );
+
+    for (format, extension) in [("flac", "flac"), ("ogg_flac", "oga"), ("aiff", "aiff")] {
+        let output_path = temporary_path().with_extension(extension);
+        let converted = Command::new(cli_path())
+            .args(["convert", "--format", format, "--json"])
+            .arg(&vorbis_path)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(
+            converted.status.success(),
+            "{format}: {}",
+            String::from_utf8_lossy(&converted.stderr)
+        );
+        match format {
+            "flac" => assert_integer_pcm_output(
+                FlacDecoder::new(File::open(&output_path).unwrap()).unwrap(),
+                audio.frames(),
+            ),
+            "ogg_flac" => assert_integer_pcm_output(
+                OggFlacDecoder::new(File::open(&output_path).unwrap()).unwrap(),
+                audio.frames(),
+            ),
+            "aiff" => assert_integer_pcm_output(
+                AiffDecoder::new(File::open(&output_path).unwrap()).unwrap(),
+                audio.frames(),
+            ),
+            _ => unreachable!(),
+        }
+        let _ = fs::remove_file(output_path);
+    }
+
+    let target_converted = Command::new(cli_path())
+        .args([
+            "convert",
+            "--format",
+            "vorbis",
+            "--bitrate",
+            "128",
+            "--json",
+        ])
+        .arg(&input_path)
+        .arg(&target_bitrate_path)
+        .output()
+        .unwrap();
+    assert!(
+        target_converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&target_converted.stderr)
+    );
+    let mut target_decoder = VorbisDecoder::new(File::open(&target_bitrate_path).unwrap()).unwrap();
+    let mut target_frames = 0;
+    while let Some(block) = target_decoder.read_frames(733).unwrap() {
+        target_frames += block.frames();
+    }
+    assert_eq!(target_frames, audio.frames());
+    assert!(!target_bitrate_path.with_extension("wvc").exists());
+
+    let low_rate_input_path = temporary_path();
+    let low_rate_audio = PcmBuffer::new(
+        AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(
+            (0..8193)
+                .map(|frame| {
+                    ((std::f64::consts::TAU * 440.0 * f64::from(frame) / 8_000.0).sin() * 20_000.0)
+                        as i16
+                })
+                .collect(),
+        ),
+    )
+    .unwrap();
+    write_wav(File::create(&low_rate_input_path).unwrap(), &low_rate_audio).unwrap();
+    for (bitrate_kbps, source_path, expected_frames) in [
+        (24, &low_rate_input_path, low_rate_audio.frames()),
+        (9600, &input_path, audio.frames()),
+    ] {
+        let boundary_path = temporary_path().with_extension("oga");
+        let bitrate = bitrate_kbps.to_string();
+        let converted = Command::new(cli_path())
+            .args([
+                "convert",
+                "--format",
+                "vorbis",
+                "--bitrate",
+                &bitrate,
+                "--json",
+            ])
+            .arg(source_path)
+            .arg(&boundary_path)
+            .output()
+            .unwrap();
+        assert!(
+            converted.status.success(),
+            "{bitrate_kbps} kbit/s: {}",
+            String::from_utf8_lossy(&converted.stderr)
+        );
+        let mut decoder = VorbisDecoder::new(File::open(&boundary_path).unwrap()).unwrap();
+        let mut frames = 0;
+        while let Some(block) = decoder.read_frames(733).unwrap() {
+            frames += block.frames();
+        }
+        assert_eq!(frames, expected_frames, "{bitrate_kbps} kbit/s");
+        let _ = fs::remove_file(boundary_path);
+    }
+    let _ = fs::remove_file(low_rate_input_path);
+
+    let rejected_low_rate_path = temporary_path().with_extension("oga");
+    let rejected = Command::new(cli_path())
+        .args(["convert", "--format", "vorbis", "--bitrate", "24"])
+        .arg(&input_path)
+        .arg(&rejected_low_rate_path)
+        .output()
+        .unwrap();
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("target bitrate is too low"));
+    assert!(!rejected_low_rate_path.exists());
+
+    let inspected = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&vorbis_path)
+        .output()
+        .unwrap();
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains("\"format\":\"ogg-vorbis\""));
+
+    let edited = Command::new(cli_path())
+        .args([
+            "metadata",
+            "edit",
+            "--set",
+            "TITLE=Edited Vorbis title",
+            "--remove",
+            "ARTIST",
+            "--json",
+        ])
+        .arg(&vorbis_path)
+        .arg(&edited_path)
+        .output()
+        .unwrap();
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    assert!(String::from_utf8_lossy(&edited.stdout).contains("\"format\":\"ogg-vorbis\""));
+
+    let mut decoder = VorbisDecoder::new(File::open(&edited_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata().values("TITLE"), ["Edited Vorbis title"]);
+    assert!(decoder.metadata().values("ARTIST").is_empty());
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(733).unwrap() {
+        let Samples::F32(samples) = block.samples() else {
+            panic!("Vorbis output did not decode as Float32 PCM");
+        };
+        decoded.extend_from_slice(samples);
+    }
+    assert_eq!(decoded.len(), audio.samples().len());
+    let Samples::I16(source) = audio.samples() else {
+        unreachable!();
+    };
+    let max_error = decoded
+        .iter()
+        .zip(source)
+        .map(|(actual, source)| (actual - f32::from(*source) / 32768.0).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_error < 0.1,
+        "maximum CLI Vorbis conversion error {max_error}"
+    );
+    assert!(decoder.read_frames(1).unwrap().is_none());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(vorbis_path);
+    let _ = fs::remove_file(decoded_wav_path);
+    let _ = fs::remove_file(target_bitrate_path);
+    let _ = fs::remove_file(edited_path);
+}
+
+#[test]
+fn vorbis_cli_metadata_edit_preserves_unmodified_comments() {
+    let input_path = temporary_path().with_extension("oga");
+    let output_path = temporary_path().with_extension("oga");
+    let spec = AudioSpec::new(48_000, 1, SampleFormat::Float32).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::F32(vec![0.25; 257])).unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "Old title");
+    metadata.insert("ARTIST", "First artist");
+    metadata.insert("ARTIST", "Second artist");
+    metadata.insert("COMPOSER", "Composer name");
+    metadata.insert("LYRICS", "Keep these lyrics");
+    metadata.insert("MUSICBRAINZ_ALBUMID", "album-id");
+    let cover_art = "AAAAAwAAAAMtLT4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAACFodHRwczovL2V4YW1wbGUuaW52YWxpZC9jb3Zlci5qcGc=";
+    metadata.insert("METADATA_BLOCK_PICTURE", cover_art);
+    let mut first_link = Vec::new();
+    {
+        let mut encoder = vorbis::VorbisEncoder::new(&mut first_link, spec).unwrap();
+        encoder.set_metadata(&metadata).unwrap();
+        encoder.write_block(&audio).unwrap();
+        encoder.finish().unwrap();
+    }
+    let mut second_metadata = Metadata::default();
+    second_metadata.insert("TITLE", "Second link title");
+    let mut second_link = Vec::new();
+    {
+        let mut encoder = vorbis::VorbisEncoder::new(&mut second_link, spec).unwrap();
+        encoder.set_metadata(&second_metadata).unwrap();
+        encoder.write_block(&audio).unwrap();
+        encoder.finish().unwrap();
+    }
+    let mut chained = first_link;
+    chained.extend_from_slice(&second_link);
+    fs::write(&input_path, &chained).unwrap();
+    let original_comments = vorbis_link_comment_packets(&chained);
+    assert_eq!(original_comments.len(), 2);
+
+    let edited = Command::new(cli_path())
+        .args([
+            "metadata",
+            "edit",
+            "--set",
+            "TITLE=New title",
+            "--remove",
+            "ARTIST",
+            "--json",
+        ])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+
+    let mut decoder = VorbisDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata().values("TITLE"), ["New title"]);
+    assert!(decoder.metadata().values("ARTIST").is_empty());
+    assert_eq!(decoder.metadata().values("COMPOSER"), ["Composer name"]);
+    assert_eq!(decoder.metadata().values("LYRICS"), ["Keep these lyrics"]);
+    assert_eq!(
+        decoder.metadata().values("MUSICBRAINZ_ALBUMID"),
+        ["album-id"]
+    );
+    assert_eq!(
+        decoder.metadata().values("METADATA_BLOCK_PICTURE"),
+        [cover_art]
+    );
+    let edited_bytes = fs::read(&output_path).unwrap();
+    let edited_comments = vorbis_link_comment_packets(&edited_bytes);
+    assert_eq!(edited_comments.len(), 2);
+    assert_eq!(edited_comments[1], original_comments[1]);
+    let second_link_comments = VorbisCommentHeader::parse(&edited_comments[1]).unwrap();
+    assert_eq!(
+        second_link_comments.metadata().values("TITLE"),
+        ["Second link title"]
+    );
+    let mut frames = 0;
+    while let Some(block) = decoder.read_frames(733).unwrap() {
+        frames += block.frames();
+    }
+    assert_eq!(frames, audio.frames() * 2);
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn vorbis_cli_maps_wave_51_channels_to_vorbis_order() {
+    let input_path = temporary_path();
+    let output_path = temporary_path().with_extension("ogg");
+    let channels = 6;
+    let sample_rate = 48_000;
+    let frequencies = [137.0_f64, 233.0, 383.0, 523.0, 719.0, 997.0];
+    let source_samples: Vec<f32> = (0..8193)
+        .flat_map(|frame| {
+            frequencies.map(|frequency| {
+                let phase =
+                    std::f64::consts::TAU * frequency * f64::from(frame) / f64::from(sample_rate);
+                (phase.sin() * 0.7) as f32
+            })
+        })
+        .collect();
+    let audio = PcmBuffer::new(
+        AudioSpec::new_with_speaker_mask(sample_rate, channels, SampleFormat::Float32, Some(0x3f))
+            .unwrap(),
+        Samples::F32(source_samples.clone()),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "vorbis", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+
+    let mut decoder = VorbisDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.spec().channels(), channels);
+    assert_eq!(decoder.spec().speaker_mask(), None);
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(733).unwrap() {
+        let Samples::F32(samples) = block.samples() else {
+            panic!("Vorbis output did not decode as Float32 PCM");
+        };
+        decoded.extend_from_slice(samples);
+    }
+    assert_eq!(decoded.len(), source_samples.len());
+
+    // WAVE 5.1 is FL, FR, FC, LFE, BL, BR; Vorbis I is FL, FC, FR, BL, BR, LFE.
+    let vorbis_to_wave = [0, 2, 1, 4, 5, 3];
+    for (vorbis_channel, &wave_channel) in vorbis_to_wave.iter().enumerate() {
+        let max_error = (0..8193)
+            .map(|frame| {
+                let expected = source_samples[frame * channels as usize + wave_channel];
+                let actual = decoded[frame * channels as usize + vorbis_channel];
+                (actual - expected).abs()
+            })
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_error < 0.15,
+            "Vorbis channel {vorbis_channel} did not map from WAVE channel {wave_channel}; maximum error {max_error}"
+        );
+    }
+    assert!(decoder.read_frames(1).unwrap().is_none());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn vorbis_cli_converts_independent_six_channel_stream_to_float_wave() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vorbis");
+    let input_path = fixtures.join("oxideav-vorbis-0_0_12-48000-6.ogg");
+    let oracle_path = fixtures.join("oxideav-vorbis-0_0_12-48000-6.f32le");
+    let output_path = temporary_path();
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "float32", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    assert!(String::from_utf8_lossy(&converted.stdout).contains("\"format\":\"wav\""));
+
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.spec().sample_rate(), 48_000);
+    assert_eq!(decoder.spec().channels(), 6);
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::Float32);
+    let mut actual = Vec::new();
+    while let Some(block) = decoder.read_frames(733).unwrap() {
+        let Samples::F32(samples) = block.samples() else {
+            panic!("Vorbis CLI conversion did not write Float32 WAV samples");
+        };
+        actual.extend_from_slice(samples);
+    }
+    let expected_bytes = fs::read(oracle_path).unwrap();
+    let expected: Vec<f32> = expected_bytes
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+        .collect();
+    assert_eq!(actual.len(), expected.len());
+    let max_error = actual
+        .iter()
+        .zip(&expected)
+        .map(|(actual, expected)| (actual - expected).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_error < 0.002,
+        "maximum CLI Vorbis-to-WAVE sample error {max_error}"
+    );
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
 fn convert_encodes_wavpack_float32_without_changing_sample_bits() {
     let input_path = temporary_path();
     let output_path = temporary_path().with_extension("wv");
@@ -1356,11 +1861,13 @@ fn cue_split_and_create_preserve_track_samples_and_metadata() {
     )
     .unwrap();
     write_wav(File::create(&audio_path).unwrap(), &audio).unwrap();
+    let first_title = "F".repeat(300);
     fs::write(
         &cue_path,
         format!(
-            "FILE \"{}\" WAVE\n  TRACK 01 AUDIO\n    TITLE \"First\"\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    TITLE \"Second\"\n    INDEX 01 00:00:01\n",
-            audio_path.file_name().unwrap().to_string_lossy()
+            "FILE \"{}\" WAVE\n  TRACK 01 AUDIO\n    TITLE \"{}\"\n    INDEX 01 00:00:00\n  TRACK 02 AUDIO\n    TITLE \"Second\"\n    INDEX 01 00:00:01\n",
+            audio_path.file_name().unwrap().to_string_lossy(),
+            first_title
         ),
     )
     .unwrap();
@@ -1381,23 +1888,27 @@ fn cue_split_and_create_preserve_track_samples_and_metadata() {
             .unwrap()
             .contains("\"tracks\":2")
     );
-    for (number, expected) in [
-        ("01 - First.wav", &samples[..588]),
-        ("02 - Second.wav", &samples[588..]),
+    let first_output_filename = format!("01 - {}.wav", "F".repeat(200));
+    for (name, expected, title) in [
+        (
+            first_output_filename.clone(),
+            &samples[..588],
+            first_title.as_str(),
+        ),
+        ("02 - Second.wav".to_owned(), &samples[588..], "Second"),
     ] {
-        let mut decoder =
-            wav::WavDecoder::new(File::open(output_dir.join(number)).unwrap()).unwrap();
+        let mut decoder = wav::WavDecoder::new(File::open(output_dir.join(name)).unwrap()).unwrap();
         assert_eq!(
             decoder.read_frames(588).unwrap().unwrap().samples(),
             &Samples::I16(expected.to_vec())
         );
-        assert_eq!(decoder.metadata().values("TITLE").len(), 1);
+        assert_eq!(decoder.metadata().values("TITLE"), [title]);
     }
 
     let output = Command::new(cli_path())
         .args(["cue", "create", "--json"])
         .arg(&output_cue)
-        .arg(output_dir.join("01 - First.wav"))
+        .arg(output_dir.join(&first_output_filename))
         .arg(output_dir.join("02 - Second.wav"))
         .output()
         .unwrap();
@@ -1407,7 +1918,8 @@ fn cue_split_and_create_preserve_track_samples_and_metadata() {
         String::from_utf8_lossy(&output.stderr)
     );
     let generated = fs::read_to_string(&output_cue).unwrap();
-    assert!(generated.contains("FILE \"01 - First.wav\" WAVE"));
+    assert!(generated.contains(&format!("FILE \"{first_output_filename}\" WAVE")));
+    assert!(generated.contains(&format!("TITLE \"{first_title}\"")));
     assert!(generated.contains("TITLE \"Second\""));
 
     let _ = fs::remove_file(audio_path);

@@ -48,7 +48,7 @@ pub fn encode_alaw(sample: i16) -> u8 {
     } else if segment == 0 {
         (magnitude >> 4) as u8
     } else {
-        ((segment as i32) << 4 | ((magnitude >> (segment + 3)) & 0x0f)) as u8
+        (((segment as i32) << 4) | ((magnitude >> (segment + 3)) & 0x0f)) as u8
     };
     value ^ mask
 }

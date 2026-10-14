@@ -5,7 +5,8 @@ use zemer_core::{AudioError, DsdDecoder, Metadata};
 use crate::{
     DsdiffComment, DsdiffDecoder,
     decode::{Chunk, read_chunk_header},
-    encode::{MAX_TEXT_BYTES, MAX_UNTIMED_COMMENTS, validate_comments},
+    encode::{MAX_UNTIMED_COMMENTS, validate_comments},
+    marker::MAX_TEXT_BYTES,
 };
 
 /// Rewrites text metadata from a complete metadata snapshot, preserving audio and unknown chunks.

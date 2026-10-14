@@ -3,14 +3,64 @@ Ogg container
 
 The ``zemer-ogg`` crate implements generic Ogg page and packet framing. Its
 reader validates page capture/version fields, page checksums, sequence numbers,
-stream serial, and packet continuation. Its writer emits bounded pages with
-packet granules and BOS/EOS flags. It does not decode audio by itself: FLAC,
-Vorbis, and Opus each define their own packet mappings and codec rules.
+stream serials, and packet continuation. Chained streams must use distinct
+serial numbers. Its writer emits bounded pages with packet granules and
+BOS/EOS flags. It does not decode audio by itself: FLAC, Vorbis, and Opus each
+define their own packet mappings and codec rules.
 
 The extensions ``.ogg`` and ``.oga`` are container naming conventions, not
 reliable codec identifiers. Zemer identifies supported input by its contents.
-At present, Ogg-FLAC encoding and decoding use this crate; Vorbis and Opus
-decoding remain planned.
+At present, Ogg-FLAC and Ogg Vorbis decoding use this crate. Ogg-FLAC is
+supported; Vorbis is listed as experimental pending perceptual evaluation and
+wider non-Xiph input conformance. Opus remains planned.
+
+The experimental ``zemer-vorbis`` decoder returns Float32 PCM and reads
+sequential chained logical streams, including links with different audio
+specifications. Checked-in libvorbisenc/libsndfile fixtures compare complete
+PCM streams for mono through 7.1 profiles at sample rates from 8 to 96 kHz.
+During audio decoding, a comment header truncated at end-of-packet is treated
+as non-fatal and yields no comment metadata, as specified by Vorbis I. Direct
+comment parsing and metadata rewriting remain strict.
+The implementation exercises Vorbis I's 255-channel upper bound with a
+synthetic decoder stream and a one-frame fixed-encoder round trip; these
+boundary checks are not claims of high-channel interoperability coverage. The
+`Vorbis I specification <https://xiph.org/vorbis/doc/Vorbis_I_spec.html>`_
+allows up to 255 channels.
+
+The experimental ``VorbisEncoder`` supports a fixed-precision scalar-residue
+profile that omits 16-bin partitions quantized entirely to zero, and a nominal
+target-bitrate profile. The bitrate profile caps each audio packet to the
+corresponding rate budget after Ogg page overhead, then greedily spends bits on
+the largest unweighted spectral squared-error reduction per bit. Sparse inputs
+may use fewer bits, and container headers raise the average bitrate of short
+files. This objective has not been perceptually validated. On a
+12,347-frame 44.1-kHz stereo input, that reduced the encoded stream from
+73,413 to 35,753 bytes while libsndfile produced bit-identical decoded Float32
+PCM. Its 8–16-bit residue precision option changes quantizer resolution and
+does not control bitrate. FFmpeg independently decodes two-second synthetic
+target-rate profiles for every channel count from 1–8 plus 192-kHz stereo; ffprobe reports exact
+durations, and channel-order-matched PCM has maximum per-channel RMS error
+below 0.0043. These measurements verify decoding and sample output, not
+perceived quality. Decoder interoperability fixtures also cover independent
+libVorbis and two Rust encoders, including a six-channel transient profile,
+against libsndfile PCM oracles.
+The real-source corpus also includes a public-domain 3.174-second drum-roll
+and cymbal recording encoded by Xiph libVorbis I 20040629, checked against an
+FFmpeg 8.1 Float32 PCM oracle across all 139,990 frames.
+It also includes Keith Adler's 148.2-second ambient song, released into the
+worldwide public domain and encoded by Xiph libVorbis I 20070622; all 6,535,620
+frames match a half-gain FFmpeg 8.1 signed-16 FLAC oracle within 0.002.
+The corpus also checks a full 176.587-second CC0 *Für Elise* recording from
+an older Xiph libVorbis 1.3.3 encoder against an FFmpeg-derived FLAC oracle.
+On the full 148.2-second ambient source, Zemer encoded at 64.254/128.307/192.359
+kbit/s; rate-matched FFmpeg 8.1/libvorbis outputs were 64.145/127.827/192.354
+kbit/s. FFmpeg-decoded full-stream per-channel RMS errors were 0.01357/0.01438,
+0.00519/0.00581, and 0.00307/0.00338 for Zemer, compared with
+0.02248/0.02197, 0.00762/0.00756, and 0.00425/0.00426 for libvorbis. These
+sample-error measurements do not establish perceived quality; randomized
+blind-listening clips are available separately.
+Vorbis remains experimental until perceptual evaluation and wider external
+corpus conformance are complete.
 
 .. code-block:: rust
 
@@ -27,7 +77,9 @@ Packets are limited to 64 MiB by default. Use ``with_packet_limit`` when a
 caller needs a different bound. ``next_packet()`` stops at one logical stream's
 EOS page. To read a chained stream, consume that stream and call
 ``next_stream()``; it validates the next BOS page and returns ``None`` only
-when input ends exactly at the link boundary. Trailing bytes and truncated
-pages are errors. The reader does not demultiplex concurrent serial numbers.
+when input ends exactly at the link boundary. A reader accepts at most 65,536
+chained streams and rejects serial numbers reused by earlier links. Trailing
+bytes and truncated pages are errors. The
+reader does not demultiplex concurrent serial numbers.
 ``OggPacketWriter`` writes one logical stream and requires ``finish()`` to
 mark its final page with EOS.

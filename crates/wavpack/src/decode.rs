@@ -188,13 +188,14 @@ impl<R: Read, C: Read> WavPackDecoder<R, C> {
                     "WavPack stream format changed between blocks",
                 ));
             }
-            if let Some((first_spec, _)) = blocks.first()
-                && (block_spec.sample_rate() != first_spec.sample_rate()
-                    || block_spec.sample_format() != first_spec.sample_format())
-            {
-                return Err(AudioError::InvalidData(
-                    "WavPack channel blocks use different sample formats",
-                ));
+            if let Some((first_spec, _)) = blocks.first() {
+                if block_spec.sample_rate() != first_spec.sample_rate()
+                    || block_spec.sample_format() != first_spec.sample_format()
+                {
+                    return Err(AudioError::InvalidData(
+                        "WavPack channel blocks use different sample formats",
+                    ));
+                }
             }
             if let Some(info) = info {
                 if channel_info.is_some() {

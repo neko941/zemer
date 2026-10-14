@@ -117,6 +117,19 @@ fn reads_id3v24_text_metadata_from_the_dsf_metadata_pointer() {
 }
 
 #[test]
+fn rejects_a_gap_before_the_metadata_chunk() {
+    let mut bytes = with_id3(dsf(1, 1, 8, &[vec![0x55]]));
+    let data_end = 80 + u64::from_le_bytes(bytes[84..92].try_into().unwrap());
+    bytes.insert(data_end as usize, 0);
+    let file_size = u64::from_le_bytes(bytes[12..20].try_into().unwrap()) + 1;
+    let metadata_offset = u64::from_le_bytes(bytes[20..28].try_into().unwrap()) + 1;
+    bytes[12..20].copy_from_slice(&file_size.to_le_bytes());
+    bytes[20..28].copy_from_slice(&metadata_offset.to_le_bytes());
+
+    assert!(DsfDecoder::new(Cursor::new(bytes)).is_err());
+}
+
+#[test]
 fn copies_raw_id3_artwork_and_unknown_frames_without_reencoding() {
     let spec = DsdSpec::new(2_822_400, 1).unwrap();
     let original = with_id3(dsf(1, 1, 8, &[vec![0x55]]));

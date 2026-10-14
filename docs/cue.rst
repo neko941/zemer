@@ -14,6 +14,9 @@ The optional CLI connects WAVE audio to CUE track boundaries:
 audio track, plus a CUE sheet for those outputs. It copies decoded sample
 values at the original sample format and rate. Existing destination directories
 and files are preserved; the command requires a new destination directory.
+Output filenames sanitize unsafe characters and truncate long titles to 200
+UTF-8 bytes. The complete title remains in the generated CUE sheet and in the
+WAVE INFO metadata when it fits the WAVE metadata size limit.
 
 ``create`` accepts one or more WAVE tracks and writes a CUE file whose file
 references are relative to the CUE file. Track titles and performers are read

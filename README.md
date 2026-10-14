@@ -23,15 +23,16 @@ The workspace separates format-independent audio types from each format implemen
 | CUE sheets for WAVE/AUDIO tracks | Supported | Read and write; track title and performer fields. Split referenced WAV audio into track WAVs and create CUE sheets for WAV tracks. |
 | Native FLAC | Supported | Streaming integer PCM encode (8/16/24/32-bit, verbatim or fixed-predictor Rice-coded frames) and decode with frame CRC and STREAMINFO MD5 verification; sample seeking for seekable readers (SEEKTABLE accelerated, forward-scan fallback); Vorbis comment rewrite with raw metadata blocks preserved; PICTURE, CUESHEET, SEEKTABLE, and APPLICATION fields parsed. CLI inspection, conversion to WAVE/FLAC, and comment editing are available. |
 | Ogg-FLAC | Supported | Streaming decode and encode through the reusable `zemer-ogg` page/packet reader/writer; reads the current mapping and the tested pre-1.1.1 legacy packet layout. Validates terminal granules including valid nonzero initial offsets, trims final-frame samples, and decodes chained links even when their audio specifications differ; `spec()` and each PCM block report the active link's specification. Seekable readers can seek by restarting and decoding forward. Metadata editing rewrites first-link Vorbis comments, normalizes legacy mappings to the current layout, and preserves FLAC audio packets. CLI inspection/conversion handles chains with one common audio specification; metadata editing updates the first link. |
+| Ogg Vorbis (`.ogg`/`.oga`) | Experimental | Clean-room Float32 decode, chained streams, comment rewriting, CLI inspection/conversion and metadata edits. Decoder fixtures cover Xiph/libVorbis and two independent Rust encoders, including six-channel input, plus full-length CC0, CC BY 4.0, and public-domain recordings and a public-domain percussion transient checked sample-by-sample against independent PCM oracles; encoding remains experimental pending perceptual listening and wider conformance. |
 | WavPack | Supported | Streaming decode covers lossless PCM, IEEE float32, hybrid `.wvc` restoration, and native DSD profiles. Lossless integer PCM encoding supports 1–32 channels at 8/16/24/32 bits; float32 is bit-exact but stored uncompressed in WVX; raw native DSD encoding supports 1–32 channels. Integer PCM hybrid encoding writes standard-bitrate `.wv`+`.wvc` pairs; APEv2 text tags, CLI inspect, conversion, and metadata editing are supported. The official suite decoded 35 supported files (including 2 DSD and 16 correction-paired files), skipped 9 legacy files, and rejected all 4 malformed files. |
 | [DSF](crates/dsf/) | Supported | Reads and writes Sony DSF 1.01 raw DSD in both one-bit and eight-bit storage order for mono through 5.1 at 2.8224/5.6448 MHz; reads common uncompressed ID3v2.2/v2.3/v2.4 text and writes common ID3v2.4 text. DSF-to-DSF conversion preserves complete bounded ID3 tags, and `zemer metadata edit` changes text while preserving artwork and opaque frames and copying encoded audio unchanged. ID3v2.2's reserved compression flag means the tag is ignored as a whole, per that version's specification; cross-container artwork transfer is not part of DSF container support. |
-| [DSDIFF / DFF](crates/dsdiff/) | Supported | Reads raw DSD across the full 1–65,535-channel DSDIFF `CHNL` field range and compressed DST (up to 64 channels at DSD64/128/256), validates optional frame CRCs, and writes raw DSD or compressed DST using a clean-room first-order predictor with valid mode-0 bypass fallback. Supports title, artist, general and typed comments, channel IDs, typed DIIN/MARK records, and audio/unknown-chunk-preserving metadata edits. All three complete 300-frame `DST_02_02` vectors pass bit-exactly; the first 10 frames of every available ISO vector also pass. |
+| [DSDIFF / DFF](crates/dsdiff/) | Partial | Reads raw DSD across the full 1–65,535-channel DSDIFF `CHNL` field range and compressed DST (up to 64 channels at DSD64/128/256), validates optional frame CRCs, and writes raw DSD or compressed DST using a clean-room first-order predictor with valid mode-0 bypass fallback. Supports title, artist, general and typed comments, channel IDs, typed DIIN/MARK records, and audio/unknown-chunk-preserving metadata edits. All three complete 300-frame `DST_02_02` vectors pass bit-exactly; the first 10 frames of every available ISO vector also pass. Independent marker/DST interoperability coverage and patent/legal clearance remain open. |
 
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md) for planned formats and workflows.
 
-The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in file order, including RF64 `ds64` size-table entries. `slnt` holds the preceding interleaved sample frame; initial silence uses neutral PCM/G.711 codes. The reader caps retained audio segments at one million. The writer emits a conventional contiguous `data` chunk. Non-G.711 compressed codecs inside WAV are not implemented. The writer defaults to classic RIFF/WAVE (using WAVE_FORMAT_EXTENSIBLE when a channel mask is provided); select `WavContainer::Rf64` or CLI `--container rf64` for 64-bit sizes. Classic RIFF reports an explicit error before exceeding its 4 GiB size limit.
+The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in file order, including RF64 `ds64` size-table entries. `slnt` holds the preceding interleaved sample frame; initial silence uses neutral PCM/G.711 codes. The reader caps retained audio segments at one million and supported INFO metadata at 16 MiB total, 65,536 values, and 1 MiB per value. The writer emits a conventional contiguous `data` chunk. Non-G.711 compressed codecs inside WAV are not implemented. The writer defaults to classic RIFF/WAVE (using WAVE_FORMAT_EXTENSIBLE when a channel mask is provided); select `WavContainer::Rf64` or CLI `--container rf64` for 64-bit sizes. Classic RIFF reports an explicit error before exceeding its 4 GiB size limit.
 
 ## Workspace crates
 
@@ -42,6 +43,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-dsdiff`](crates/dsdiff/) (Rust crate `dsdiff`): raw and compressed DST DSDIFF `.dff` decoder, plus raw DSD and compressed DST writers with bypass fallback.
 - [`zemer-dsf`](crates/dsf/) (Rust crate `dsf`): DSF 1.01 raw one-bit and eight-bit DSD decoder and encoder for the documented profile, with common ID3 text-tag mapping.
 - [`zemer-flac`](crates/flac/) (Rust crate `flac`): native/Ogg-FLAC streaming integer PCM encoders and decoders, native and Ogg seeking, Vorbis-comment rewriting, and raw metadata-block access with typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION access.
+- [`zemer-vorbis`](crates/vorbis/): clean-room Ogg Vorbis I Float32 decoder and experimental fixed-precision and target-bitrate encoders; see the experimental status above for validation limits.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer with page CRC, sequence, and continuation validation.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
@@ -103,6 +105,7 @@ cargo run -p zemer -- convert --format aifc_mulaw input.wav voice-mulaw.aifc
 cargo run -p zemer -- convert --format aifc_ima4 input.wav voice-ima4.aifc
 cargo run -p zemer -- convert --format flac input.wav output.flac
 cargo run -p zemer -- convert --format ogg_flac input.wav output.oga
+cargo run -p zemer -- convert --format vorbis input.wav output.ogg
 ```
 
 Copy native DSD between containers without passing through PCM. Select
@@ -115,7 +118,7 @@ cargo run -p zemer -- convert --format dsdiff_dst input.dsf output.dff
 cargo run -p zemer -- convert --format wavpack input.dsf output.wv
 ```
 
-Edit RIFF INFO tags in WAVE, AIFF/AIFC text chunks, native or Ogg-FLAC Vorbis comments,
+Edit RIFF INFO tags in WAVE, AIFF/AIFC text chunks, native/Ogg-FLAC/Ogg Vorbis comments,
 or WavPack APEv2 text tags while keeping unmentioned tags. Repeated `--set` values for the same key create repeated
 fields; `--remove` removes all values for a key. The output path must be new.
 Metadata editing preserves encoded audio without decoding or re-encoding it:
@@ -127,6 +130,7 @@ zemer metadata edit --set "TITLE=New title" input.aiff updated.aiff --json
 zemer metadata edit --set "TITLE=New title" input.dsf updated.dsf --json
 zemer metadata edit --set "TITLE=New title" input.dff updated.dff --json
 zemer metadata edit --set "TITLE=New title" input.oga updated.oga --json
+zemer metadata edit --set "TITLE=New title" input.ogg updated.ogg --json
 ```
 
 Split a WAVE-backed CUE sheet to numbered track WAVs, or create a CUE for WAV
@@ -138,7 +142,7 @@ zemer cue split album.cue album-tracks
 zemer cue create album.cue "album-tracks/01 - Intro.wav" "album-tracks/02 - Song.wav"
 ```
 
-Conversion preserves supported RIFF INFO tags. It refuses to overwrite an existing output file, rounds integer quantization to the nearest sample, and errors when float samples are non-finite or outside `[-1, 1]` for integer output. No dither is applied.
+Conversion preserves supported RIFF INFO tags. It refuses to overwrite an existing output file, rounds integer quantization to the nearest sample, and errors when float samples are non-finite or outside `[-1, 1]` for integer output. Float input converted to native FLAC, Ogg-FLAC, or AIFF becomes 24-bit integer PCM; AIFC can retain IEEE float. No dither is applied.
 
 ## Supported platforms
 

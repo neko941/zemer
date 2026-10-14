@@ -974,8 +974,8 @@ mod tests {
         let mut header = b"ID3\x04\x00\x00".to_vec();
         header.extend_from_slice(&[
             ((MAX_ID3_TAG_BYTES + 1) >> 21) as u8,
-            ((MAX_ID3_TAG_BYTES + 1) >> 14 & 0x7f) as u8,
-            ((MAX_ID3_TAG_BYTES + 1) >> 7 & 0x7f) as u8,
+            (((MAX_ID3_TAG_BYTES + 1) >> 14) & 0x7f) as u8,
+            (((MAX_ID3_TAG_BYTES + 1) >> 7) & 0x7f) as u8,
             ((MAX_ID3_TAG_BYTES + 1) & 0x7f) as u8,
         ]);
         let file_size = 10 + (MAX_ID3_TAG_BYTES + 1) as u64;

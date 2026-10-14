@@ -12,12 +12,29 @@ pub struct DsdiffMarker {
     pub text: String,
 }
 
+pub(crate) const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
+pub(crate) fn add_marker_text_length(
+    total: &mut usize,
+    length: usize,
+) -> Result<(), zemer_core::AudioError> {
+    *total = total
+        .checked_add(length)
+        .filter(|&value| value <= MAX_TEXT_BYTES)
+        .ok_or(zemer_core::AudioError::InvalidData(
+            "DSDIFF marker text exceeds its aggregate limit",
+        ))?;
+    Ok(())
+}
+
 pub(crate) fn validate_markers(
     markers: &[DsdiffMarker],
     sample_rate: u32,
     channel_ids: &[[u8; 4]],
 ) -> Result<(), zemer_core::AudioError> {
+    let mut total_text = 0;
     for marker in markers {
+        add_marker_text_length(&mut total_text, marker.text.len())?;
         if marker.hours > 23
             || marker.minutes > 59
             || marker.seconds > 59
@@ -25,7 +42,6 @@ pub(crate) fn validate_markers(
             || usize::from(marker.channel) > channel_ids.len()
             || marker.track_flags & !0x070f != 0
             || (marker.kind != 0 || marker.channel != 0) && marker.track_flags != 0
-            || marker.text.len() > u32::MAX as usize
             || !marker
                 .text
                 .bytes()
@@ -45,7 +61,7 @@ pub(crate) fn validate_markers(
                         && ls == b"LS  "
                         && rs == b"RS  " =>
                 {
-                    flags & 0x0701 == 0 && flags & 0x000e != 0x000e
+                    flags & 0x0703 == 0 && flags & 0x000c != 0x000c
                 }
                 [left, right, center, lfe, ls, rs]
                     if left == b"MLFT"
@@ -55,7 +71,9 @@ pub(crate) fn validate_markers(
                         && ls == b"LS  "
                         && rs == b"RS  " =>
                 {
-                    flags & 0x0700 == 0 && flags & 0x0002 == 0 && flags & 0x000f != 0x000f
+                    flags & 0x0702 == 0
+                        && flags & 0x000d != 0x000d
+                        && (flags & 0x0001 != 0 || flags & 0x000c != 0x000c)
                 }
                 _ => false,
             };
@@ -67,4 +85,17 @@ pub(crate) fn validate_markers(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_TEXT_BYTES, add_marker_text_length};
+
+    #[test]
+    fn marker_text_has_an_aggregate_allocation_limit() {
+        let mut total = 0;
+        add_marker_text_length(&mut total, MAX_TEXT_BYTES - 1).unwrap();
+        assert!(add_marker_text_length(&mut total, 2).is_err());
+        assert_eq!(total, MAX_TEXT_BYTES - 1);
+    }
 }

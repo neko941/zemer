@@ -2,10 +2,12 @@ use std::io::{Seek, SeekFrom, Write};
 
 use zemer_core::{AudioError, DsdBuffer, DsdEncoder, DsdSpec, Metadata};
 
-use crate::{DsdiffComment, DsdiffMarker, marker::validate_markers};
+use crate::{
+    DsdiffComment, DsdiffMarker,
+    marker::{MAX_TEXT_BYTES, validate_markers},
+};
 
 const MAX_DST_CHANNELS: usize = 64;
-pub(super) const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
 const MAX_COMMENTS: usize = u16::MAX as usize;
 pub(super) const MAX_UNTIMED_COMMENTS: usize = 2_000;
 const MAX_MARKERS: usize = 100_000;

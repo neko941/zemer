@@ -2,7 +2,7 @@ use std::io::{self, Write};
 
 use crate::{NO_GRANULE_POSITION, PAGE_FLAG_BOS, PAGE_FLAG_CONTINUED, PAGE_FLAG_EOS, ogg_crc};
 
-/// Writes one-packet-per-page Ogg logical streams.
+/// Writes Ogg streams with one packet per page, continuing large packets across pages.
 pub struct OggPacketWriter<W> {
     writer: W,
     serial: u32,
@@ -27,7 +27,18 @@ impl<W: Write> OggPacketWriter<W> {
     }
 
     pub fn write_packet(&mut self, packet: &[u8], granule_position: u64) -> io::Result<()> {
-        self.write_packet_owned(packet.to_vec(), granule_position)
+        if self.finished || self.poisoned {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Ogg packet writer is finished or unusable",
+            ));
+        }
+        let mut owned = Vec::new();
+        owned
+            .try_reserve_exact(packet.len())
+            .map_err(|_| io::Error::other("Ogg packet allocation failed"))?;
+        owned.extend_from_slice(packet);
+        self.write_packet_owned(owned, granule_position)
     }
 
     pub fn write_packet_owned(&mut self, packet: Vec<u8>, granule_position: u64) -> io::Result<()> {
@@ -44,6 +55,18 @@ impl<W: Write> OggPacketWriter<W> {
             }
         }
         self.pending = Some((packet, granule_position));
+        Ok(())
+    }
+
+    /// Replaces the granule position of the final packet before `finish`.
+    pub fn set_pending_granule_position(&mut self, granule_position: u64) -> io::Result<()> {
+        let Some((_, pending_granule)) = self.pending.as_mut() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Ogg writer has no pending packet",
+            ));
+        };
+        *pending_granule = granule_position;
         Ok(())
     }
 
@@ -84,14 +107,36 @@ impl<W: Write> OggPacketWriter<W> {
         granule_position: u64,
         eos: bool,
     ) -> io::Result<()> {
-        let mut lacing = vec![255; packet.len() / 255];
-        lacing.push((packet.len() % 255) as u8);
-        let page_count = lacing.len().div_ceil(255);
-        let mut body_start = 0;
-        for (page_index, laces) in lacing.chunks(255).enumerate() {
-            let body_len: usize = laces.iter().map(|&lace| usize::from(lace)).sum();
+        let full_segments = packet.len() / 255;
+        let segment_count = full_segments
+            .checked_add(1)
+            .ok_or_else(|| io::Error::other("Ogg packet has too many segments"))?;
+        let page_count = segment_count.div_ceil(255);
+        for page_index in 0..page_count {
+            let lace_start = page_index
+                .checked_mul(255)
+                .ok_or_else(|| io::Error::other("Ogg page segment offset overflow"))?;
+            let lace_count = (segment_count - lace_start).min(255);
+            let body_start = lace_start
+                .checked_mul(255)
+                .ok_or_else(|| io::Error::other("Ogg page body offset overflow"))?;
+            let body_len = packet
+                .len()
+                .checked_sub(body_start)
+                .ok_or_else(|| io::Error::other("invalid Ogg page body offset"))?
+                .min(lace_count * 255);
+            let body_end = body_start
+                .checked_add(body_len)
+                .ok_or_else(|| io::Error::other("Ogg page body size overflow"))?;
+            let page_capacity = 27_usize
+                .checked_add(lace_count)
+                .and_then(|size| size.checked_add(body_len))
+                .ok_or_else(|| io::Error::other("Ogg page size overflow"))?;
             let last_page = page_index + 1 == page_count;
-            let mut page = vec![0; 27];
+            let mut page = Vec::new();
+            page.try_reserve_exact(page_capacity)
+                .map_err(|_| io::Error::other("Ogg page allocation failed"))?;
+            page.resize(27, 0);
             page[..4].copy_from_slice(b"OggS");
             page[5] = if page_index != 0 {
                 PAGE_FLAG_CONTINUED
@@ -112,15 +157,20 @@ impl<W: Write> OggPacketWriter<W> {
             page[6..14].copy_from_slice(&granule.to_le_bytes());
             page[14..18].copy_from_slice(&self.serial.to_le_bytes());
             page[18..22].copy_from_slice(&self.sequence.to_le_bytes());
-            page[26] = laces.len() as u8;
-            page.extend_from_slice(laces);
-            page.extend_from_slice(&packet[body_start..body_start + body_len]);
+            page[26] = lace_count as u8;
+            for lace_index in lace_start..lace_start + lace_count {
+                page.push(if lace_index < full_segments {
+                    255
+                } else {
+                    (packet.len() % 255) as u8
+                });
+            }
+            page.extend_from_slice(&packet[body_start..body_end]);
             let checksum = ogg_crc(&page);
             page[22..26].copy_from_slice(&checksum.to_le_bytes());
             self.writer.write_all(&page)?;
             self.started = true;
             self.sequence = self.sequence.wrapping_add(1);
-            body_start += body_len;
         }
         Ok(())
     }
@@ -128,7 +178,7 @@ impl<W: Write> OggPacketWriter<W> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{self, Cursor};
 
     use crate::{OggPacketReader, PAGE_FLAG_BOS, PAGE_FLAG_CONTINUED, PAGE_FLAG_EOS};
 
@@ -162,5 +212,39 @@ mod tests {
         assert_eq!(packet.page_flags & PAGE_FLAG_CONTINUED, PAGE_FLAG_CONTINUED);
         assert_eq!(packet.page_flags & PAGE_FLAG_EOS, PAGE_FLAG_EOS);
         assert!(reader.next_packet().unwrap().is_none());
+    }
+
+    #[test]
+    fn round_trips_packets_at_lacing_page_boundaries() {
+        let lengths = [0, 1, 254, 255, 256, 65_024, 65_025, 65_026, 130_050];
+        let packets: Vec<Vec<u8>> = lengths
+            .iter()
+            .enumerate()
+            .map(|(index, &length)| vec![index as u8; length])
+            .collect();
+        let mut writer = OggPacketWriter::new(Cursor::new(Vec::new()), 23);
+        for (index, packet) in packets.iter().enumerate() {
+            writer.write_packet(packet, index as u64).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut reader = OggPacketReader::new(Cursor::new(writer.into_inner().into_inner()));
+        for (index, expected) in packets.iter().enumerate() {
+            let packet = reader.next_packet().unwrap().unwrap();
+            assert_eq!(&packet.bytes, expected);
+            assert_eq!(packet.page_granule_position, index as u64);
+        }
+        assert!(reader.next_packet().unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_borrowed_packets_after_finish() {
+        let mut writer = OggPacketWriter::new(Cursor::new(Vec::new()), 31);
+        writer.write_packet(b"packet", 0).unwrap();
+        writer.finish().unwrap();
+
+        let error = writer.write_packet(&[0; 1024], 0).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("finished"));
     }
 }

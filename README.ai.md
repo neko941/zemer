@@ -14,12 +14,12 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer-g711`](crates/g711/) (Rust crate `g711`): shared G.711 A-law/μ-law sample encoder and decoder used by WAVE and AIFF-C.
 - [`zemer-metadata`](crates/metadata/): format-independent tags shared by audio formats.
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer reused by Ogg-FLAC.
-- [`zemer-vorbis`](crates/vorbis/): clean-room Vorbis I crate in development; it parses identification, comment, and setup headers, but does not yet decode audio to PCM or encode audio.
+- [`zemer-vorbis`](crates/vorbis/): clean-room Vorbis I Float32 decoder and experimental encoders, including Floor 0/1, residue 0/1/2, inverse coupling, inverse MDCT, windowing, overlap-add, sequential chained links with differing specifications, terminal-granule trimming/validation, and first-link comment rewriting that preserves encoded packets. Both encoder profiles use an adaptive 31-point Floor 1 spectral envelope; the fixed profile uses 8192-sample blocks, omits 16-bin residue partitions that quantize entirely to zero, and has a scalar residue codebook configurable from 8 to 16 bits (12-bit default). An experimental target-bitrate constructor assigns a per-audio-packet budget, accounting for Ogg page overhead, and greedily allocates quantizer precision by unweighted spectral squared-error reduction. Its effective minimum depends on sample rate and channel count because mandatory packet overhead varies by profile; targets that cannot fit are rejected. FFmpeg independently decodes two-second target-rate profiles at 1–8 channels plus 192-kHz stereo, including 5.1 at 256 and 320 kbit/s; ffprobe confirms exact stream durations, and channel-order-matched PCM has maximum per-channel RMS error below 0.0043. The fixed encoder also round-trips a one-frame 255-channel stream internally; this is a boundary check, not high-channel interoperability coverage. For the mono profile, FFmpeg 4.2.2 raw PCM export emits 1,536 padding samples unless clipped to the stream duration. On a 30-second public-domain music excerpt, Zemer's target-rate output at 65.8/130.0/194.2 kbit/s measured RMS errors of 0.00872/0.00289/0.00149 against the decoded input; near-rate-matched FFmpeg/libvorbis outputs measured 0.01950/0.00595/0.00331. These are sample-error measurements, not perceptual listening results. On a 148.2-second public-domain ambient source, Zemer at 64.254/128.307/192.359 kbit/s and FFmpeg 8.1/libvorbis at 64.145/127.827/192.354 kbit/s decoded all 6,535,620 frames; per-channel RMS errors were 0.01357/0.01438, 0.00519/0.00581, 0.00307/0.00338 for Zemer and 0.02248/0.02197, 0.00762/0.00756, 0.00425/0.00426 for libvorbis. libsndfile independently verifies the fixed encoder's five quantizer precisions and mono, stereo, 3-channel, 5.1, and 7.1 outputs. In an independent comparison, fixed-profile zero-partition omission reduced a 44.1-kHz stereo sample from 73,413 to 35,753 bytes (51.3%) with bit-identical libsndfile-decoded Float32 PCM. The decoder matches independent PCM oracles for libvorbisenc streams at mono 8 kHz, stereo 44.1 kHz, three-channel 32 kHz, 5.1 48 kHz, seven-channel 44.1 kHz, and 7.1 96 kHz (12,347 frames per profile; maximum absolute error below 0.002); a libsndfile 1.2.2 192-kHz stereo stream decoded by FFmpeg 4.2.2 (12,347 frames); and two further libVorbis 1.3.7 `oggenc` streams with 4 channels at 22.05 kHz and 5 channels at 44.1 kHz (18,211 and 30,017 frames), matched to libsndfile oracles; a full-length CC0 176.587-second Für Elise recording encoded by Xiph libVorbis I 1.3.3 matches an FFmpeg-derived 16-bit FLAC PCM oracle across all 7,787,476 frames; a public-domain 3.174-second drum-roll/cymbal sting encoded by Xiph libVorbis I 20040629 matches FFmpeg 8.1 PCM for all 139,990 frames; a 148.2-second worldwide public-domain ambient song encoded by Xiph libVorbis I 20070622 matches all 6,535,620 frames against an FFmpeg 8.1-derived half-gain 16-bit FLAC PCM oracle; a 193-second CC BY 4.0 Commons piano stream matches an FFmpeg-derived 24-bit FLAC oracle sample-by-sample; and 19 standalone external Xiph vectors: `1.0-test.ogg`, `1.0.1-test.ogg`, `48k-mono.ogg`, `rc3-test.ogg`, `beta3-test.ogg`, `beta4-test.ogg`, `bimS-silence.ogg`, `rc1-test.ogg`, `rc2-test.ogg`, `mono.ogg`, `sleepzor.ogg`, `highrate-test.ogg`, `moog.ogg`, `rc2-test2.ogg`, `out-of-spec-blocksize.ogg`, and four Floor 0 LSP vectors. Both official Xiph chained vectors also pass per-link PCM comparisons while changing channel count between links. Xiph `test-short.ogg`, the first link of `chain-test3.ogg`, and `combustion.ogg` and `make.ogg` are excluded as exact PCM oracles because setup and audio packets share a page contrary to the mapping's fresh-page rule; independent decoders discard different leading portions. `one-entry-codebook-test.ogg` is truncated in its final page, `singlemap-test.ogg` lacks an EOS page, and `unused-mode-test.ogg` reaches an out-of-range audio-mode index and is rejected. The CLI can inspect, convert to Vorbis with optional `--bitrate` in kbit/s, and edit Ogg Vorbis comments; conversion maps recognized WAVE speaker masks into Vorbis channel order and rejects unrecognized masks. Malformed Ogg truncation and packet-concealment checks pass; perceptual evaluation and wider bitstream conformance remain open, so the format is not advertised as supported.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE library crate.
 - [`zemer-aiff`](crates/aiff/) (Rust crate `aiff`): AIFF/AIFC streaming PCM/float/G.711/IMA4 library crate. Reads AIFF and AIFC `NONE`/`twos`/`sowt` integer PCM, AIFC `fl32`/`fl64`, A-law/μ-law codes, Apple IMA4 packets, and typed `COMT`/`MARK` records; writes AIFF integer PCM, AIFC integer PCM/float/G.711/IMA4, and typed `COMT`/`MARK` records; rewrites NAME/AUTH/ANNO tags without changing audio bytes. AIFF-to-AIFF/AIFC CLI conversion preserves MARK records.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/float32, hybrid `.wvc`, and native DSD decoding; lossless integer PCM encoding for 1–32 channels at 8/16/24/32 bits; standard-bitrate integer PCM hybrid `.wv`+`.wvc` encoding; bit-exact float32 encoding through uncompressed WVX; raw native DSD encoding for 1–32 channels; APEv2 UTF-8 text tags preserve non-text items. The official suite decoded all 35 supported files, skipped 9 legacy files, and rejected all 4 malformed files.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, WAVE/AIFF/FLAC/WavPack conversion, explicit WAVE/AIFC G.711 and AIFC IMA4 output, DSF/DSDIFF/native DSD WavPack transcoding, WAVE/AIFF/DSF/DSDIFF/native and Ogg-FLAC/WavPack metadata editing, and CUE/WAV workflows.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, WAVE/AIFF/FLAC/Ogg Vorbis/WavPack conversion, explicit WAVE/AIFC G.711 and AIFC IMA4 output, DSF/DSDIFF/native DSD WavPack transcoding, WAVE/AIFF/DSF/DSDIFF/native, Ogg-FLAC/Ogg Vorbis, and WavPack metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 Ogg-FLAC decoding verifies each link's terminal granule against its decoded
@@ -30,16 +30,22 @@ comes from the first link.
 Seekable sources can restart at their initial Ogg offset and scan forward to a
 target sample; this path is linear. The optional official CC0 FLAC testbench
 also round-trips accepted cases through the Ogg-FLAC encoder and decoder.
-Independent FFmpeg-generated Ogg-FLAC PCM oracles cover four synthetic
-profiles, from mono 24-bit through 7.1 24-bit at 192 kHz, including large
-packets continued across Ogg pages. Two synthetic Ogg-FLAC files from the
+Independent FFmpeg-generated Ogg-FLAC PCM oracles cover eight synthetic
+profiles across channel counts 1–8, up to 7.1 24-bit at 192 kHz, including large
+packets continued across Ogg pages. A separate sparse 7.1 profile verifies full
+PCM and seeking immediately before and after silent-channel run transitions.
+Two synthetic Ogg-FLAC files from the
 libFLAC 1.4.3 reference encoder add 8-bit mono and 32-bit 7.1 coverage. The
 official CC0 native-FLAC corpus also
-round-trips through Zemer's Ogg-FLAC encoder and decoder. Six external
-current-mapping samples were compared with FFmpeg/libFLAC PCM oracles, and two
-pre-1.1.1 legacy samples were compared with libFLAC PCM oracles. These optional
-ignored tests use external temporary files. A broad independent Ogg-FLAC
-source corpus remains untested; do not claim broad corpus conformance.
+round-trips through Zemer's Ogg-FLAC encoder and decoder. Thirteen current-mapping
+real-source vectors, including seven bundled CC0/public-domain/CC BY-SA Commons or
+NASA recordings, have been checked against known PCM oracles; two pre-1.1.1
+legacy samples were compared with libFLAC PCM oracles. A real chained-link test
+rewrites first-link metadata, verifies PCM across independent 44.1- and 48-kHz
+profiles, seeks immediately before and at the link boundary, accepts exact EOF,
+and rejects seeks beyond EOF. Optional ignored tests use external temporary
+files. Broader Ogg-FLAC source and encoder coverage remains open; do not claim
+broad corpus conformance.
 
 AIFF and AIFC PCM/float/G.711/IMA4 support is in `crates/aiff/`. The optional
 ignored `tests/aiff_interop.rs` test compares the McGill/AFsp 12-bit AIFF and
@@ -49,8 +55,9 @@ are temporary inputs, not bundled fixtures.
 The WAVE reader handles top-level `data` and ordered `LIST/wavl` `data`/`slnt`
 segments in RIFF and RF64. Silence segments hold the previous interleaved frame;
 initial silence uses neutral sample codes. The reader limits files to one
-million retained audio segments. The writer still emits one ordinary contiguous
-`data` chunk.
+million retained audio segments and supported INFO metadata to 16 MiB total,
+65,536 values, and 1 MiB per value. The writer still emits one ordinary
+contiguous `data` chunk.
 
 ## Other repository paths
 
@@ -63,5 +70,21 @@ million retained audio segments. The writer still emits one ordinary contiguous
 `README.md` lists only implemented and tested formats and workflows; planned formats belong in `ROADMAP.md`. The CLI can edit WAVE RIFF INFO, AIFF/AIFC NAME/AUTH/ANNO text chunks, DSF ID3 text, DSDIFF text/comments, native or Ogg-FLAC Vorbis comments, and WavPack APEv2 text tags with `zemer metadata edit`; these rewrite metadata without decoding or re-encoding audio, preserving unknown AIFF/DSDIFF chunks and WavPack non-text items. Ogg-FLAC metadata edits preserve encoded FLAC packets and update the first chained link only. `FlacDecoder::metadata_blocks()` retains raw payloads, and FLAC metadata-block accessors expose typed PICTURE/CUESHEET/SEEKTABLE/APPLICATION data.
 
 Keep each new format in a separate crate depending on `zemer-core`. Keep format parsing and metadata mappings inside that format crate, with the common tag model in `zemer-metadata`. Shared sample types and sample-format conversion belong in `zemer-pcm`; decoder/encoder interfaces belong in `zemer-core`. Whole-format conversion should decode to `PcmBuffer` and encode through the target format crate; `transcode` finalizes the encoder after successful copying. Avoid global registries until callers need them.
+
+CLI conversion preserves a floating-point input for formats that support it. Float input converted to native FLAC, Ogg-FLAC, or AIFF uses 24-bit integer PCM; AIFC can preserve IEEE float samples.
+
+The Ogg reader exposes the EOS granule even when the terminal page has no packets. Vorbis holds the final overlap-add chunk until that granule is known, then trims it; comment rewriting moves the terminal granule onto the final packet page. Comment packets may continue across Ogg pages; rewriting a 70 KiB lyrics field preserves all encoded audio packets. CLI metadata edits retain unmodified repeated comments, including `METADATA_BLOCK_PICTURE`, while replacing or removing only requested keys.
+
+Vorbis header validation requires the setup packet to end its Ogg page, so the first audio packet begins on a fresh page as required by the mapping. A synthetic page-sharing regression verifies that non-compliant streams are rejected.
+
+Vorbis decoding also uses the granule on the page completing the second audio packet to trim pre-zero samples or account for a positive start position. Non-zero offsets require that packet to end its page, so the third packet begins fresh; terminal granules remain relative to the starting position, and standard pages with no granule do not change it.
+
+The public Vorbis decoder accepts short reads and retries interrupted reads from its input source; an end-to-end regression compares its PCM with the ordinary reader path.
+
+The Vorbis integration tests flip every bit in an independent real setup header and assert parsing never panics. A generated Vorbis stream is also rejected at every truncation point in its identification page; later pages have representative truncation checks.
+
+Checked-in Vorbis input fixtures include Xiph/libVorbis and two independent Rust encoder outputs. `oxideav-vorbis 0.0.12` coverage includes stereo 44.1-kHz music and a synthetic six-channel 48-kHz transient profile, each paired with a full libsndfile 1.2.2 Float32 oracle; both external encoders are test-fixture sources only and are not Zemer dependencies.
+
+For later Ogg pages, the decoder checks each owned granule against the decoded PCM endpoint when a following packet arrives. It defers the most recent page's check so a final audio packet followed by a nil EOS page can still use the EOS granule to trim its overlap tail.
 
 Before adding a dependency, record its license and platform/build requirements. Run tests on Linux through `server5`; keep Windows and Linux CI jobs in sync. See `README.md` for current support and public usage.

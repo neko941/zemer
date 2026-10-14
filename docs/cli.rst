@@ -61,6 +61,7 @@ Convert WAVE, AIFF/AIFC, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF input to
    cargo run -p zemer -- convert --format pcm_i16 input.wv output.wav
    cargo run -p zemer -- convert --format wavpack input.wav output.wv
    cargo run -p zemer -- convert --format wavpack --bitrate 128 input.wav output.wv
+   cargo run -p zemer -- convert --format vorbis --bitrate 128 input.wav output.oga
    cargo run -p zemer -- convert --format flac input.wav output.flac
    cargo run -p zemer -- convert --format ogg_flac input.wav output.oga
    cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
@@ -70,8 +71,15 @@ Convert WAVE, AIFF/AIFC, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF input to
    cargo run -p zemer -- convert --format wavpack input.dsf output.wv
 
 WAVE output defaults to classic RIFF; choose RF64 explicitly when needed.
-With WavPack, ``--bitrate`` writes a hybrid ``.wv`` file and a companion
-``.wvc`` correction file. JSON output reports the correction path.
+``--bitrate`` is in kbit/s and accepts 24 through 9600 for Vorbis and
+WavPack. With WavPack it writes a hybrid ``.wv`` file and a companion
+``.wvc`` correction file. With Vorbis it selects the experimental per-packet
+target-rate mode; sparse content can use fewer bits, and file headers raise
+the average bitrate of short files. The effective minimum is profile-dependent:
+Vorbis rejects targets that cannot fit the selected sample rate and channel
+count's mandatory packet overhead. Its allocator optimizes unweighted spectral
+squared error and is not perceptually tuned. JSON reports the WavPack correction
+path when one is created.
 WAVE output carries ``TITLE``, ``ARTIST``, ``ALBUM``, ``DATE``, ``GENRE``, and
 ``COMMENT`` tags; other source comments have no WAVE INFO mapping and are
 omitted.
@@ -91,6 +99,8 @@ and channel count and carries text tags supported by both formats. It does not
 resample or remix.
 Integer conversion rounds to the nearest sample without dithering. Float to
 integer conversion fails for non-finite values or samples outside ``[-1, 1]``.
+Float input converted to native FLAC, Ogg-FLAC, or AIFF uses 24-bit integer
+PCM; choose AIFC to preserve IEEE float samples.
 G.711 output accepts the same explicit format choices and converts to 16-bit
 PCM before companding. Its JSON report includes ``output_encoding``. With
 ``--json``, failures are JSON objects on stderr with a stable ``kind`` field
