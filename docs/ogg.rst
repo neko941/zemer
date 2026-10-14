@@ -44,6 +44,8 @@ below 0.0043. These measurements verify decoding and sample output, not
 perceived quality. Decoder interoperability fixtures also cover independent
 libVorbis and two Rust encoders, including a six-channel transient profile,
 against libsndfile PCM oracles.
+The corpus also checks a full 176.587-second CC0 *Für Elise* recording from
+an older Xiph libVorbis 1.3.3 encoder against an FFmpeg-derived FLAC oracle.
 Vorbis remains experimental until perceptual evaluation and wider external
 corpus conformance are complete.
 

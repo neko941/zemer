@@ -1250,6 +1250,34 @@ fn decodes_full_length_music_recording_to_eof() {
 }
 
 #[test]
+fn decodes_older_full_length_libvorbis_recording_against_ffmpeg_oracle() {
+    let input = include_bytes!("fixtures/vorbis/fur-elise.ogg");
+    let actual = read_vorbis_to_end(input).unwrap();
+    let reference = include_bytes!("fixtures/vorbis/fur-elise-reference.flac");
+    let mut oracle = FlacDecoder::new(Cursor::new(reference)).unwrap();
+    assert_eq!(oracle.spec().sample_rate(), 44_100);
+    assert_eq!(oracle.spec().channels(), 2);
+    assert_eq!(oracle.spec().sample_format(), SampleFormat::PcmI16);
+
+    let mut compared = 0;
+    while let Some(block) = oracle.read_frames(4_096).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("FLAC PCM oracle did not decode to signed 16-bit samples");
+        };
+        for sample in samples {
+            let expected = f32::from(*sample) / 16_384.0;
+            assert!(
+                (actual[compared] - expected).abs() < 0.002,
+                "PCM mismatch at interleaved sample {compared}"
+            );
+            compared += 1;
+        }
+    }
+    assert_eq!(compared, actual.len());
+    assert_eq!(actual.len(), 7_787_476 * 2);
+}
+
+#[test]
 fn decodes_rusty_vorbis_encoder_output_against_libsndfile_oracle() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vorbis");
     compare_external_pcm(
