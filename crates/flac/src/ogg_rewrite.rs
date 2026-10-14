@@ -67,8 +67,9 @@ pub fn rewrite_ogg_metadata<R: Read, W: Write>(
         let (first_packet, first_granule) = initial_audio.first().ok_or(
             AudioError::InvalidData("missing initial Ogg-FLAC audio packet"),
         )?;
-        let granule_offset =
-            first_granule.saturating_sub(frame_block_size(&first_packet.bytes)? as u64);
+        let granule_offset = first_granule
+            .saturating_add(1)
+            .saturating_sub(frame_block_size(&first_packet.bytes)? as u64);
         let mut audio = initial_audio.into_iter();
         loop {
             let (packet, granule) = match audio.next() {
@@ -97,9 +98,12 @@ pub fn rewrite_ogg_metadata<R: Read, W: Write>(
                         let granule = if owns_granule {
                             packet.page_granule_position
                         } else {
-                            granule_offset.checked_add(decoded_samples).ok_or(
-                                AudioError::InvalidData("Ogg-FLAC granule position overflow"),
-                            )?
+                            granule_offset
+                                .checked_add(decoded_samples)
+                                .and_then(|samples| samples.checked_sub(1))
+                                .ok_or(AudioError::InvalidData(
+                                    "Ogg-FLAC granule position overflow",
+                                ))?
                         };
                         (packet, granule)
                     }
@@ -130,7 +134,9 @@ fn normalize_initial_audio<R: Read>(
     if has_granule {
         let granule = first.page_granule_position;
         let decoded_samples = frame_block_size(&first.bytes)? as u64;
-        if granule < decoded_samples && first.page_flags & PAGE_FLAG_EOS == 0 {
+        if granule.checked_add(1).is_none_or(|end| end < decoded_samples)
+            && first.page_flags & PAGE_FLAG_EOS == 0
+        {
             return Err(AudioError::InvalidFormat(
                 "invalid Ogg-FLAC initial audio granule",
             ));
@@ -170,14 +176,17 @@ fn normalize_initial_audio<R: Read>(
             "Ogg-FLAC initial sample count overflow",
         ))?;
     let preceding = total - sizes[sizes.len() - 1];
-    if granule < preceding
-        || (granule < total && initial.last().unwrap().page_flags & PAGE_FLAG_EOS == 0)
+    let granule_end = granule.checked_add(1).ok_or(AudioError::InvalidFormat(
+        "invalid Ogg-FLAC initial audio granule",
+    ))?;
+    if granule_end < preceding
+        || (granule_end < total && initial.last().unwrap().page_flags & PAGE_FLAG_EOS == 0)
     {
         return Err(AudioError::InvalidFormat(
             "invalid Ogg-FLAC initial audio granule",
         ));
     }
-    let offset = granule.saturating_sub(total);
+    let offset = granule_end.saturating_sub(total);
     let count = initial.len();
     let mut decoded = 0_u64;
     let packets = initial
@@ -189,7 +198,7 @@ fn normalize_initial_audio<R: Read>(
             let position = if index + 1 == count {
                 granule
             } else {
-                offset + decoded
+                offset + decoded - 1
             };
             (packet, position)
         })
@@ -397,7 +406,7 @@ fn is_metadata_packet(bytes: &[u8]) -> bool {
 }
 
 fn validate_first_audio(packet: &OggPacket) -> Result<(), AudioError> {
-    if !packet.starts_page || packet.page_granule_position == 0 {
+    if !packet.starts_page {
         return Err(AudioError::InvalidFormat(
             "first Ogg-FLAC audio packet must start an audio page",
         ));

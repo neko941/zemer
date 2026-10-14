@@ -136,13 +136,14 @@ impl<W: Write> OggFlacEncoder<W> {
             self.bits_per_sample,
             self.frame_number,
         )?;
-        let granule = self
+        let samples = self
             .total_samples
             .checked_add(frames as u64)
             .filter(|&total| total <= MAX_TOTAL_SAMPLES)
             .ok_or(AudioError::Unsupported("FLAC sample count overflow"))?;
+        let granule = samples - 1;
         self.writer.write_packet_owned(frame, granule)?;
-        self.total_samples = granule;
+        self.total_samples = samples;
         self.frame_number += 1;
         self.pending.clear();
         Ok(())

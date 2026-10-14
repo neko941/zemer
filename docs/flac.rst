@@ -66,8 +66,9 @@ For seekable inputs, ``OggFlacDecoder::new_seekable`` and
 ``seek_to_sample`` restart from the initial Ogg offset and decode forward.
 CLI inspection and conversion require every chained link to share one audio
 specification because a single WAVE or FLAC output has one fixed PCM format.
-Ogg-FLAC validates page framing and checks the terminal granule against the
-decoded sample count plus the initial granule offset, including when
+Ogg-FLAC validates page framing and interprets granules as zero-based indexes
+of the last sample on each completed page. It checks the terminal granule
+against decoded sample counts and the initial stream offset, including when
 STREAMINFO's total is unknown. It trims trailing samples from the final
 decoded block as required. For compatibility, it accepts an empty terminal EOS
 packet when that packet carries the final granule, and rejects empty nonterminal

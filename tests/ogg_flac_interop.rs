@@ -546,8 +546,8 @@ fn decodes_and_rewrites_cc0_david_allen_speech_ogg_flac_fixture() {
 
 #[test]
 fn decodes_and_rewrites_cc0_eaton_centre_ogg_flac_fixture() {
-    const FRAMES: u64 = 1_377_280;
-    const PCM_FNV1A64: u64 = 0x716f_c703_274e_192a;
+    const FRAMES: u64 = 1_377_225;
+    const PCM_FNV1A64: u64 = 0x7b40_1cd0_5a9b_74e1;
     const TITLE: &str = "CC0 Eaton Centre Ogg-FLAC rewrite regression";
 
     let input = include_bytes!("fixtures/ogg-flac-eaton-centre.oga");

@@ -183,12 +183,15 @@ fn trim_final_block(
     decoded_samples: u64,
     final_granule: u64,
 ) -> Result<Option<PcmBuffer>, AudioError> {
-    if final_granule > decoded_samples {
+    let final_samples = final_granule.checked_add(1).ok_or(AudioError::InvalidData(
+        "Ogg-FLAC final granule overflows sample count",
+    ))?;
+    if final_samples > decoded_samples {
         return Err(AudioError::InvalidData(
             "Ogg-FLAC final granule exceeds decoded sample count",
         ));
     }
-    let trailing = usize::try_from(decoded_samples - final_granule)
+    let trailing = usize::try_from(decoded_samples - final_samples)
         .map_err(|_| AudioError::InvalidData("Ogg-FLAC trim count overflow"))?;
     if trailing > block.frames() {
         return Err(AudioError::InvalidData(
@@ -223,6 +226,7 @@ impl<R: Read> OggFlacDecoder<R> {
             .granule_offset
             .load(Ordering::Acquire)
             .checked_add(self.link_output_samples)
+            .and_then(|samples| samples.checked_sub(1))
             .ok_or(AudioError::InvalidData("Ogg-FLAC final granule overflow"))?;
         if self.final_granule.load(Ordering::Acquire) != expected {
             return Err(AudioError::InvalidData(
@@ -562,12 +566,19 @@ fn collect_initial_audio_page<R: Read>(
         let terminal_page = packet.0.page_flags & PAGE_FLAG_EOS != 0;
         audio.push_back(packet);
         if owns_granule {
-            if granule == u64::MAX || (granule < samples && !terminal_page) {
+            if granule == u64::MAX
+                || (granule.checked_add(1).is_none_or(|end| end < samples) && !terminal_page)
+            {
                 return Err(AudioError::InvalidFormat(
                     "invalid Ogg-FLAC initial audio granule",
                 ));
             }
-            granule_offset.store(granule.saturating_sub(samples), Ordering::Release);
+            granule_offset.store(
+                granule
+                    .saturating_add(1)
+                    .saturating_sub(samples),
+                Ordering::Release,
+            );
             return Ok(audio);
         }
         packet = packets
@@ -865,7 +876,7 @@ mod tests {
         let mut comment = vec![4, 0, 0, 8];
         comment.extend_from_slice(&[0; 8]);
         stream.extend(page(&comment, 0, 1, 0));
-        stream.extend(page(&NATIVE[42..], 4, 2, 1));
+        stream.extend(page(&NATIVE[42..], 4, 2, 0));
         stream
     }
 
@@ -873,7 +884,7 @@ mod tests {
         let mut header = Vec::from(&b"\x7fFLAC\x01\x00\x00\x00fLaC"[..]);
         header.extend_from_slice(&NATIVE[4..42]);
         let mut stream = page(&header, 2, 0, 0);
-        stream.extend(page(&NATIVE[42..], 4, 1, 1));
+        stream.extend(page(&NATIVE[42..], 4, 1, 0));
         stream
     }
 
@@ -1115,10 +1126,10 @@ mod tests {
         let block =
             zemer_core::PcmBuffer::new(spec, Samples::I16(vec![1, 10, 2, 20, 3, 30, 4, 40]))
                 .unwrap();
-        let block = trim_final_block(block, 4, 3).unwrap().unwrap();
+        let block = trim_final_block(block, 4, 2).unwrap().unwrap();
         assert_eq!(block.frames(), 3);
         assert_eq!(block.samples(), &Samples::I16(vec![1, 10, 2, 20, 3, 30]));
-        assert!(trim_final_block(block, 3, 4).is_err());
+        assert!(trim_final_block(block, 3, 3).is_err());
     }
 
     #[test]
