@@ -47,7 +47,7 @@ impl<R: Read> VorbisStreamReader<R> {
         }
         let identification = VorbisIdentificationHeader::parse(&identification_packet.bytes)?;
         let comment_packet = next_header_packet(&mut packets)?;
-        let comments = VorbisCommentHeader::parse(&comment_packet.bytes)?;
+        let comments = VorbisCommentHeader::parse_for_stream(&comment_packet.bytes)?;
         let setup_packet = next_header_packet(&mut packets)?;
         if !setup_packet.ends_page {
             return Err(AudioError::InvalidFormat(

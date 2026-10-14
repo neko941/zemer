@@ -1,4 +1,4 @@
-use crate::bitstream::{BitReader, BitWriter};
+use crate::bitstream::BitWriter;
 use zemer_core::{AudioError, Metadata};
 
 pub(crate) const COMMENT_LIMIT: usize = 16 * 1024 * 1024;
@@ -77,27 +77,64 @@ impl VorbisIdentificationHeader {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VorbisCommentHeader {
     vendor: String,
     metadata: Metadata,
 }
 
+enum CommentHeaderParseError {
+    Truncated,
+    Audio(AudioError),
+}
+
+impl From<AudioError> for CommentHeaderParseError {
+    fn from(error: AudioError) -> Self {
+        Self::Audio(error)
+    }
+}
+
+impl CommentHeaderParseError {
+    fn into_audio_error(self) -> AudioError {
+        match self {
+            Self::Truncated => AudioError::InvalidFormat("truncated Vorbis comment header"),
+            Self::Audio(error) => error,
+        }
+    }
+}
+
 impl VorbisCommentHeader {
     pub fn parse(packet: &[u8]) -> Result<Self, AudioError> {
-        if packet.len() < COMMENT_PREFIX.len() + 9 || !packet.starts_with(COMMENT_PREFIX) {
-            return Err(AudioError::InvalidFormat("invalid Vorbis comment header"));
+        Self::parse_packet(packet).map_err(CommentHeaderParseError::into_audio_error)
+    }
+
+    pub(crate) fn parse_for_stream(packet: &[u8]) -> Result<Self, AudioError> {
+        match Self::parse_packet(packet) {
+            Ok(comments) => Ok(comments),
+            Err(CommentHeaderParseError::Truncated) => Ok(Self::default()),
+            Err(error) => Err(error.into_audio_error()),
+        }
+    }
+
+    fn parse_packet(packet: &[u8]) -> Result<Self, CommentHeaderParseError> {
+        if packet.len() < COMMENT_PREFIX.len() && COMMENT_PREFIX.starts_with(packet) {
+            return Err(CommentHeaderParseError::Truncated);
+        }
+        if !packet.starts_with(COMMENT_PREFIX) {
+            return Err(CommentHeaderParseError::Audio(AudioError::InvalidFormat(
+                "invalid Vorbis comment header",
+            )));
         }
         if packet.len() > COMMENT_LIMIT {
-            return Err(AudioError::InvalidData(
+            return Err(CommentHeaderParseError::Audio(AudioError::InvalidData(
                 "Vorbis comment header exceeds the 16 MiB limit",
-            ));
+            )));
         }
         let mut cursor = COMMENT_PREFIX.len();
         let vendor = read_utf8(packet, &mut cursor)?.to_owned();
         let count = read_u32(packet, &mut cursor)? as usize;
         if cursor == packet.len() || count > (packet.len() - cursor - 1) / 4 {
-            return Err(AudioError::InvalidData("too many Vorbis comments"));
+            return Err(CommentHeaderParseError::Truncated);
         }
         let mut metadata = Metadata::default();
         for _ in 0..count {
@@ -114,11 +151,13 @@ impl VorbisCommentHeader {
             }
             metadata.insert(key, value.to_owned());
         }
-        let mut framing = BitReader::new(&packet[cursor..]);
-        if framing.read_bits(1)? != 1 {
-            return Err(AudioError::InvalidFormat(
+        let framing = packet
+            .get(cursor)
+            .ok_or(CommentHeaderParseError::Truncated)?;
+        if framing & 1 != 1 {
+            return Err(CommentHeaderParseError::Audio(AudioError::InvalidFormat(
                 "invalid Vorbis comment framing bit",
-            ));
+            )));
         }
         Ok(Self { vendor, metadata })
     }
@@ -213,25 +252,28 @@ fn signed_bitrate(bytes: &[u8]) -> Option<i32> {
     (bitrate >= 0).then_some(bitrate)
 }
 
-fn read_u32(packet: &[u8], cursor: &mut usize) -> Result<u32, AudioError> {
+fn read_u32(packet: &[u8], cursor: &mut usize) -> Result<u32, CommentHeaderParseError> {
     let end = cursor
         .checked_add(4)
         .filter(|&end| end <= packet.len())
-        .ok_or(AudioError::InvalidFormat("truncated Vorbis comment header"))?;
+        .ok_or(CommentHeaderParseError::Truncated)?;
     let value = u32::from_le_bytes(packet[*cursor..end].try_into().unwrap());
     *cursor = end;
     Ok(value)
 }
 
-fn read_utf8<'a>(packet: &'a [u8], cursor: &mut usize) -> Result<&'a str, AudioError> {
+fn read_utf8<'a>(packet: &'a [u8], cursor: &mut usize) -> Result<&'a str, CommentHeaderParseError> {
     let length = usize::try_from(read_u32(packet, cursor)?)
         .map_err(|_| AudioError::InvalidFormat("Vorbis comment length overflow"))?;
     let end = cursor
         .checked_add(length)
         .filter(|&end| end <= packet.len())
-        .ok_or(AudioError::InvalidFormat("truncated Vorbis comment field"))?;
-    let value = std::str::from_utf8(&packet[*cursor..end])
-        .map_err(|_| AudioError::InvalidFormat("Vorbis comment field is not UTF-8"))?;
+        .ok_or(CommentHeaderParseError::Truncated)?;
+    let value = std::str::from_utf8(&packet[*cursor..end]).map_err(|_| {
+        CommentHeaderParseError::Audio(AudioError::InvalidFormat(
+            "Vorbis comment field is not UTF-8",
+        ))
+    })?;
     *cursor = end;
     Ok(value)
 }
@@ -308,6 +350,22 @@ mod tests {
         let mut packet = comment(&[]);
         *packet.last_mut().unwrap() = 0;
         assert!(VorbisCommentHeader::parse(&packet).is_err());
+    }
+
+    #[test]
+    fn stream_parse_ignores_truncated_comments_but_rejects_invalid_framing() {
+        let complete = comment(&["TITLE=Song"]);
+        for length in 0..complete.len() {
+            let truncated = &complete[..length];
+            let comments = VorbisCommentHeader::parse_for_stream(truncated)
+                .unwrap_or_else(|_| panic!("truncated comment prefix of length {length} failed"));
+            assert!(comments.metadata().iter().next().is_none());
+            assert!(VorbisCommentHeader::parse(truncated).is_err());
+        }
+
+        let mut unframed = comment(&[]);
+        *unframed.last_mut().unwrap() = 0;
+        assert!(VorbisCommentHeader::parse_for_stream(&unframed).is_err());
     }
 
     #[test]

@@ -53,6 +53,31 @@ fn generated_stereo_vorbis() -> Vec<u8> {
     bytes
 }
 
+fn replace_vorbis_packet(input: &[u8], index: usize, replacement: &[u8]) -> Vec<u8> {
+    let mut reader = OggPacketReader::new(Cursor::new(input));
+    let mut writer = OggPacketWriter::new(Vec::new(), 0x5a45_4d45);
+    let mut replaced = false;
+    let mut packet_index = 0;
+    while let Some((packet, owns_granule)) = reader.next_packet_with_granule().unwrap() {
+        let granule = if owns_granule {
+            packet.page_granule_position
+        } else {
+            NO_GRANULE_POSITION
+        };
+        let bytes = if packet_index == index {
+            replaced = true;
+            replacement
+        } else {
+            &packet.bytes
+        };
+        writer.write_packet(bytes, granule).unwrap();
+        packet_index += 1;
+    }
+    assert!(replaced, "packet index {index} exists");
+    writer.finish().unwrap();
+    writer.into_inner()
+}
+
 struct ShortInterruptedReader<'a> {
     input: Cursor<&'a [u8]>,
     interrupt_next: bool,
@@ -359,6 +384,15 @@ fn decodes_from_short_reads_with_interrupted_io() {
         };
         actual.extend_from_slice(samples);
     }
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn truncated_comment_header_does_not_prevent_audio_decode() {
+    let original = generated_stereo_vorbis();
+    let truncated_comment = replace_vorbis_packet(&original, 1, b"\x03vorbis\x00");
+    let expected = read_vorbis_to_end(&original).unwrap();
+    let actual = read_vorbis_to_end(&truncated_comment).unwrap();
     assert_eq!(actual, expected);
 }
 
