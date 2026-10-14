@@ -197,6 +197,12 @@ Both official chained vectors also pass independent per-link comparisons:
 `chain-test2.ogg` is mono then stereo with the same respective link lengths.
 These corpus files and PCM oracles remain external.
 
+On 2026-10-15, all 19 standalone vectors were freshly downloaded and compared
+sample-by-sample against newly generated libsndfile 1.2.2 Float32 oracles on
+server5. The ignored corpus test passed all 19 full streams at commit
+`4925a84`; every sample met the existing 0.002 maximum-error bound. The vector
+and oracle files remain outside the repository.
+
 The newer Xiph `combustion.ogg` and `make.ogg` vectors put audio packets on
 the page that completes the setup header. The [Vorbis I Ogg mapping](https://xiph.org/vorbis/doc/Vorbis_I_spec.html)
 requires the first audio packet to start on a fresh page, so these streams are
