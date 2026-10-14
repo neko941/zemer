@@ -27,6 +27,12 @@ impl<W: Write> OggPacketWriter<W> {
     }
 
     pub fn write_packet(&mut self, packet: &[u8], granule_position: u64) -> io::Result<()> {
+        if self.finished || self.poisoned {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Ogg packet writer is finished or unusable",
+            ));
+        }
         let mut owned = Vec::new();
         owned
             .try_reserve_exact(packet.len())
@@ -172,7 +178,7 @@ impl<W: Write> OggPacketWriter<W> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{self, Cursor};
 
     use crate::{OggPacketReader, PAGE_FLAG_BOS, PAGE_FLAG_CONTINUED, PAGE_FLAG_EOS};
 
@@ -229,5 +235,16 @@ mod tests {
             assert_eq!(packet.page_granule_position, index as u64);
         }
         assert!(reader.next_packet().unwrap().is_none());
+    }
+
+    #[test]
+    fn rejects_borrowed_packets_after_finish() {
+        let mut writer = OggPacketWriter::new(Cursor::new(Vec::new()), 31);
+        writer.write_packet(b"packet", 0).unwrap();
+        writer.finish().unwrap();
+
+        let error = writer.write_packet(&[0; 1024], 0).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("finished"));
     }
 }
