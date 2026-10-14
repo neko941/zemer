@@ -47,6 +47,9 @@ against libsndfile PCM oracles.
 The real-source corpus also includes a public-domain 3.174-second drum-roll
 and cymbal recording encoded by Xiph libVorbis I 20040629, checked against an
 FFmpeg 8.1 Float32 PCM oracle across all 139,990 frames.
+It also includes Keith Adler's 148.2-second ambient song, released into the
+worldwide public domain and encoded by Xiph libVorbis I 20070622; all 6,535,620
+frames match a half-gain FFmpeg 8.1 signed-16 FLAC oracle within 0.002.
 The corpus also checks a full 176.587-second CC0 *Für Elise* recording from
 an older Xiph libVorbis 1.3.3 encoder against an FFmpeg-derived FLAC oracle.
 Vorbis remains experimental until perceptual evaluation and wider external
