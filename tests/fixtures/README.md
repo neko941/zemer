@@ -384,8 +384,9 @@ after metadata rewriting. Ogg-FLAC fixture SHA-256:
 `5887c1f52365f56dc752900c4e7fe5c32132c27ddcfd3783f63354b0ec60f49c`.
 The chained-link integration test joins this file to the independent 48 kHz
 stereo FFmpeg fixture, rewrites only the first link's title, and verifies both
-links' decoded PCM across the 44.1-to-48 kHz transition. It also seeks to the
-first sample of the second link and verifies the returned samples.
+links' decoded PCM across the 44.1-to-48 kHz transition. It seeks immediately
+before and at the link boundary, verifies the active link specifications and
+PCM, accepts exact EOF, and rejects seeks beyond EOF.
 
 `ogg-flac-sparse-7_1.oga` is a synthetic 131,072-frame, 48 kHz, 7.1-channel
 16-bit stream encoded by FFmpeg 8.1. Exactly one channel carries deterministic

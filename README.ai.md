@@ -42,9 +42,10 @@ real-source vectors, including six bundled CC0/public-domain/CC BY-SA Commons or
 NASA recordings, have been checked against known PCM oracles; two pre-1.1.1
 legacy samples were compared with libFLAC PCM oracles. A real chained-link test
 rewrites first-link metadata, verifies PCM across independent 44.1- and 48-kHz
-profiles, and seeks across the link boundary. Optional ignored tests use
-external temporary files. Broader Ogg-FLAC source and encoder coverage remains
-open; do not claim broad corpus conformance.
+profiles, seeks immediately before and at the link boundary, accepts exact EOF,
+and rejects seeks beyond EOF. Optional ignored tests use external temporary
+files. Broader Ogg-FLAC source and encoder coverage remains open; do not claim
+broad corpus conformance.
 
 AIFF and AIFC PCM/float/G.711/IMA4 support is in `crates/aiff/`. The optional
 ignored `tests/aiff_interop.rs` test compares the McGill/AFsp 12-bit AIFF and
