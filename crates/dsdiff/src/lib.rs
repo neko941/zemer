@@ -396,20 +396,52 @@ mod tests {
             text: String::new(),
         };
 
-        encoder.set_markers(&[marker(0x0002)]).unwrap();
+        encoder.set_markers(&[marker(0x0004)]).unwrap();
         assert!(encoder.set_markers(&[marker(0x0001)]).is_err());
+        assert!(encoder.set_markers(&[marker(0x0002)]).is_err());
+        assert!(encoder.set_markers(&[marker(0x000c)]).is_err());
         assert!(encoder.set_markers(&[marker(0x0100)]).is_err());
 
         let mut metadata = Metadata::default();
         for id in ["MLFT", "MRGT", "C   ", "LS  ", "RS  "] {
             metadata.insert("DSDIFF_CHANNEL_ID", id);
         }
-        encoder.set_markers(&[marker(0x0002)]).unwrap();
+        encoder.set_markers(&[marker(0x0004)]).unwrap();
         metadata.remove("DSDIFF_CHANNEL_ID");
         for id in ["C001", "C002", "C003", "C004", "C005"] {
             metadata.insert("DSDIFF_CHANNEL_ID", id);
         }
         assert!(encoder.set_metadata(&metadata).is_err());
+
+        let six_channel_spec = DsdSpec::new_with_speaker_mask(2_822_400, 6, Some(0x3f)).unwrap();
+        let mut six_channel_encoder =
+            DsdiffEncoder::new(Cursor::new(Vec::new()), six_channel_spec).unwrap();
+        six_channel_encoder.set_markers(&[marker(0x0004)]).unwrap();
+        six_channel_encoder.set_markers(&[marker(0x0005)]).unwrap();
+        assert!(six_channel_encoder.set_markers(&[marker(0x0002)]).is_err());
+        assert!(six_channel_encoder.set_markers(&[marker(0x000c)]).is_err());
+        assert!(six_channel_encoder.set_markers(&[marker(0x000d)]).is_err());
+        assert!(six_channel_encoder.set_markers(&[marker(0x0100)]).is_err());
+
+        for (channels, layout, invalid_flags) in [(5_u16, 0x37_u32, 0x0002_u16), (6, 0x3f, 0x000c)]
+        {
+            let spec = DsdSpec::new_with_speaker_mask(2_822_400, channels, Some(layout)).unwrap();
+            let mut encoder = DsdiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+            encoder.set_markers(&[marker(0x0004)]).unwrap();
+            encoder
+                .write_dsd_octets(&DsdBuffer::new(spec, vec![0x55; usize::from(channels)]).unwrap())
+                .unwrap();
+            encoder.finish().unwrap();
+
+            let mut file = encoder.into_inner().into_inner();
+            let marker_chunk = file
+                .windows(4)
+                .position(|window| window == b"MARK")
+                .unwrap();
+            file[marker_chunk + 12 + 16..marker_chunk + 12 + 18]
+                .copy_from_slice(&invalid_flags.to_be_bytes());
+            assert!(DsdiffDecoder::new(Cursor::new(file)).is_err());
+        }
     }
 
     #[test]

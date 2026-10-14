@@ -61,7 +61,7 @@ pub(crate) fn validate_markers(
                         && ls == b"LS  "
                         && rs == b"RS  " =>
                 {
-                    flags & 0x0701 == 0 && flags & 0x000e != 0x000e
+                    flags & 0x0703 == 0 && flags & 0x000c != 0x000c
                 }
                 [left, right, center, lfe, ls, rs]
                     if left == b"MLFT"
@@ -71,7 +71,9 @@ pub(crate) fn validate_markers(
                         && ls == b"LS  "
                         && rs == b"RS  " =>
                 {
-                    flags & 0x0700 == 0 && flags & 0x0002 == 0 && flags & 0x000f != 0x000f
+                    flags & 0x0702 == 0
+                        && flags & 0x000d != 0x000d
+                        && (flags & 0x0001 != 0 || flags & 0x000c != 0x000c)
                 }
                 _ => false,
             };
