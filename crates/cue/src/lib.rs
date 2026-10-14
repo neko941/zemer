@@ -126,4 +126,15 @@ mod tests {
         sheet.tracks[0].1.title = Some("safe\nTRACK 02 AUDIO".to_owned());
         assert!(sheet.to_cue_string().is_err());
     }
+
+    #[test]
+    fn rejects_oversized_cue_output_before_rendering() {
+        let mut sheet =
+            CUEFile::parse("FILE \"one.wav\" WAVE\nTRACK 01 AUDIO\nINDEX 01 00:00:00\n").unwrap();
+        sheet.tracks[0].1.title = Some("x".repeat(MAX_CUE_BYTES));
+        assert!(sheet.to_cue_string().unwrap_err().contains("16 MiB"));
+
+        sheet.files.resize(100, "extra.wav".to_owned());
+        assert!(sheet.to_cue_string().is_err());
+    }
 }

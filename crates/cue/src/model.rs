@@ -29,7 +29,11 @@ impl CUEFile {
     }
 
     pub fn to_cue_string(&self) -> Result<String, String> {
-        if self.files.is_empty() || self.tracks.is_empty() || self.tracks.len() > 99 {
+        if self.files.is_empty()
+            || self.files.len() > 99
+            || self.tracks.is_empty()
+            || self.tracks.len() > 99
+        {
             return Err("CUE output must have 1-99 tracks with valid file references".to_owned());
         }
         for value in self
@@ -66,7 +70,55 @@ impl CUEFile {
         if files_with_tracks.contains(&false) {
             return Err("every CUE WAVE file needs at least one AUDIO track".to_owned());
         }
+        let (bytes, lines) = self.output_size()?;
+        check_output_size(bytes, lines)?;
         Ok(self.to_string())
+    }
+
+    fn output_size(&self) -> Result<(usize, usize), String> {
+        let mut bytes = 0;
+        let mut lines = 0;
+        for comment in &self.comments {
+            add_output_line(&mut bytes, &mut lines, 4 + comment.len())?;
+        }
+        for (prefix, value) in [
+            ("CATALOG ", self.catalog.as_deref()),
+            ("CDTEXTFILE ", self.text_file.as_deref()),
+            ("TITLE ", self.title.as_deref()),
+            ("PERFORMER ", self.performer.as_deref()),
+            ("SONGWRITER ", self.songwriter.as_deref()),
+        ] {
+            if let Some(value) = value {
+                let value_len = if prefix == "CATALOG " {
+                    value.len()
+                } else {
+                    quoted_len(value)?
+                };
+                add_output_line(&mut bytes, &mut lines, prefix.len() + value_len)?;
+            }
+        }
+        for (file_id, path) in self.files.iter().enumerate() {
+            add_output_line(
+                &mut bytes,
+                &mut lines,
+                "FILE ".len() + quoted_len(path)? + " WAVE".len(),
+            )?;
+            for (_, track) in self
+                .tracks
+                .iter()
+                .filter(|(track_file_id, _)| *track_file_id == file_id)
+            {
+                add_output_line(&mut bytes, &mut lines, "  TRACK 01 AUDIO".len())?;
+                let (track_bytes, track_lines) = track.output_size()?;
+                bytes = bytes
+                    .checked_add(track_bytes)
+                    .ok_or_else(|| "CUE output size overflow".to_owned())?;
+                lines = lines
+                    .checked_add(track_lines)
+                    .ok_or_else(|| "CUE output line count overflow".to_owned())?;
+            }
+        }
+        Ok((bytes, lines))
     }
 }
 
@@ -127,7 +179,59 @@ impl CUETrack {
 
     pub fn to_cue_string(&self) -> Result<String, String> {
         self.validate()?;
+        let (bytes, lines) = self.output_size()?;
+        check_output_size(bytes, lines)?;
         Ok(self.to_string())
+    }
+
+    fn output_size(&self) -> Result<(usize, usize), String> {
+        let mut bytes = 0;
+        let mut lines = 0;
+        for (prefix, value) in [
+            ("    TITLE ", self.title.as_deref()),
+            ("    PERFORMER ", self.performer.as_deref()),
+            ("    SONGWRITER ", self.songwriter.as_deref()),
+        ] {
+            if let Some(value) = value {
+                add_output_line(&mut bytes, &mut lines, prefix.len() + quoted_len(value)?)?;
+            }
+        }
+        if let Some(flags) = self.flags.filter(|flags| !flags.is_empty()) {
+            add_output_line(
+                &mut bytes,
+                &mut lines,
+                "    FLAGS ".len() + flags.to_string().len(),
+            )?;
+        }
+        if let Some(isrc) = &self.isrc {
+            add_output_line(&mut bytes, &mut lines, "    ISRC ".len() + isrc.len())?;
+        }
+        if let Some(timestamp) = self.pre_gap {
+            add_output_line(
+                &mut bytes,
+                &mut lines,
+                "    PREGAP ".len() + timestamp.to_string().len(),
+            )?;
+        }
+        for (index, timestamp) in &self.indices {
+            let index_len = format!("{index:02}").len();
+            add_output_line(
+                &mut bytes,
+                &mut lines,
+                "    INDEX ".len() + index_len + 1 + timestamp.to_string().len(),
+            )?;
+        }
+        if let Some(timestamp) = self.post_gap {
+            add_output_line(
+                &mut bytes,
+                &mut lines,
+                "    POSTGAP ".len() + timestamp.to_string().len(),
+            )?;
+        }
+        for comment in &self.comments {
+            add_output_line(&mut bytes, &mut lines, "    REM ".len() + comment.len())?;
+        }
+        Ok((bytes, lines))
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -333,6 +437,34 @@ impl Display for CUETimeStamp {
 
 fn render_text(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\\\""))
+}
+
+fn quoted_len(value: &str) -> Result<usize, String> {
+    value
+        .len()
+        .checked_add(value.bytes().filter(|byte| *byte == b'"').count())
+        .and_then(|length| length.checked_add(2))
+        .ok_or_else(|| "CUE output size overflow".to_owned())
+}
+
+fn add_output_line(bytes: &mut usize, lines: &mut usize, line_bytes: usize) -> Result<(), String> {
+    *bytes = bytes
+        .checked_add(line_bytes)
+        .ok_or_else(|| "CUE output size overflow".to_owned())?;
+    *lines = lines
+        .checked_add(1)
+        .ok_or_else(|| "CUE output line count overflow".to_owned())?;
+    Ok(())
+}
+
+fn check_output_size(bytes: usize, lines: usize) -> Result<(), String> {
+    let size = bytes
+        .checked_add(lines.saturating_sub(1))
+        .ok_or_else(|| "CUE output size overflow".to_owned())?;
+    if size > crate::MAX_CUE_BYTES {
+        return Err("CUE output exceeds the 16 MiB size limit".to_owned());
+    }
+    Ok(())
 }
 
 fn validate_line_text(value: &str) -> Result<(), String> {
