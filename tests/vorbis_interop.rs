@@ -1109,6 +1109,7 @@ fn decodes_libvorbis_profiles_against_libsndfile_pcm_oracles() {
         (44_100, 2),
         (32_000, 3),
         (48_000, 6),
+        (44_100, 7),
         (96_000, 8),
     ] {
         let input = fixtures.join(format!("libvorbis-{sample_rate}-{channels}.ogg"));

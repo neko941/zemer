@@ -59,7 +59,11 @@ The integration suite also flips one bit in each byte of the independent
 | 44.1 kHz | 2 | 12,347 | ``facf7e729f6d4cd50ed283ca4a2924d96c5f4f2c2a5e788f6456101d5943a480`` | ``1bcf85bb5ec4582f794ff97299747cc3afaf0a3ce612de49cf7ad6a91bb04d51`` |
 | 32 kHz | 3 | 12,347 | ``b5b3b00e88ec1efbc715c97e83b3271400ba38467a5d70862da4a150200fcdab`` | ``d0e725ead42e93057b67d2f5e716c125721e3de972d803af89298cb46800e77b`` |
 | 48 kHz | 6 | 12,347 | ``57c4a0002098353644855ffac9b3d17ac9894266200cbb1bdc9419f567496968`` | ``48a4884fcea56f24a2d26dc326e908bdbb9c336cbdd0601375eaa6927b599b90`` |
+| 44.1 kHz | 7 | 12,347 | ``e3b064adca1eaf3aabf125d8e7f3e51682605b5ae4b2103139f9a8c91bda6725`` | ``ebfacac60ebae281b99f6f58ca5b2fd868fd21d1663aa6ae17c79365faff6104`` |
 | 96 kHz | 8 | 12,347 | ``7d35aa211a4a90db9efb22f006154b84054d16642a9cd45e8acdb8db74616ee9`` | ``a1cf0d54d2d0001813805cf68b593da8a00c04de9503ac9bbddab40a3270bbb7`` |
+
+The seven-channel input was encoded by FFmpeg 8.1 using its libvorbis encoder;
+libsndfile 1.2.2 independently decoded the complete stream to its oracle.
 
 `libsndfile-192000-2.ogg` adds 12,347 stereo frames at 192 kHz, written by
 libsndfile 1.2.2's Ogg/Vorbis encoder from distinct 18,137-Hz and 67,021-Hz
