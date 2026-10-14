@@ -482,6 +482,48 @@ fn decodes_and_rewrites_nasa_martian_dust_devil_fixture() {
 }
 
 #[test]
+fn decodes_and_rewrites_cc0_gymnopedie_ogg_flac_fixture() {
+    const FRAMES: u64 = 3_442_678;
+    const PCM_FNV1A64: u64 = 0x1b94_80cf_175d_6580;
+    const TITLE: &str = "CC0 Gymnopedie Ogg-FLAC rewrite regression";
+    let decode_pcm_digest = |bytes: &[u8], expected_title: Option<&str>| {
+        let mut decoder = OggFlacDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.spec(),
+            AudioSpec::new(22_050, 2, SampleFormat::PcmI16).unwrap()
+        );
+        if let Some(title) = expected_title {
+            assert_eq!(decoder.metadata().values("TITLE"), [title]);
+        }
+        let mut frames = 0;
+        let mut digest = 0xcbf2_9ce4_8422_2325;
+        while let Some(block) = decoder.read_frames(2_048).unwrap() {
+            let Samples::I16(samples) = block.samples() else {
+                panic!("Gymnopedie Ogg-FLAC fixture must decode to signed 16-bit PCM");
+            };
+            for byte in samples.iter().flat_map(|sample| sample.to_le_bytes()) {
+                digest = (digest ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            frames += (samples.len() / 2) as u64;
+        }
+        (frames, digest)
+    };
+
+    let input = include_bytes!("fixtures/ogg-flac-gymnopedie.oga");
+    let (frames, digest) = decode_pcm_digest(input, None);
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", TITLE);
+    let mut rewritten = Vec::new();
+    rewrite_ogg_metadata(Cursor::new(input), &mut rewritten, &metadata).unwrap();
+    let (frames, digest) = decode_pcm_digest(&rewritten, Some(TITLE));
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+}
+
+#[test]
 #[ignore = "requires the public-domain Wapichan Ogg-FLAC sample and libFLAC PCM oracle paths in ZEMER_OGG_FLAC_WAPICHAN_SAMPLE and ZEMER_OGG_FLAC_WAPICHAN_PCM"]
 fn decodes_external_public_domain_wapichan_speech_against_libflac_pcm_oracle() {
     const FRAMES: u64 = 2_867_200;

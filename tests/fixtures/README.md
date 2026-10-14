@@ -352,6 +352,16 @@ full-stream FNV-1a 64-bit digest `cb02a2047c6f0a19` before and after Ogg
 metadata rewriting. Ogg-FLAC fixture SHA-256:
 `F5BB21AD7B1738888C51C8B60ECE9AF8E659322723AD296CA34A48F033E641BB`.
 
+`ogg-flac-gymnopedie.oga` is Teknopazzo's 156-second performance of Erik
+Satie's *Gymnopédie No. 3*, dedicated under CC0 1.0 on [Wikimedia
+Commons](https://commons.wikimedia.org/wiki/File:Gymnop%C3%A9die_no.3.ogg).
+It is 22.05 kHz, stereo, signed 16-bit, and 3,442,678 frames. FFmpeg 8.1
+decodes it to a 13,770,712-byte s16le oracle (SHA-256
+`78b8b419b99688512c5bdf5b1cce1943e53842d707bd28ebddfd4c12f6c16aaf`); the
+test checks its full-stream FNV-1a 64-bit digest `1b9480cf175d6580` before and
+after Ogg metadata rewriting. Ogg-FLAC fixture SHA-256:
+`20a8311eb71e2675de49fa287ef1c0929962838a6dffd76bbf52851c85d70f5d`.
+
 Two additional Ogg-FLAC fixtures were encoded by the system libFLAC 1.4.3
 reference encoder. Their PCM is deterministic synthetic data, and integration
 tests verify every decoded sample against the source formula rather than a
