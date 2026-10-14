@@ -77,7 +77,7 @@ The public Vorbis decoder accepts short reads and retries interrupted reads from
 
 The Vorbis integration tests flip every bit in an independent real setup header and assert parsing never panics. A generated Vorbis stream is also rejected at every truncation point in its identification page; later pages have representative truncation checks.
 
-Checked-in Vorbis input fixtures include Xiph/libVorbis and two independent Rust encoder outputs. The additional `oxideav-vorbis 0.0.12` stream is paired with a full libsndfile 1.2.2 Float32 oracle; both external encoders are test-fixture sources only and are not Zemer dependencies.
+Checked-in Vorbis input fixtures include Xiph/libVorbis and two independent Rust encoder outputs. `oxideav-vorbis 0.0.12` coverage includes stereo 44.1-kHz music and a synthetic six-channel 48-kHz transient profile, each paired with a full libsndfile 1.2.2 Float32 oracle; both external encoders are test-fixture sources only and are not Zemer dependencies.
 
 For later Ogg pages, the decoder checks each owned granule against the decoded PCM endpoint when a following packet arrives. It defers the most recent page's check so a final audio packet followed by a nil EOS page can still use the EOS granule to trim its overlap tail.
 

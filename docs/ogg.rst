@@ -39,7 +39,8 @@ target-rate profiles for every channel count from 1–8 plus 192-kHz stereo; ffp
 durations, and channel-order-matched PCM has maximum per-channel RMS error
 below 0.0043. These measurements verify decoding and sample output, not
 perceived quality. Decoder interoperability fixtures also cover independent
-libVorbis and two Rust encoder implementations against libsndfile PCM oracles.
+libVorbis and two Rust encoders, including a six-channel transient profile,
+against libsndfile PCM oracles.
 Vorbis remains experimental until perceptual evaluation and wider external
 corpus conformance are complete.
 

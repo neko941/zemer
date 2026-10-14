@@ -93,6 +93,12 @@ muxed with Zemer's Ogg writer. libsndfile 1.2.2 produced the paired Float32
 oracle; CI compares every sample within 0.002. The external encoder is used
 only to create this fixture and is not a Zemer dependency.
 
+`oxideav-vorbis-0_0_12-48000-6.ogg` adds six-channel 48-kHz input from the
+same independent MIT-licensed encoder. Its 12,347 synthetic frames use a
+distinct tone per channel plus a short transient. libsndfile 1.2.2 produced
+the paired Float32 oracle; CI compares all six channels within 0.002. Neither
+external encoder is a Zemer dependency.
+
 `oxideav-vorbis-0_0_12-44100-2.ogg` was encoded from the same CC0 PCM excerpt
 by the independent Rust [oxideav-vorbis 0.0.12](https://crates.io/crates/oxideav-vorbis/0.0.12)
 encoder (MIT). libsndfile 1.2.2 decoded the file to the paired Float32 oracle;
@@ -105,6 +111,7 @@ only to create the fixture and is not a Zemer dependency.
 | `wikimedia-cc0-432hz.ogg` | 356,352 | 2 | `eeace8b2c7564aeeca6ac2cbf2d45ad20896bde8fce934ade2f443f1eb667affd` | `5395e86f89f3f01c725520af9f471715f7638f45e08e24be7e59685cf429c97e` |
 | `rusty-vorbis-0_1_1-44100-2.ogg` | 12,347 | 2 | `e3c6fb4f2ff40e352d8c1263717a922e51cf665cd0e136e0b2281236d1e37ccd` | `32f9a5d4209f0b0f61c2fbd10bb7af992161fe31c2872ddf84bdba089232a869` |
 | `oxideav-vorbis-0_0_12-44100-2.ogg` | 12,347 | 2 | `0ff976d402c8abd8bc3b42f83e008afddb27015f55b35ef6c64dab24bceb0e7d` | `52fedbb8c2cecb0fd1b9cccd5c780096296cec1daeb7fea1fec4eb543216d23e` |
+| `oxideav-vorbis-0_0_12-48000-6.ogg` | 12,347 | 6 | `6d65de57e7a89847e5126ed5edb3124b5d75078de75babe9f01123b82a794a40` | `79bc1679226619d83e337d31ba381296a8d1b9d2db7eaf8d6b3974bcd3de59ec` |
 
 Ten optional external [Xiph test vectors](https://people.xiph.org/~xiphmont/test-vectors/vorbis/)
 cover Floor 0, older encoder output, and silence. The four `lsp-test*.ogg`
