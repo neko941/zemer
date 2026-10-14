@@ -582,6 +582,27 @@ fn real_libvorbis_setup_header_bit_mutations_never_panic() {
 }
 
 #[test]
+fn real_libvorbis_comment_header_bit_mutations_never_panic() {
+    let input = include_bytes!("fixtures/vorbis/libvorbis-44100-2.ogg");
+    let mut reader = OggPacketReader::new(Cursor::new(input));
+    reader.next_packet().unwrap().unwrap();
+    let comment = reader.next_packet().unwrap().unwrap().bytes;
+    assert!(comment.len() > 7);
+
+    for (byte_index, _) in comment.iter().enumerate() {
+        for bit_index in 0..8 {
+            let mut packet = comment.clone();
+            packet[byte_index] ^= 1 << bit_index;
+            let result = std::panic::catch_unwind(|| VorbisCommentHeader::parse(&packet));
+            assert!(
+                result.is_ok(),
+                "Vorbis comment parser panicked after mutating bit {bit_index} of byte {byte_index}"
+            );
+        }
+    }
+}
+
+#[test]
 fn rejects_truncated_ogg_pages_through_the_public_decoder() {
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/vorbis/libvorbis-44100-2.ogg");

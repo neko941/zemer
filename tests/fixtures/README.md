@@ -229,6 +229,10 @@ through EOF using `ZEMER_VORBIS_ONE_ENTRY_TRUNCATED`,
 `ZEMER_VORBIS_MAKE_PAGE_SHARING`; none are bundled. The last two exercise the
 same setup-page/audio-page mapping violation described above.
 
+The normal integration suite also flips each individual bit in real libVorbis
+setup and comment headers and checks that their parsers never panic. Audio
+packet mutations are checked separately across real encoder profiles.
+
 The ignored test `encodes_reference_decoder_channel_profiles` writes the
 fixed-profile encoder output for 1–8 channels at 8–96 kHz. The existing
 libsndfile checks cover 1, 2, 3, 6, and 8 channels; FFmpeg 4.2.2 independently
