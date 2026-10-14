@@ -67,6 +67,11 @@ impl<R: Read> OggPacketReader<R> {
         }
     }
 
+    /// Returns the reader after dropping this packet reader's parsing state.
+    pub fn into_inner(self) -> R {
+        self.reader
+    }
+
     /// Returns the serial number of the current logical stream after its first page is read.
     pub fn stream_serial(&self) -> Option<u32> {
         self.serial
@@ -104,6 +109,14 @@ impl<R: Read> OggPacketReader<R> {
     /// Returns `None` only when the input ends exactly at that page. Reused
     /// serial numbers across the chained streams are rejected.
     pub fn next_stream(self) -> io::Result<Option<Self>> {
+        self.next_stream_or_inner().map(|(stream, _)| stream)
+    }
+
+    /// Starts the next stream, or returns the reader when the input ends at this EOS boundary.
+    ///
+    /// The returned reader is `Some` only when no next stream exists; otherwise it is owned by
+    /// the returned packet reader.
+    pub fn next_stream_or_inner(self) -> io::Result<(Option<Self>, Option<R>)> {
         if !self.ended || !self.partial.is_empty() || !self.pending.is_empty() {
             return Err(invalid_ogg(
                 "Ogg stream has not reached a clean EOS boundary",
@@ -111,7 +124,11 @@ impl<R: Read> OggPacketReader<R> {
         }
         let mut next = Self::with_packet_limit(self.reader, self.max_packet_bytes);
         next.chained_serials = self.chained_serials;
-        Ok(next.read_page()?.then_some(next))
+        if next.read_page()? {
+            Ok((Some(next), None))
+        } else {
+            Ok((None, Some(next.reader)))
+        }
     }
 
     fn read_page(&mut self) -> io::Result<bool> {

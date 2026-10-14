@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 
 use ogg::PAGE_FLAG_EOS;
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
@@ -13,6 +13,7 @@ const MAX_EOS_PAGE_PCM_BYTES: usize = 64 * 1024 * 1024;
 /// Streaming Ogg Vorbis decoder that returns interleaved float32 PCM.
 pub struct VorbisDecoder<R> {
     stream: Option<VorbisStreamReader<R>>,
+    terminal_reader: Option<R>,
     metadata: Metadata,
     spec: AudioSpec,
     previous: Option<TimeDomainBlock>,
@@ -22,17 +23,23 @@ pub struct VorbisDecoder<R> {
     committed_frames: u64,
     pending_granule: Option<u64>,
     initial_position_pending: bool,
+    restart_position: Option<u64>,
     stream_finished: bool,
     finished: bool,
 }
 
 impl<R: Read> VorbisDecoder<R> {
     pub fn new(reader: R) -> Result<Self, AudioError> {
+        Self::with_restart_position(reader, None)
+    }
+
+    fn with_restart_position(reader: R, restart_position: Option<u64>) -> Result<Self, AudioError> {
         let stream = VorbisStreamReader::new(reader)?;
         let spec = audio_spec(&stream)?;
         let metadata = stream.metadata().clone();
         Ok(Self {
             stream: Some(stream),
+            terminal_reader: None,
             metadata,
             spec,
             previous: None,
@@ -42,6 +49,7 @@ impl<R: Read> VorbisDecoder<R> {
             committed_frames: 0,
             pending_granule: None,
             initial_position_pending: true,
+            restart_position,
             stream_finished: false,
             finished: false,
         })
@@ -240,7 +248,8 @@ impl<R: Read> VorbisDecoder<R> {
         let stream = self.stream.take().ok_or(AudioError::InvalidData(
             "Vorbis decoder has no active logical stream",
         ))?;
-        if let Some(next) = stream.next_stream()? {
+        let (next, reader) = stream.next_stream_or_inner()?;
+        if let Some(next) = next {
             self.spec = audio_spec(&next)?;
             self.stream = Some(next);
             self.previous = None;
@@ -252,7 +261,85 @@ impl<R: Read> VorbisDecoder<R> {
             self.stream_finished = false;
         } else {
             self.finished = true;
+            if self.restart_position.is_some() {
+                self.terminal_reader = reader;
+            }
         }
+        Ok(())
+    }
+}
+
+impl<R: Read + Seek> VorbisDecoder<R> {
+    /// Creates a decoder that can seek by restarting from the reader's current position.
+    pub fn new_seekable(mut reader: R) -> Result<Self, AudioError> {
+        let restart_position = reader.stream_position()?;
+        Self::with_restart_position(reader, Some(restart_position))
+    }
+
+    /// Moves to a decoded sample-frame offset, counting across chained logical streams.
+    ///
+    /// This restarts decoding and scans forward, so cost grows with `sample`. On a
+    /// seek past end-of-stream the decoder is left at EOF. A seek I/O or decode
+    /// error leaves it unusable; construct a new decoder to retry.
+    pub fn seek_to_sample(&mut self, sample: u64) -> Result<(), AudioError> {
+        let restart_position = self.restart_position.ok_or(AudioError::Unsupported(
+            "Vorbis decoder was not created with new_seekable",
+        ))?;
+        let mut reader = match self.stream.take() {
+            Some(stream) => stream.into_inner(),
+            None => self.terminal_reader.take().ok_or(AudioError::InvalidData(
+                "Vorbis decoder has no reader available for seeking",
+            ))?,
+        };
+        if let Err(error) = reader.seek(SeekFrom::Start(restart_position)) {
+            self.ready.clear();
+            self.finished = true;
+            return Err(error.into());
+        }
+        let mut decoder = match Self::with_restart_position(reader, Some(restart_position)) {
+            Ok(decoder) => decoder,
+            Err(error) => {
+                self.ready.clear();
+                self.finished = true;
+                return Err(error);
+            }
+        };
+        let mut remaining = sample;
+        while remaining > 0 {
+            let frame_limit = match usize::try_from(remaining.min(MAX_READ_FRAMES as u64)) {
+                Ok(frame_limit) => frame_limit,
+                Err(_) => {
+                    self.ready.clear();
+                    self.finished = true;
+                    return Err(AudioError::InvalidData("Vorbis seek position is too large"));
+                }
+            };
+            match decoder.read_frames(frame_limit) {
+                Ok(Some(block)) => {
+                    let frames = match u64::try_from(block.frames()) {
+                        Ok(frames) => frames,
+                        Err(_) => {
+                            self.ready.clear();
+                            self.finished = true;
+                            return Err(AudioError::InvalidData("Vorbis seek count overflow"));
+                        }
+                    };
+                    remaining -= frames;
+                }
+                Ok(None) => {
+                    *self = decoder;
+                    return Err(AudioError::InvalidData(
+                        "Vorbis seek position is past end of stream",
+                    ));
+                }
+                Err(error) => {
+                    self.ready.clear();
+                    self.finished = true;
+                    return Err(error);
+                }
+            }
+        }
+        *self = decoder;
         Ok(())
     }
 }
