@@ -21,6 +21,8 @@ const MULAW_GUID: [u8; 16] = [
 ];
 const MAX_FORMAT_CHUNK: u32 = 64 * 1024;
 const MAX_INFO_VALUE: u32 = 1024 * 1024;
+const MAX_INFO_METADATA_BYTES: usize = 16 * 1024 * 1024;
+const MAX_INFO_METADATA_VALUES: usize = 65_536;
 const MAX_AUDIO_SEGMENTS: usize = 1_000_000;
 pub(super) const MAX_DS64_CHUNK: u32 = 1024 * 1024;
 
@@ -294,6 +296,8 @@ impl<R: Read + Seek> WavDecoder<R> {
         let mut audio = AudioLayout::default();
         let mut has_audio = false;
         let mut metadata = Metadata::default();
+        let mut info_metadata_bytes = 0;
+        let mut info_metadata_values = 0;
         loop {
             let position = reader.stream_position()?;
             if position == riff_end {
@@ -377,7 +381,13 @@ impl<R: Read + Seek> WavDecoder<R> {
                     match &list_type {
                         b"INFO" if chunk_size <= u64::from(u32::MAX) => {
                             reader.seek(SeekFrom::Start(chunk_start))?;
-                            parse_list_info(&mut reader, chunk_size as u32, &mut metadata)?;
+                            parse_list_info(
+                                &mut reader,
+                                chunk_size as u32,
+                                &mut metadata,
+                                &mut info_metadata_bytes,
+                                &mut info_metadata_values,
+                            )?;
                         }
                         b"wavl" => {
                             let frame_bytes = frame_bytes.ok_or(AudioError::InvalidFormat(
@@ -723,6 +733,8 @@ fn parse_list_info<R: Read + Seek>(
     reader: &mut R,
     chunk_size: u32,
     metadata: &mut Metadata,
+    metadata_bytes: &mut usize,
+    metadata_values: &mut usize,
 ) -> Result<(), AudioError> {
     let mut list_type = [0; 4];
     reader.read_exact(&mut list_type)?;
@@ -755,6 +767,7 @@ fn parse_list_info<R: Read + Seek>(
                     "INFO metadata value is unreasonably large",
                 ));
             }
+            reserve_info_value(size, metadata_bytes, metadata_values)?;
             let mut value = vec![0; size as usize];
             reader.read_exact(&mut value)?;
             let value = String::from_utf8_lossy(&value)
@@ -778,6 +791,28 @@ fn parse_list_info<R: Read + Seek>(
     Ok(())
 }
 
+fn reserve_info_value(
+    size: u32,
+    metadata_bytes: &mut usize,
+    metadata_values: &mut usize,
+) -> Result<(), AudioError> {
+    let bytes = metadata_bytes
+        .checked_add(size as usize)
+        .filter(|&total| total <= MAX_INFO_METADATA_BYTES)
+        .ok_or(AudioError::InvalidData(
+            "WAVE INFO metadata exceeds its aggregate byte limit",
+        ))?;
+    let values = metadata_values
+        .checked_add(1)
+        .filter(|&total| total <= MAX_INFO_METADATA_VALUES)
+        .ok_or(AudioError::InvalidData(
+            "WAVE INFO metadata has too many values",
+        ))?;
+    *metadata_bytes = bytes;
+    *metadata_values = values;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
@@ -785,6 +820,61 @@ mod tests {
     use super::*;
     use crate::write_wav;
     use zemer_core::{AudioEncoder, transcode};
+
+    #[test]
+    fn limits_info_metadata_across_multiple_lists() {
+        let mut metadata = Metadata::default();
+        let mut bytes_read = 0;
+        let mut values_read = 0;
+        let mut first_list = b"INFO".to_vec();
+        let value = vec![b'x'; MAX_INFO_VALUE as usize];
+        for _ in 0..(MAX_INFO_METADATA_BYTES / value.len()) {
+            append_chunk(&mut first_list, b"INAM", &value);
+        }
+        parse_list_info(
+            &mut Cursor::new(&first_list),
+            first_list.len() as u32,
+            &mut metadata,
+            &mut bytes_read,
+            &mut values_read,
+        )
+        .unwrap();
+        assert_eq!(bytes_read, MAX_INFO_METADATA_BYTES);
+
+        let mut second_list = b"INFO".to_vec();
+        append_chunk(&mut second_list, b"INAM", b"x");
+        assert!(
+            parse_list_info(
+                &mut Cursor::new(&second_list),
+                second_list.len() as u32,
+                &mut metadata,
+                &mut bytes_read,
+                &mut values_read,
+            )
+            .is_err()
+        );
+        assert_eq!(metadata.values("TITLE").len(), 16);
+        assert_eq!(values_read, 16);
+    }
+
+    #[test]
+    fn limits_empty_info_values_before_metadata_allocation() {
+        let mut list = b"INFO".to_vec();
+        for _ in 0..=MAX_INFO_METADATA_VALUES {
+            append_chunk(&mut list, b"INAM", &[]);
+        }
+        let mut metadata = Metadata::default();
+        assert!(
+            parse_list_info(
+                &mut Cursor::new(&list),
+                list.len() as u32,
+                &mut metadata,
+                &mut 0,
+                &mut 0,
+            )
+            .is_err()
+        );
+    }
 
     fn round_trip(spec: AudioSpec, samples: Samples) {
         let input = PcmBuffer::new(spec, samples).unwrap();

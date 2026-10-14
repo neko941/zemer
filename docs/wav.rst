@@ -120,5 +120,6 @@ when a channel mask is specified. RF64 output must be selected explicitly with
 ``WavContainer::Rf64``. Classic RIFF output errors before exceeding the 4 GiB
 size limit. RIFF and RF64 readers support ``data`` and ``wavl``/``slnt`` audio
 segments. The writer does not create segmented ``wavl`` audio; it writes a
-contiguous ``data`` chunk. Embedded metadata beyond the listed INFO tags is not
-interpreted.
+contiguous ``data`` chunk. Each supported INFO value is limited to 1 MiB; the
+reader retains at most 16 MiB and 65,536 supported INFO values across the file.
+Embedded metadata beyond the listed INFO tags is not interpreted.

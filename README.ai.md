@@ -50,8 +50,9 @@ are temporary inputs, not bundled fixtures.
 The WAVE reader handles top-level `data` and ordered `LIST/wavl` `data`/`slnt`
 segments in RIFF and RF64. Silence segments hold the previous interleaved frame;
 initial silence uses neutral sample codes. The reader limits files to one
-million retained audio segments. The writer still emits one ordinary contiguous
-`data` chunk.
+million retained audio segments and supported INFO metadata to 16 MiB total,
+65,536 values, and 1 MiB per value. The writer still emits one ordinary
+contiguous `data` chunk.
 
 ## Other repository paths
 

@@ -32,7 +32,7 @@ The workspace separates format-independent audio types from each format implemen
 
 See [ROADMAP.md](ROADMAP.md) for planned formats and workflows.
 
-The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in file order, including RF64 `ds64` size-table entries. `slnt` holds the preceding interleaved sample frame; initial silence uses neutral PCM/G.711 codes. The reader caps retained audio segments at one million. The writer emits a conventional contiguous `data` chunk. Non-G.711 compressed codecs inside WAV are not implemented. The writer defaults to classic RIFF/WAVE (using WAVE_FORMAT_EXTENSIBLE when a channel mask is provided); select `WavContainer::Rf64` or CLI `--container rf64` for 64-bit sizes. Classic RIFF reports an explicit error before exceeding its 4 GiB size limit.
+The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in file order, including RF64 `ds64` size-table entries. `slnt` holds the preceding interleaved sample frame; initial silence uses neutral PCM/G.711 codes. The reader caps retained audio segments at one million and supported INFO metadata at 16 MiB total, 65,536 values, and 1 MiB per value. The writer emits a conventional contiguous `data` chunk. Non-G.711 compressed codecs inside WAV are not implemented. The writer defaults to classic RIFF/WAVE (using WAVE_FORMAT_EXTENSIBLE when a channel mask is provided); select `WavContainer::Rf64` or CLI `--container rf64` for 64-bit sizes. Classic RIFF reports an explicit error before exceeding its 4 GiB size limit.
 
 ## Workspace crates
 
