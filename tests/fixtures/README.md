@@ -441,6 +441,16 @@ test checks its full-stream FNV-1a 64-bit digest `66d73cd4a324cdb1` before and
 after metadata rewriting. Ogg-FLAC fixture SHA-256:
 `8b4c7537960adf92542cf7de846de545911f9e2143b6a51857c03cbf47671513`.
 
+`ogg-flac-eaton-centre.oga` is a 31.229569-second mono recording of Montréal's
+Eaton Centre by RandomKatze, dedicated under CC0 1.0 on [Wikimedia
+Commons](https://commons.wikimedia.org/wiki/File:Eaton_Centre_at_12_55.oga).
+It is 44.1 kHz signed 24-bit PCM with 1,377,280 frames. FFmpeg 4.2.2 decodes
+it to 4,131,840 bytes of s24le PCM; the regression checks its full-stream
+FNV-1a 64-bit digest `716fc703274e192a` before and after comment rewriting.
+Commons reports 3,103,293 bytes and SHA-1
+`fbd7d5f7bd9fda90d8089771923e2e3afba90bb7`. Fixture SHA-256:
+`a02c3cff4dbf76d3eb04d856c79ab9bc72fd5b7d5d85de95b2304aadcd43c2a0`.
+
 `ogg-flac-shami.oga` is the 75.306729-second spoken Wikipedia article about
 Shami (Levantine Arabic), published under CC BY-SA 4.0 on [Wikimedia
 Commons](https://commons.wikimedia.org/wiki/File:Shami.oga); attribution is to

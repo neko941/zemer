@@ -545,6 +545,26 @@ fn decodes_and_rewrites_cc0_david_allen_speech_ogg_flac_fixture() {
 }
 
 #[test]
+fn decodes_and_rewrites_cc0_eaton_centre_ogg_flac_fixture() {
+    const FRAMES: u64 = 1_377_280;
+    const PCM_FNV1A64: u64 = 0x716f_c703_274e_192a;
+    const TITLE: &str = "CC0 Eaton Centre Ogg-FLAC rewrite regression";
+
+    let input = include_bytes!("fixtures/ogg-flac-eaton-centre.oga");
+    let (frames, digest) = decode_i24le_pcm_digest(input, 44_100, 1, None);
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", TITLE);
+    let mut rewritten = Vec::new();
+    rewrite_ogg_metadata(Cursor::new(input), &mut rewritten, &metadata).unwrap();
+    let (frames, digest) = decode_i24le_pcm_digest(&rewritten, 44_100, 1, Some(TITLE));
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+}
+
+#[test]
 fn decodes_and_rewrites_cc_by_sa_shami_ogg_flac_fixture() {
     const FRAMES: u64 = 3_614_723;
     const PCM_FNV1A64: u64 = 0x67f0_a56f_f1e8_f4b7;

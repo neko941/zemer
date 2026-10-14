@@ -140,6 +140,8 @@ libFLAC signed 24-bit PCM oracle, and
 NASA's public-domain SuperCam recording, and
 ``decodes_external_public_domain_wapichan_speech_against_libflac_pcm_oracle``
 checks a 24-bit stereo Wapichan speech recording labelled public domain in the
-United States. None of these recordings or oracles is bundled. All six tests
-compare every decoded sample with an independent PCM oracle. These external
-samples do not replace a broader independent Ogg-FLAC corpus.
+United States. A bundled CC0 Montréal Eaton Centre recording adds a 1,377,280-
+frame mono 24-bit check against an FFmpeg 4.2.2 PCM digest before and after
+comment rewriting. None of the ignored external recordings or oracles is
+bundled. All six ignored tests compare every decoded sample with an independent
+PCM oracle. These samples do not replace a broader independent Ogg-FLAC corpus.
