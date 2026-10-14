@@ -5,6 +5,7 @@ use std::{
     path::PathBuf,
 };
 
+use flac::FlacDecoder;
 use ogg::{NO_GRANULE_POSITION, OggPacketReader, OggPacketWriter};
 use vorbis::{
     VorbisCommentHeader, VorbisDecoder, VorbisEncoder, VorbisIdentificationHeader,
@@ -1189,47 +1190,29 @@ fn decodes_wikimedia_cc0_legacy_vorbis_recording_against_libsndfile_oracle() {
 #[test]
 fn decodes_full_length_music_recording_to_eof() {
     let input = include_bytes!("fixtures/vorbis/the-entertainer.ogg");
-    let mut decoder = VorbisDecoder::new(Cursor::new(input)).unwrap();
-    assert_eq!(decoder.spec().sample_rate(), 44_100);
-    assert_eq!(decoder.spec().channels(), 2);
+    let actual = read_vorbis_to_end(input).unwrap();
+    let reference = include_bytes!("fixtures/vorbis/the-entertainer-reference.flac");
+    let mut oracle = FlacDecoder::new(Cursor::new(reference)).unwrap();
+    assert_eq!(oracle.spec().sample_rate(), 44_100);
+    assert_eq!(oracle.spec().channels(), 2);
+    assert_eq!(oracle.spec().sample_format(), SampleFormat::PcmI24);
 
-    let checkpoints = [
-        (44_100_u64, -0.036354333_f32, -0.061334714_f32),
-        (441_000, -0.08148202, 0.17448518),
-        (1_000_000, -0.04061488, -0.013750873),
-        (2_000_000, 0.051570583, 0.014090111),
-        (4_000_000, 0.007970317, 0.0050636274),
-        (6_000_000, 0.36787045, -0.13500367),
-        (8_000_000, 0.16786188, 0.16580611),
-        (8_528_255, 4.571_484e-8, 1.994_09e-8),
-    ];
-    let mut next_checkpoint = 0;
-    let mut frames = 0_u64;
-    while let Some(block) = decoder.read_frames(4_096).unwrap() {
-        let Samples::F32(samples) = block.samples() else {
-            panic!("Vorbis decoder did not return float32 PCM");
+    let mut compared = 0;
+    while let Some(block) = oracle.read_frames(4_096).unwrap() {
+        let Samples::I24(samples) = block.samples() else {
+            panic!("FLAC PCM oracle did not decode to signed 24-bit samples");
         };
-        assert!(samples.iter().all(|sample| sample.is_finite()));
-        let block_end = frames + block.frames() as u64;
-        while let Some(&(frame, left, right)) = checkpoints.get(next_checkpoint) {
-            if frame >= block_end {
-                break;
-            }
-            let offset = usize::try_from((frame - frames) * 2).unwrap();
+        for sample in samples {
+            let expected = *sample as f32 / 4_194_304.0;
             assert!(
-                (samples[offset] - left).abs() < 0.002,
-                "left channel at frame {frame}"
+                (actual[compared] - expected).abs() < 0.002,
+                "PCM mismatch at interleaved sample {compared}"
             );
-            assert!(
-                (samples[offset + 1] - right).abs() < 0.002,
-                "right channel at frame {frame}"
-            );
-            next_checkpoint += 1;
+            compared += 1;
         }
-        frames = block_end;
     }
-    assert_eq!(frames, 8_528_256);
-    assert_eq!(next_checkpoint, checkpoints.len());
+    assert_eq!(compared, actual.len());
+    assert_eq!(actual.len(), 8_528_256 * 2);
 }
 
 #[test]

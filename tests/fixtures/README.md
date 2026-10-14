@@ -97,10 +97,14 @@ CI compares every sample within 0.002. Source and licensing:
 
 `the-entertainer.ogg` is Kevin MacLeod's 193.384-second, 44.1-kHz stereo
 performance of Scott Joplin's *The Entertainer*, licensed CC BY 4.0. The
-full-stream regression decodes all 8,528,256 frames to EOF and compares eight
-widely spaced stereo checkpoints with FFmpeg 8.1 output within 0.002. The
-unmodified source is 4,278,460 bytes (SHA-256
-`f19ed758e6579a416f42145230a97b1333f49b24684f40936c3d5a9e46e94e69`).
+full-stream regression decodes all 8,528,256 frames to EOF and compares every
+sample within 0.002 against an FFmpeg 8.1 decode attenuated by 0.5 for headroom
+and re-encoded losslessly as 24-bit FLAC. The test scales the oracle PCM back
+by 2^22 to compare in the Float32 decoder's range. The unmodified source is
+4,278,460 bytes (SHA-256
+`f19ed758e6579a416f42145230a97b1333f49b24684f40936c3d5a9e46e94e69`); its
+26,117,778-byte FLAC PCM oracle has SHA-256
+`a9188487861f8826493e5236bdaa8e7e631f9502866ca35a240ac272913b851f`.
 Attribution: Kevin MacLeod, “The Entertainer” (Scott Joplin composition),
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), via
 [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:The_Entertainer_by_Kevin_MacLeod.ogg);
@@ -129,6 +133,7 @@ only to create the fixture and is not a Zemer dependency.
 |---|---:|---:|---|---|
 | `wikimedia-cc0-example.ogg` | 163,328 | 2 | `c001d8980f0b964000a28a99c5cab3809ef65ecf1ba0ae00bc57cb1fc1440754` | `0c8af967233f45f8c4d0de28103f1a524ebe7c23f28a8bd28ecc9a387fd42d14` |
 | `wikimedia-cc0-432hz.ogg` | 356,352 | 2 | `eeace8b2c7564aeeca6ac2cbf2d45ad20896bde8fce934ade2f443f1eb667affd` | `5395e86f89f3f01c725520af9f471715f7638f45e08e24be7e59685cf429c97e` |
+| `the-entertainer.ogg` | 8,528,256 | 2 | `f19ed758e6579a416f42145230a97b1333f49b24684f40936c3d5a9e46e94e69` | `a9188487861f8826493e5236bdaa8e7e631f9502866ca35a240ac272913b851f` |
 | `rusty-vorbis-0_1_1-44100-2.ogg` | 12,347 | 2 | `e3c6fb4f2ff40e352d8c1263717a922e51cf665cd0e136e0b2281236d1e37ccd` | `32f9a5d4209f0b0f61c2fbd10bb7af992161fe31c2872ddf84bdba089232a869` |
 | `oxideav-vorbis-0_0_12-44100-2.ogg` | 12,347 | 2 | `0ff976d402c8abd8bc3b42f83e008afddb27015f55b35ef6c64dab24bceb0e7d` | `52fedbb8c2cecb0fd1b9cccd5c780096296cec1daeb7fea1fec4eb543216d23e` |
 | `oxideav-vorbis-0_0_12-48000-6.ogg` | 12,347 | 6 | `6d65de57e7a89847e5126ed5edb3124b5d75078de75babe9f01123b82a794a40` | `79bc1679226619d83e337d31ba381296a8d1b9d2db7eaf8d6b3974bcd3de59ec` |
