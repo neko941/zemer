@@ -582,7 +582,7 @@ fn chains_independent_ogg_flac_links_with_different_specs_and_rewrites_first() {
     let mut metadata = Metadata::default();
     metadata.insert("TITLE", TITLE);
     let mut rewritten = Vec::new();
-    rewrite_ogg_metadata(Cursor::new(chained), &mut rewritten, &metadata).unwrap();
+    rewrite_ogg_metadata(Cursor::new(chained.clone()), &mut rewritten, &metadata).unwrap();
 
     let first_spec = AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap();
     let second_spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap();
@@ -617,6 +617,18 @@ fn chains_independent_ogg_flac_links_with_different_specs_and_rewrites_first() {
     assert_eq!(first_digest, FIRST_DIGEST);
     assert_eq!(second_frames, SECOND_FRAMES);
     assert!(decoder.read_frames(1).unwrap().is_none());
+
+    let mut seeker = OggFlacDecoder::new_seekable(Cursor::new(chained)).unwrap();
+    seeker.seek_to_sample(FIRST_FRAMES).unwrap();
+    let block = seeker.read_frames(23).unwrap().unwrap();
+    assert_eq!(block.spec(), second_spec);
+    let Samples::I16(samples) = block.samples() else {
+        panic!("the second chained link must decode to signed 16-bit PCM");
+    };
+    assert_eq!(samples.len(), 46);
+    for (index, sample) in samples.iter().enumerate() {
+        assert_eq!(*sample, expected_stereo_sample(index as u64));
+    }
 }
 
 #[test]
