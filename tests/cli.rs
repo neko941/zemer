@@ -1753,6 +1753,54 @@ fn vorbis_cli_maps_wave_51_channels_to_vorbis_order() {
 }
 
 #[test]
+fn vorbis_cli_converts_independent_six_channel_stream_to_float_wave() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vorbis");
+    let input_path = fixtures.join("oxideav-vorbis-0_0_12-48000-6.ogg");
+    let oracle_path = fixtures.join("oxideav-vorbis-0_0_12-48000-6.f32le");
+    let output_path = temporary_path();
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "float32", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    assert!(String::from_utf8_lossy(&converted.stdout).contains("\"format\":\"wav\""));
+
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.spec().sample_rate(), 48_000);
+    assert_eq!(decoder.spec().channels(), 6);
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::Float32);
+    let mut actual = Vec::new();
+    while let Some(block) = decoder.read_frames(733).unwrap() {
+        let Samples::F32(samples) = block.samples() else {
+            panic!("Vorbis CLI conversion did not write Float32 WAV samples");
+        };
+        actual.extend_from_slice(samples);
+    }
+    let expected_bytes = fs::read(oracle_path).unwrap();
+    let expected: Vec<f32> = expected_bytes
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+        .collect();
+    assert_eq!(actual.len(), expected.len());
+    let max_error = actual
+        .iter()
+        .zip(&expected)
+        .map(|(actual, expected)| (actual - expected).abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_error < 0.002,
+        "maximum CLI Vorbis-to-WAVE sample error {max_error}"
+    );
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
 fn convert_encodes_wavpack_float32_without_changing_sample_bits() {
     let input_path = temporary_path();
     let output_path = temporary_path().with_extension("wv");
