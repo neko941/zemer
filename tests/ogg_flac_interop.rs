@@ -171,6 +171,28 @@ fn decodes_ffmpeg_7_1_24_bit_at_192khz() {
 }
 
 #[test]
+fn decodes_ffmpeg_ogg_flac_with_three_through_seven_channels() {
+    const FRAMES: u64 = 8_197;
+    let profiles: [(u16, &[u8]); 4] = [
+        (3, include_bytes!("fixtures/ogg-flac-ffmpeg-3ch-s24.oga")),
+        (4, include_bytes!("fixtures/ogg-flac-ffmpeg-4ch-s24.oga")),
+        (5, include_bytes!("fixtures/ogg-flac-ffmpeg-5ch-s24.oga")),
+        (7, include_bytes!("fixtures/ogg-flac-ffmpeg-7ch-s24.oga")),
+    ];
+
+    for (channels, fixture) in profiles {
+        let actual = decode_i24_fixture(fixture, 44_100, channels, FRAMES);
+        assert_eq!(
+            actual,
+            (0..FRAMES * u64::from(channels))
+                .map(|index| expected_multichannel_sample(index, u64::from(channels)))
+                .collect::<Vec<_>>(),
+            "{channels}-channel profile"
+        );
+    }
+}
+
+#[test]
 fn decodes_libflac_reference_u8_mono_at_8khz() {
     const FRAMES: u64 = 9_001;
     let mut decoder = OggFlacDecoder::new(Cursor::new(include_bytes!(
@@ -623,21 +645,7 @@ fn expected_stereo_sample(index: u64) -> i16 {
 }
 
 fn expected_six_channel_sample(index: u64) -> i32 {
-    const LIMIT: u64 = 1 << 24;
-    const HALF: i64 = 1 << 23;
-    match index {
-        0 => -(HALF as i32),
-        1 => (HALF - 1) as i32,
-        2 => -1,
-        3 => 0,
-        4 => 1,
-        _ => {
-            let frame = index / 6;
-            let channel = index % 6;
-            ((frame * 104_729 + channel * 65_537 + (frame / 7) * 1_048_573) % LIMIT) as i32
-                - HALF as i32
-        }
-    }
+    expected_multichannel_sample(index, 6)
 }
 
 fn expected_eight_channel_sample(index: u64) -> i32 {
@@ -650,5 +658,23 @@ fn expected_eight_channel_sample(index: u64) -> i32 {
         3 => 0,
         4 => 1,
         _ => ((index * 104_729 + (index / 11) * 7_919) % LIMIT) as i32 - HALF as i32,
+    }
+}
+
+fn expected_multichannel_sample(index: u64, channels: u64) -> i32 {
+    const LIMIT: u64 = 1 << 24;
+    const HALF: i64 = 1 << 23;
+    match index {
+        0 => -(HALF as i32),
+        1 => (HALF - 1) as i32,
+        2 => -1,
+        3 => 0,
+        4 => 1,
+        _ => {
+            let frame = index / channels;
+            let channel = index % channels;
+            ((frame * 104_729 + channel * 65_537 + (frame / 7) * 1_048_573) % LIMIT) as i32
+                - HALF as i32
+        }
     }
 }

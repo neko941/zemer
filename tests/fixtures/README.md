@@ -11,13 +11,14 @@ compare the Ogg-FLAC decoder's 509 output frames with the corresponding oracle
 prefix. Both files contain synthetic signal data and are generated for Zemer;
 no third-party audio recording or implementation code is included.
 
-Four additional Ogg-FLAC fixtures were encoded by FFmpeg 8.1 using
+Eight additional Ogg-FLAC fixtures were encoded by FFmpeg 8.1 using
 `-c:a flac -compression_level 8 -page_duration 50000 -f ogg`. They contain
 only deterministic synthetic samples; tests regenerate each source and compare
 every decoded value. Profiles include stereo 16-bit at 48 kHz, 5.1 24-bit at
-96 kHz, and 7.1 24-bit at 192 kHz. The first five interleaved samples are the
-signed extrema, `-1`, `0`, and `1`; subsequent values use deterministic integer
-formulas. The multichannel fixtures include packets continued across Ogg pages.
+96 kHz, and 7.1 24-bit at 192 kHz, plus 3-, 4-, 5-, and 7-channel 24-bit at
+44.1 kHz. The first five interleaved samples are the signed extrema, `-1`, `0`,
+and `1`; subsequent values use deterministic integer formulas. The 5.1 and
+7.1 fixtures include packets continued across Ogg pages.
 
 | Fixture | Frames | Channels | Depth | Ogg pages | Fixture SHA-256 | PCM SHA-256 |
 |---|---:|---:|---:|---:|---|---|
@@ -25,6 +26,10 @@ formulas. The multichannel fixtures include packets continued across Ogg pages.
 | `ogg-flac-ffmpeg-stereo-s16.oga` | 8,197 | 2 | 16-bit | 4 | `16e4b5b296fd977c1d0aca7445237b0d98027269192430fc05acc95cd9ccb3bb` | `10af31cad03d5da3a25702bca6adb99aa0001b9f585dd8ab8a0a42ba51a0d9a0` |
 | `ogg-flac-ffmpeg-5_1-s24.oga` | 8,197 | 6 | 24-bit | 6 | `60a4576ebe3851e2e0cc2dce2941ac54c5b4ec3dbb1608da0da450feca131fc1` | `2a3e9744d61b18e472c24e12360c142718aaea22712dfabfd8ba68cc81413a8b` |
 | `ogg-flac-ffmpeg-7_1-s24-192k.oga` | 8,197 | 8 | 24-bit | 5 | `CC8F71A8F8B123BB301659023AE8EB22F140DC246885381421AE5616B4371C12` | `7EB9567A3543F388E1ED119223C36552EAB78C3C6D49F839D70275AC1C787739` |
+| `ogg-flac-ffmpeg-3ch-s24.oga` | 8,197 | 3 | 24-bit | 4 | `def18da34cd595d967de373a4ac604682af6d1fd5fec58f387268ac86a065da3` | `223b8a226cc2b3ace800e8c0e245a6bd0c072db26bd455366bee757320a37302` |
+| `ogg-flac-ffmpeg-4ch-s24.oga` | 8,197 | 4 | 24-bit | 4 | `da64dfca27698da4ecfea43bf8dc055f2fe90aeb4a3884b976872f929892d464` | `49d8a568db93ab4296c703043c771329f30dddf2f2cc54f2df9f7dc3a0e25b83` |
+| `ogg-flac-ffmpeg-5ch-s24.oga` | 8,197 | 5 | 24-bit | 4 | `a5c244cb2267a9b2d7aa481cf32b5eb948034199c7b4e710d60e0575251221eb` | `6c572514e2d663fd28bc64f5eae70c49420b51f456ee8ab97f1570faf380498b` |
+| `ogg-flac-ffmpeg-7ch-s24.oga` | 8,197 | 7 | 24-bit | 6 | `152e9bc19e235783c04c9c9ad17de35bbb308236919b5ca44ad66c427cafd947` | `bd6c21521756627cbf7deef1c3b2a97f4cf046887c5eba15a1e58c9dd2f286d7` |
 
 Each PCM SHA-256 is independently reproduced by FFmpeg decoding. FFmpeg is
 used only to create the synthetic interoperability fixtures; no FFmpeg code
