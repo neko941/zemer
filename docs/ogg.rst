@@ -52,6 +52,13 @@ worldwide public domain and encoded by Xiph libVorbis I 20070622; all 6,535,620
 frames match a half-gain FFmpeg 8.1 signed-16 FLAC oracle within 0.002.
 The corpus also checks a full 176.587-second CC0 *Für Elise* recording from
 an older Xiph libVorbis 1.3.3 encoder against an FFmpeg-derived FLAC oracle.
+On the full 148.2-second ambient source, Zemer encoded at 64.254/128.307/192.359
+kbit/s; rate-matched FFmpeg 8.1/libvorbis outputs were 64.145/127.827/192.354
+kbit/s. FFmpeg-decoded full-stream per-channel RMS errors were 0.01357/0.01438,
+0.00519/0.00581, and 0.00307/0.00338 for Zemer, compared with
+0.02248/0.02197, 0.00762/0.00756, and 0.00425/0.00426 for libvorbis. These
+sample-error measurements do not establish perceived quality; randomized
+blind-listening clips are available separately.
 Vorbis remains experimental until perceptual evaluation and wider external
 corpus conformance are complete.
 
