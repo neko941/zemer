@@ -420,64 +420,45 @@ fn decodes_public_domain_4m33s_ogg_flac_fixture() {
 }
 
 #[test]
-#[ignore = "requires the NASA public-domain Ogg-FLAC sample and libFLAC PCM oracle paths in ZEMER_OGG_FLAC_NASA_SAMPLE and ZEMER_OGG_FLAC_NASA_PCM"]
-fn decodes_external_nasa_martian_dust_devil_against_libflac_pcm_oracle() {
+fn decodes_and_rewrites_nasa_martian_dust_devil_fixture() {
     const FRAMES: u64 = 1_295_695;
-    let input = std::env::var_os("ZEMER_OGG_FLAC_NASA_SAMPLE")
-        .expect("set ZEMER_OGG_FLAC_NASA_SAMPLE to the external Ogg-FLAC sample");
-    let oracle = std::env::var_os("ZEMER_OGG_FLAC_NASA_PCM")
-        .expect("set ZEMER_OGG_FLAC_NASA_PCM to libFLAC's s16le PCM output");
-    let mut decoder = OggFlacDecoder::new(File::open(&input).unwrap()).unwrap();
-    assert_eq!(
-        decoder.spec(),
-        AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap()
-    );
-    let mut oracle_pcm = BufReader::new(File::open(&oracle).unwrap());
-    let mut frames = 0;
-    while let Some(block) = decoder.read_frames(2_048).unwrap() {
-        let Samples::I16(samples) = block.samples() else {
-            panic!("NASA Ogg-FLAC sample must decode to signed 16-bit PCM");
-        };
-        let mut bytes = vec![0; samples.len() * 2];
-        oracle_pcm.read_exact(&mut bytes).unwrap();
-        for (sample, expected) in samples.iter().zip(bytes.chunks_exact(2)) {
-            assert_eq!(*sample, i16::from_le_bytes([expected[0], expected[1]]));
+    const PCM_FNV1A64: u64 = 0xcb02_a204_7c6f_0a19;
+    const TITLE: &str = "NASA Ogg-FLAC rewrite regression";
+    let decode_pcm_digest = |bytes: &[u8], expected_title: Option<&str>| {
+        let mut decoder = OggFlacDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.spec(),
+            AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap()
+        );
+        if let Some(title) = expected_title {
+            assert_eq!(decoder.metadata().values("TITLE"), [title]);
         }
-        frames += (samples.len() / 2) as u64;
-    }
+        let mut frames = 0;
+        let mut digest = 0xcbf2_9ce4_8422_2325;
+        while let Some(block) = decoder.read_frames(2_048).unwrap() {
+            let Samples::I16(samples) = block.samples() else {
+                panic!("NASA Ogg-FLAC fixture must decode to signed 16-bit PCM");
+            };
+            for byte in samples.iter().flat_map(|sample| sample.to_le_bytes()) {
+                digest = (digest ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            frames += (samples.len() / 2) as u64;
+        }
+        (frames, digest)
+    };
+
+    let input = include_bytes!("fixtures/ogg-flac-nasa-dust-devil.oga");
+    let (frames, digest) = decode_pcm_digest(input, None);
     assert_eq!(frames, FRAMES);
-    let mut trailing = [0; 1];
-    assert_eq!(
-        oracle_pcm.read(&mut trailing).unwrap(),
-        0,
-        "libFLAC PCM oracle has trailing samples"
-    );
+    assert_eq!(digest, PCM_FNV1A64);
 
     let mut metadata = Metadata::default();
-    metadata.insert("TITLE", "NASA Ogg-FLAC rewrite regression");
+    metadata.insert("TITLE", TITLE);
     let mut rewritten = Vec::new();
-    rewrite_ogg_metadata(File::open(&input).unwrap(), &mut rewritten, &metadata).unwrap();
-    let mut decoder = OggFlacDecoder::new(Cursor::new(rewritten)).unwrap();
-    assert_eq!(
-        decoder.metadata().values("TITLE"),
-        ["NASA Ogg-FLAC rewrite regression"]
-    );
-    let mut oracle_pcm = BufReader::new(File::open(&oracle).unwrap());
-    let mut frames = 0;
-    while let Some(block) = decoder.read_frames(2_048).unwrap() {
-        let Samples::I16(samples) = block.samples() else {
-            panic!("rewritten NASA Ogg-FLAC sample must remain signed 16-bit PCM");
-        };
-        let mut bytes = vec![0; samples.len() * 2];
-        oracle_pcm.read_exact(&mut bytes).unwrap();
-        for (sample, expected) in samples.iter().zip(bytes.chunks_exact(2)) {
-            assert_eq!(*sample, i16::from_le_bytes([expected[0], expected[1]]));
-        }
-        frames += (samples.len() / 2) as u64;
-    }
+    rewrite_ogg_metadata(Cursor::new(input), &mut rewritten, &metadata).unwrap();
+    let (frames, digest) = decode_pcm_digest(&rewritten, Some(TITLE));
     assert_eq!(frames, FRAMES);
-    let mut trailing = [0; 1];
-    assert_eq!(oracle_pcm.read(&mut trailing).unwrap(), 0);
+    assert_eq!(digest, PCM_FNV1A64);
 }
 
 #[test]

@@ -328,6 +328,16 @@ and exact frame count. The source command recorded on Commons is
 No decoder implementation code is included. SHA-256:
 `DC498062CF0DEB4325AD9DA34BED8F8DEC0A1FF7E7042381969ABB1F21BAC520`.
 
+`ogg-flac-nasa-dust-devil.oga` is NASA's public-domain recording of the
+Perseverance rover's SuperCam microphone recording a Martian dust devil
+([NASA source and WAV download](https://science.nasa.gov/resource/nasas-perseverance-records-a-martian-dust-devil/),
+[Ogg-FLAC on Commons](https://commons.wikimedia.org/wiki/File:NASA%27s_Perseverance_Records_a_Martian_Dust_Devil.oga)).
+It is 48 kHz stereo 16-bit with 1,295,695 frames. FFmpeg 8.1 decoding of the
+Ogg-FLAC and the NASA WAV produces byte-identical PCM; the test checks the
+full-stream FNV-1a 64-bit digest `cb02a2047c6f0a19` before and after Ogg
+metadata rewriting. Ogg-FLAC fixture SHA-256:
+`F5BB21AD7B1738888C51C8B60ECE9AF8E659322723AD296CA34A48F033E641BB`.
+
 Two additional Ogg-FLAC fixtures were encoded by the system libFLAC 1.4.3
 reference encoder. Their PCM is deterministic synthetic data, and integration
 tests verify every decoded sample against the source formula rather than a
