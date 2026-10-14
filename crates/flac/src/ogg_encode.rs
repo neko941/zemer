@@ -136,13 +136,14 @@ impl<W: Write> OggFlacEncoder<W> {
             self.bits_per_sample,
             self.frame_number,
         )?;
-        let granule = self
+        let samples = self
             .total_samples
             .checked_add(frames as u64)
             .filter(|&total| total <= MAX_TOTAL_SAMPLES)
             .ok_or(AudioError::Unsupported("FLAC sample count overflow"))?;
+        let granule = samples - 1;
         self.writer.write_packet_owned(frame, granule)?;
-        self.total_samples = granule;
+        self.total_samples = samples;
         self.frame_number += 1;
         self.pending.clear();
         Ok(())
@@ -265,6 +266,15 @@ mod tests {
         encoder.finish().unwrap();
 
         let bytes = encoder.into_inner().into_inner();
+        let mut packets = ogg::OggPacketReader::new(Cursor::new(bytes.as_slice()));
+        let mut final_granule = None;
+        while let Some((packet, owns_granule)) = packets.next_packet_with_granule().unwrap() {
+            if packet.bytes.first() == Some(&0xff) && owns_granule {
+                final_granule = Some(packet.page_granule_position);
+            }
+        }
+        assert_eq!(final_granule, Some(4_499));
+
         let mut decoder = OggFlacDecoder::new(Cursor::new(bytes)).unwrap();
         assert_eq!(decoder.spec(), spec);
         assert_eq!(decoder.metadata().values("title"), ["Ogg FLAC test"]);

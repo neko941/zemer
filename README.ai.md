@@ -22,10 +22,11 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, WAVE/AIFF/FLAC/Ogg Vorbis/WavPack conversion, explicit WAVE/AIFC G.711 and AIFC IMA4 output, DSF/DSDIFF/native DSD WavPack transcoding, WAVE/AIFF/DSF/DSDIFF/native, Ogg-FLAC/Ogg Vorbis, and WavPack metadata editing, and CUE/WAV workflows.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
-Ogg-FLAC decoding verifies each link's terminal granule against its decoded
-sample count plus the initial granule offset, including when STREAMINFO total
-samples are unknown, and trims trailing samples from the final decoded block
-when required. Chained links may have different audio specifications; metadata
+Ogg-FLAC decoding interprets granules as zero-based last-sample indexes and
+verifies each link's terminal position against its decoded sample count and
+initial offset, including when STREAMINFO total samples are unknown. It trims
+trailing samples from the final decoded block when required. Chained links may
+have different audio specifications; metadata
 comes from the first link.
 Seekable sources can restart at their initial Ogg offset and scan forward to a
 target sample; this path is linear. The optional official CC0 FLAC testbench
@@ -37,8 +38,8 @@ PCM and seeking immediately before and after silent-channel run transitions.
 Two synthetic Ogg-FLAC files from the
 libFLAC 1.4.3 reference encoder add 8-bit mono and 32-bit 7.1 coverage. The
 official CC0 native-FLAC corpus also
-round-trips through Zemer's Ogg-FLAC encoder and decoder. Thirteen current-mapping
-real-source vectors, including seven bundled CC0/public-domain/CC BY-SA Commons or
+round-trips through Zemer's Ogg-FLAC encoder and decoder. Fourteen current-mapping
+real-source vectors, including eight bundled CC0/public-domain/CC BY-SA Commons or
 NASA recordings, have been checked against known PCM oracles; two pre-1.1.1
 legacy samples were compared with libFLAC PCM oracles. A real chained-link test
 rewrites first-link metadata, verifies PCM across independent 44.1- and 48-kHz

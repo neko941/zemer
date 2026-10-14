@@ -66,8 +66,9 @@ For seekable inputs, ``OggFlacDecoder::new_seekable`` and
 ``seek_to_sample`` restart from the initial Ogg offset and decode forward.
 CLI inspection and conversion require every chained link to share one audio
 specification because a single WAVE or FLAC output has one fixed PCM format.
-Ogg-FLAC validates page framing and checks the terminal granule against the
-decoded sample count plus the initial granule offset, including when
+Ogg-FLAC validates page framing and interprets granules as zero-based indexes
+of the last sample on each completed page. It checks the terminal granule
+against decoded sample counts and the initial stream offset, including when
 STREAMINFO's total is unknown. It trims trailing samples from the final
 decoded block as required. For compatibility, it accepts an empty terminal EOS
 packet when that packet carries the final granule, and rejects empty nonterminal
@@ -140,6 +141,8 @@ libFLAC signed 24-bit PCM oracle, and
 NASA's public-domain SuperCam recording, and
 ``decodes_external_public_domain_wapichan_speech_against_libflac_pcm_oracle``
 checks a 24-bit stereo Wapichan speech recording labelled public domain in the
-United States. None of these recordings or oracles is bundled. All six tests
-compare every decoded sample with an independent PCM oracle. These external
-samples do not replace a broader independent Ogg-FLAC corpus.
+United States. A bundled CC0 Montréal Eaton Centre recording adds a 1,377,280-
+frame mono 24-bit check against an FFmpeg 4.2.2 PCM digest before and after
+comment rewriting. None of the ignored external recordings or oracles is
+bundled. All six ignored tests compare every decoded sample with an independent
+PCM oracle. These samples do not replace a broader independent Ogg-FLAC corpus.

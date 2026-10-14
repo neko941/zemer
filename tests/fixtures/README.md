@@ -3,7 +3,8 @@
 `ogg-flac-granule-trim.oga` contains a generated 512-frame, 44.1 kHz, mono
 16-bit sine wave. The native FLAC stream was encoded with the host's
 `libsndfile` 1.x FLAC encoder, then wrapped according to Xiph's Ogg-FLAC 1.0
-mapping; the EOS granule was set to 509 and the Ogg page CRC recomputed.
+mapping; the EOS granule is last-sample index 508 and the Ogg page CRC is
+recomputed.
 
 `ogg-flac-granule-oracle.pcm` is the full 512-frame little-endian signed
 16-bit PCM output from libsndfile decoding that native FLAC stream. Tests
@@ -440,6 +441,18 @@ it to a 2,245,016-byte s16le oracle (SHA-256
 test checks its full-stream FNV-1a 64-bit digest `66d73cd4a324cdb1` before and
 after metadata rewriting. Ogg-FLAC fixture SHA-256:
 `8b4c7537960adf92542cf7de846de545911f9e2143b6a51857c03cbf47671513`.
+
+`ogg-flac-eaton-centre.oga` is a 31.229569-second mono recording of Montréal's
+Eaton Centre by RandomKatze, dedicated under CC0 1.0 on [Wikimedia
+Commons](https://commons.wikimedia.org/wiki/File:Eaton_Centre_at_12_55.oga).
+It is 44.1 kHz signed 24-bit PCM. FFmpeg 4.2.2 decodes the FLAC frames to
+1,377,280 samples; the Ogg terminal granule specifies 1,377,225 output samples
+and trims 55 padded samples from the final frame. The regression checks the
+resulting s24le FNV-1a 64-bit digest `7b401cd05a9b74e1` before and after
+comment rewriting.
+Commons reports 3,103,293 bytes and SHA-1
+`fbd7d5f7bd9fda90d8089771923e2e3afba90bb7`. Fixture SHA-256:
+`a02c3cff4dbf76d3eb04d856c79ab9bc72fd5b7d5d85de95b2304aadcd43c2a0`.
 
 `ogg-flac-shami.oga` is the 75.306729-second spoken Wikipedia article about
 Shami (Levantine Arabic), published under CC BY-SA 4.0 on [Wikimedia
