@@ -565,6 +565,61 @@ fn decodes_and_rewrites_libflac_1_3_0_cc_by_sa_toilet_flush_fixture() {
 }
 
 #[test]
+fn chains_independent_ogg_flac_links_with_different_specs_and_rewrites_first() {
+    const FIRST_FRAMES: u64 = 317_827;
+    const FIRST_DIGEST: u64 = 0xf534_fae5_f393_257a;
+    const SECOND_FRAMES: u64 = 8_197;
+    const TITLE: &str = "rewritten first link only";
+
+    let first = include_bytes!("fixtures/ogg-flac-toilet-flush.oga");
+    let second = include_bytes!("fixtures/ogg-flac-ffmpeg-stereo-s16.oga");
+    let serial = |stream: &[u8]| u32::from_le_bytes(stream[14..18].try_into().unwrap());
+    assert_ne!(serial(first), serial(second));
+
+    let mut chained = Vec::with_capacity(first.len() + second.len());
+    chained.extend_from_slice(first);
+    chained.extend_from_slice(second);
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", TITLE);
+    let mut rewritten = Vec::new();
+    rewrite_ogg_metadata(Cursor::new(chained), &mut rewritten, &metadata).unwrap();
+
+    let first_spec = AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap();
+    let second_spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap();
+    let mut decoder = OggFlacDecoder::new(Cursor::new(rewritten)).unwrap();
+    assert_eq!(decoder.spec(), first_spec);
+    assert_eq!(decoder.metadata().values("TITLE"), [TITLE]);
+
+    let mut first_frames = 0;
+    let mut second_frames = 0;
+    let mut first_digest = 0xcbf2_9ce4_8422_2325_u64;
+    while let Some(block) = decoder.read_frames(4_096).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("chained Ogg-FLAC links must decode to signed 16-bit PCM");
+        };
+        if block.spec() == first_spec {
+            for byte in samples.iter().flat_map(|sample| sample.to_le_bytes()) {
+                first_digest = (first_digest ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            first_frames += block.frames() as u64;
+        } else {
+            assert_eq!(block.spec(), second_spec);
+            for (offset, sample) in samples.iter().enumerate() {
+                assert_eq!(
+                    *sample,
+                    expected_stereo_sample(second_frames * 2 + offset as u64)
+                );
+            }
+            second_frames += block.frames() as u64;
+        }
+    }
+    assert_eq!(first_frames, FIRST_FRAMES);
+    assert_eq!(first_digest, FIRST_DIGEST);
+    assert_eq!(second_frames, SECOND_FRAMES);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+}
+
+#[test]
 #[ignore = "requires the public-domain Wapichan Ogg-FLAC sample and libFLAC PCM oracle paths in ZEMER_OGG_FLAC_WAPICHAN_SAMPLE and ZEMER_OGG_FLAC_WAPICHAN_PCM"]
 fn decodes_external_public_domain_wapichan_speech_against_libflac_pcm_oracle() {
     const FRAMES: u64 = 2_867_200;
