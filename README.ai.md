@@ -37,8 +37,8 @@ PCM and seeking immediately before and after silent-channel run transitions.
 Two synthetic Ogg-FLAC files from the
 libFLAC 1.4.3 reference encoder add 8-bit mono and 32-bit 7.1 coverage. The
 official CC0 native-FLAC corpus also
-round-trips through Zemer's Ogg-FLAC encoder and decoder. Twelve current-mapping
-real-source vectors, including six bundled CC0/public-domain/CC BY-SA Commons or
+round-trips through Zemer's Ogg-FLAC encoder and decoder. Thirteen current-mapping
+real-source vectors, including seven bundled CC0/public-domain/CC BY-SA Commons or
 NASA recordings, have been checked against known PCM oracles; two pre-1.1.1
 legacy samples were compared with libFLAC PCM oracles. A real chained-link test
 rewrites first-link metadata, verifies PCM across independent 44.1- and 48-kHz

@@ -372,6 +372,17 @@ test checks its full-stream FNV-1a 64-bit digest `66d73cd4a324cdb1` before and
 after metadata rewriting. Ogg-FLAC fixture SHA-256:
 `8b4c7537960adf92542cf7de846de545911f9e2143b6a51857c03cbf47671513`.
 
+`ogg-flac-shami.oga` is the 75.306729-second spoken Wikipedia article about
+Shami (Levantine Arabic), published under CC BY-SA 4.0 on [Wikimedia
+Commons](https://commons.wikimedia.org/wiki/File:Shami.oga); attribution is to
+the authors of the Wikipedia article. The unmodified 5,761,157-byte file matches
+Commons SHA-1 `7b82a8cf83c1c2d54804b6a0c628f7ca165ab131`. FFmpeg 8.1 decodes its
+48-kHz stereo signed-24 stream to 3,614,723 frames / 21,688,338 bytes (SHA-256
+`18d873f3421a98c624ece1b0e6aec39013364c6eced76803c334fa89b65b5409`). The
+regression checks the full-stream FNV-1a 64-bit digest
+`67f0a56ff1e8f4b7` before and after comment rewriting; rewriting changes only
+the comments.
+
 `ogg-flac-toilet-flush.oga` is DrTrumpet's 7.2-second toilet-flush recording,
 dedicated under [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)
 on [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Toilet-flush.ogg).

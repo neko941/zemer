@@ -545,6 +545,26 @@ fn decodes_and_rewrites_cc0_david_allen_speech_ogg_flac_fixture() {
 }
 
 #[test]
+fn decodes_and_rewrites_cc_by_sa_shami_ogg_flac_fixture() {
+    const FRAMES: u64 = 3_614_723;
+    const PCM_FNV1A64: u64 = 0x67f0_a56f_f1e8_f4b7;
+    const TITLE: &str = "Shami Ogg-FLAC rewrite regression";
+
+    let input = include_bytes!("fixtures/ogg-flac-shami.oga");
+    let (frames, digest) = decode_i24le_pcm_digest(input, 48_000, 2, None);
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", TITLE);
+    let mut rewritten = Vec::new();
+    rewrite_ogg_metadata(Cursor::new(input), &mut rewritten, &metadata).unwrap();
+    let (frames, digest) = decode_i24le_pcm_digest(&rewritten, 48_000, 2, Some(TITLE));
+    assert_eq!(frames, FRAMES);
+    assert_eq!(digest, PCM_FNV1A64);
+}
+
+#[test]
 fn decodes_and_rewrites_libflac_1_3_0_cc_by_sa_toilet_flush_fixture() {
     const FRAMES: u64 = 317_827;
     const PCM_FNV1A64: u64 = 0xf534_fae5_f393_257a;
@@ -811,6 +831,36 @@ fn decode_s16le_pcm_digest(
         };
         for byte in samples.iter().flat_map(|sample| sample.to_le_bytes()) {
             digest = (digest ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        frames += (samples.len() / usize::from(channels)) as u64;
+    }
+    (frames, digest)
+}
+
+fn decode_i24le_pcm_digest(
+    bytes: &[u8],
+    sample_rate: u32,
+    channels: u16,
+    expected_title: Option<&str>,
+) -> (u64, u64) {
+    let mut decoder = OggFlacDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(
+        decoder.spec(),
+        AudioSpec::new(sample_rate, channels, SampleFormat::PcmI24).unwrap()
+    );
+    if let Some(title) = expected_title {
+        assert_eq!(decoder.metadata().values("TITLE"), [title]);
+    }
+    let mut frames = 0;
+    let mut digest = 0xcbf2_9ce4_8422_2325;
+    while let Some(block) = decoder.read_frames(2_048).unwrap() {
+        let Samples::I24(samples) = block.samples() else {
+            panic!("Ogg-FLAC fixture must decode to signed 24-bit PCM");
+        };
+        for sample in samples {
+            for byte in sample.to_le_bytes()[..3].iter().copied() {
+                digest = (digest ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
+            }
         }
         frames += (samples.len() / usize::from(channels)) as u64;
     }
