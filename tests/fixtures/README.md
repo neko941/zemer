@@ -229,6 +229,18 @@ through EOF using `ZEMER_VORBIS_ONE_ENTRY_TRUNCATED`,
 `ZEMER_VORBIS_MAKE_PAGE_SHARING`; none are bundled. The last two exercise the
 same setup-page/audio-page mapping violation described above.
 
+On 2026-10-15, the ignored test passed on server5 against all five files freshly
+downloaded from the [Xiph vector index](https://people.xiph.org/~xiphmont/test-vectors/vorbis/).
+SHA-256 checksums pin the tested external inputs:
+
+| Vector | SHA-256 |
+|---|---|
+| `one-entry-codebook-test.ogg` | `789b5146f2a7c0864a228ee4a870606a32c4169e22097be65129623705c54749` |
+| `singlemap-test.ogg` | `50d8077608a4192b8f8505aec0217be8b6c25def4068899afc19c17f30e1d521` |
+| `unused-mode-test.ogg` | `e27ae6fc2f7c0037c28328801c46d966abcee3050e3ebd40bf097f7986f50f94` |
+| `combustion.ogg` | `5f58888fd5061c1202a4a93ae13a13f73a5c096a62fee17918a87c6627dabfd8` |
+| `make.ogg` | `28d14448873bc08aa2d57ead5ef4705ed3f00a730a377e2f637dc85233ec17b7` |
+
 The normal integration suite also flips each individual bit in real libVorbis
 setup and comment headers and checks that their parsers never panic. Audio
 packet mutations are checked separately across real encoder profiles.
