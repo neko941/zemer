@@ -399,42 +399,24 @@ fn decodes_external_chopin_ogg_flac_against_libflac_pcm_oracle() {
 }
 
 #[test]
-#[ignore = "requires the public-domain 4m33s Ogg-FLAC sample and libFLAC PCM oracle paths in ZEMER_OGG_FLAC_4M33S_SAMPLE and ZEMER_OGG_FLAC_4M33S_PCM"]
-fn decodes_external_public_domain_4m33s_ogg_flac_against_libflac_pcm_oracle() {
+fn decodes_public_domain_4m33s_ogg_flac_fixture() {
     const FRAMES: u64 = 13_104_000;
-    let input = std::env::var_os("ZEMER_OGG_FLAC_4M33S_SAMPLE")
-        .expect("set ZEMER_OGG_FLAC_4M33S_SAMPLE to the external Ogg-FLAC sample");
-    let oracle = std::env::var_os("ZEMER_OGG_FLAC_4M33S_PCM")
-        .expect("set ZEMER_OGG_FLAC_4M33S_PCM to libFLAC's signed 24-bit PCM output");
-    let mut decoder = OggFlacDecoder::new(File::open(input).unwrap()).unwrap();
+    let mut decoder =
+        OggFlacDecoder::new(Cursor::new(include_bytes!("fixtures/ogg-flac-4m33s.oga"))).unwrap();
     assert_eq!(
         decoder.spec(),
         AudioSpec::new(48_000, 1, SampleFormat::PcmI24).unwrap()
     );
-    let mut oracle = BufReader::new(File::open(oracle).unwrap());
     let mut frames = 0;
     while let Some(block) = decoder.read_frames(2_048).unwrap() {
         let Samples::I24(samples) = block.samples() else {
-            panic!("external 4m33s Ogg-FLAC sample must decode to signed 24-bit PCM");
+            panic!("4m33s Ogg-FLAC fixture must decode to signed 24-bit PCM");
         };
-        let mut bytes = vec![0; samples.len() * 3];
-        oracle.read_exact(&mut bytes).unwrap();
-        for (sample, expected) in samples.iter().zip(bytes.chunks_exact(3)) {
-            let sign = if expected[2] & 0x80 == 0 { 0 } else { 0xff };
-            assert_eq!(
-                *sample,
-                i32::from_le_bytes([expected[0], expected[1], expected[2], sign])
-            );
-        }
+        assert!(samples.iter().all(|&sample| sample == 0));
         frames += samples.len() as u64;
     }
     assert_eq!(frames, FRAMES);
-    let mut trailing = [0; 1];
-    assert_eq!(
-        oracle.read(&mut trailing).unwrap(),
-        0,
-        "libFLAC PCM oracle has trailing samples"
-    );
+    assert!(decoder.read_frames(1).unwrap().is_none());
 }
 
 #[test]

@@ -319,6 +319,15 @@ neither sample nor oracle is bundled. The test also rewrites both comments,
 reads the normalized outputs through EOF, and checks their frame counts;
 packet-identity preservation is covered by the crate unit test.
 
+`ogg-flac-4m33s.oga` is the public-domain, computer-generated 4′33″ silence
+recording from [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:4m33s.oga).
+It is a 48 kHz mono 24-bit Ogg-FLAC stream with exactly 13,104,000 silent
+frames. The regression decodes every frame and checks both the zero samples
+and exact frame count. The source command recorded on Commons is
+`sox -n -c1 4m33s.flac trim 0 273`; FFprobe 8.1 confirms the stream profile.
+No decoder implementation code is included. SHA-256:
+`DC498062CF0DEB4325AD9DA34BED8F8DEC0A1FF7E7042381969ABB1F21BAC520`.
+
 Two additional Ogg-FLAC fixtures were encoded by the system libFLAC 1.4.3
 reference encoder. Their PCM is deterministic synthetic data, and integration
 tests verify every decoded sample against the source formula rather than a
