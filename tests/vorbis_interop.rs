@@ -1050,7 +1050,11 @@ fn decoder_handles_sampled_audio_packet_mutations_across_libvorbis_profiles() {
 #[test]
 fn decoder_handles_sampled_audio_packet_mutations_from_independent_encoders() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/vorbis");
-    for filename in ["rusty-vorbis-0_1_1-44100-2.ogg", "wikimedia-cc0-432hz.ogg"] {
+    for filename in [
+        "rusty-vorbis-0_1_1-44100-2.ogg",
+        "wikimedia-cc0-432hz.ogg",
+        "oxideav-vorbis-0_0_12-48000-6.ogg",
+    ] {
         let input = fs::read(fixtures.join(filename)).unwrap();
         let mut reader = OggPacketReader::new(Cursor::new(input));
         let mut packets = Vec::new();
