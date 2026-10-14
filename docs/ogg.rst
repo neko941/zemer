@@ -11,8 +11,8 @@ define their own packet mappings and codec rules.
 The extensions ``.ogg`` and ``.oga`` are container naming conventions, not
 reliable codec identifiers. Zemer identifies supported input by its contents.
 At present, Ogg-FLAC and Ogg Vorbis decoding use this crate. Ogg-FLAC is
-advertised as supported; Vorbis is implemented but remains experimental and is
-not yet advertised pending broader conformance checks. Opus remains planned.
+supported; Vorbis is listed as experimental pending perceptual evaluation and
+wider non-Xiph input conformance. Opus remains planned.
 
 The experimental ``zemer-vorbis`` decoder returns Float32 PCM and reads
 sequential chained logical streams, including links with different audio
@@ -38,8 +38,8 @@ does not control bitrate. FFmpeg independently decodes two-second synthetic
 target-rate profiles for every channel count from 1–8 plus 192-kHz stereo; ffprobe reports exact
 durations, and channel-order-matched PCM has maximum per-channel RMS error
 below 0.0043. These measurements verify decoding and sample output, not
-perceived quality. Broader perceptual evaluation and non-Xiph input conformance
-remain before this format can be advertised as supported.
+perceived quality. Vorbis remains experimental until perceptual evaluation and
+wider non-Xiph input conformance are complete.
 
 .. code-block:: rust
 
