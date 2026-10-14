@@ -574,9 +574,7 @@ fn collect_initial_audio_page<R: Read>(
                 ));
             }
             granule_offset.store(
-                granule
-                    .saturating_add(1)
-                    .saturating_sub(samples),
+                granule.saturating_add(1).saturating_sub(samples),
                 Ordering::Release,
             );
             return Ok(audio);

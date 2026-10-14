@@ -134,7 +134,9 @@ fn normalize_initial_audio<R: Read>(
     if has_granule {
         let granule = first.page_granule_position;
         let decoded_samples = frame_block_size(&first.bytes)? as u64;
-        if granule.checked_add(1).is_none_or(|end| end < decoded_samples)
+        if granule
+            .checked_add(1)
+            .is_none_or(|end| end < decoded_samples)
             && first.page_flags & PAGE_FLAG_EOS == 0
         {
             return Err(AudioError::InvalidFormat(
