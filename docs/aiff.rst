@@ -97,6 +97,12 @@ sample and oracle paths are supplied through ``ZEMER_AIFF_12BIT_SAMPLE``,
 ``ZEMER_AIFC_12BIT_PCM``; the files are temporary test inputs and are not
 bundled.
 
+Additional ignored external checks compare 15 McGill AFsp profiles, six AIFC
+edge cases, seven older CCRMA files, and the McGill 40-kbit/s G.726 sample with
+FFmpeg or SpanDSP PCM oracles. These corpus checks have passed on server5; the
+sample files remain external because their redistribution terms are not stated.
+Download commands and test names are recorded in ``tests/fixtures/README.md``.
+
 .. code-block:: rust
 
    use std::fs::File;
