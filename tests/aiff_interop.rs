@@ -29,6 +29,21 @@ fn append_pcm_bytes(samples: &Samples, output: &mut Vec<u8>) {
     }
 }
 
+fn aiff_chunk_body<'a>(bytes: &'a [u8], wanted: &[u8; 4]) -> &'a [u8] {
+    let mut offset = 12;
+    while offset + 8 <= bytes.len() {
+        let size = u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let body_start = offset + 8;
+        let body_end = body_start.checked_add(size).unwrap();
+        assert!(body_end <= bytes.len(), "truncated generated AIFF chunk");
+        if &bytes[offset..offset + 4] == wanted {
+            return &bytes[body_start..body_end];
+        }
+        offset = body_end + size % 2;
+    }
+    panic!("missing generated AIFF chunk {wanted:?}");
+}
+
 const FRAMES: u64 = 23_493;
 
 fn decode_ffmpeg(ffmpeg: &std::ffi::OsStr, encoded: &[u8], pcm_format: &str) -> Vec<u8> {
@@ -201,6 +216,54 @@ fn encodes_aifc_g711_compatible_with_ffmpeg() {
         assert_eq!(frames, input.frames());
         assert_eq!(oracle.len(), samples.len() * 2);
         assert_eq!(actual, oracle, "{encoding:?} differs from FFmpeg");
+    }
+}
+
+#[test]
+#[ignore = "requires external PCM and SpanDSP packed-codeword oracles"]
+fn encodes_aifc_g726_matches_spandsp_oracles() {
+    let pcm_path = std::env::var_os("ZEMER_G726_ENCODER_PCM")
+        .expect("set ZEMER_G726_ENCODER_PCM to little-endian signed-16 PCM");
+    let oracle_dir = std::env::var_os("ZEMER_G726_ENCODER_ORACLE_DIR")
+        .expect("set ZEMER_G726_ENCODER_ORACLE_DIR to the SpanDSP oracle directory");
+    let pcm = std::fs::read(pcm_path).unwrap();
+    assert_eq!(pcm.len() % 2, 0);
+    let samples: Vec<_> = pcm
+        .chunks_exact(2)
+        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]))
+        .collect();
+    assert_eq!(samples.len(), 4_096);
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+
+    for (rate, label) in [
+        (aiff::G726Rate::Kbps16, "16000"),
+        (aiff::G726Rate::Kbps24, "24000"),
+        (aiff::G726Rate::Kbps32, "32000"),
+        (aiff::G726Rate::Kbps40, "40000"),
+    ] {
+        let mut encoder = AiffEncoder::new_aifc_g726(Cursor::new(Vec::new()), spec, rate).unwrap();
+        for block in samples.chunks(37) {
+            encoder
+                .write_block(&PcmBuffer::new(spec, Samples::I16(block.to_vec())).unwrap())
+                .unwrap();
+        }
+        let encoded = encoder.finish().unwrap().get_ref().clone();
+        let ssnd = aiff_chunk_body(&encoded, b"SSND");
+        assert!(ssnd.len() >= 8);
+        assert_eq!(&ssnd[..8], &[0; 8]);
+        assert_eq!(
+            &ssnd[8..],
+            std::fs::read(std::path::Path::new(&oracle_dir).join(format!("{label}.raw"))).unwrap()
+        );
+        let common = aiff_chunk_body(&encoded, b"COMM");
+        assert_eq!(&common[18..22], b"G726");
+        assert_eq!(
+            u32::from_be_bytes(common[2..6].try_into().unwrap()),
+            samples.len() as u32
+        );
+        let mut hint = b"stocG726".to_vec();
+        hint.extend_from_slice(&(u32::from(rate.bits_per_sample()) * 8_000).to_be_bytes());
+        assert_eq!(aiff_chunk_body(&encoded, b"APPL"), hint);
     }
 }
 

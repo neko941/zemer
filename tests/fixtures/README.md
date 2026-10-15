@@ -693,3 +693,18 @@ Zemer's decoded PCM. Run it with:
 ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
   encodes_aifc_g711_compatible_with_ffmpeg -- --ignored --exact
 ```
+
+The ignored `encodes_aifc_g726_matches_spandsp_oracles` test checks that the
+complete AIFC `SSND` payload matches SpanDSP 0.0.6's independent packed-codeword
+oracles at 16, 24, 32, and 40 kbit/s. It streams the same little-endian signed
+16-bit mono PCM input in 37-sample blocks. Keep the PCM input and four
+`16000.raw`, `24000.raw`, `32000.raw`, and `40000.raw` oracle files outside the
+repository; the test uses no SpanDSP code or dependency. Set
+`ZEMER_G726_ENCODER_PCM` and `ZEMER_G726_ENCODER_ORACLE_DIR`, then run:
+
+```sh
+ZEMER_G726_ENCODER_PCM=/path/to/encoder_input.pcm \
+ZEMER_G726_ENCODER_ORACLE_DIR=/path/to/spandsp-encode \
+  cargo test -p zemer-tests --test aiff_interop \
+  encodes_aifc_g726_matches_spandsp_oracles -- --ignored --exact
+```
