@@ -55,7 +55,9 @@ encoder takes an explicit rate and writes that hint. Legacy
 G.722/G.728/GSM/ACE/MACE codes remain unsupported. The optional
 ignored `tests/aiff_interop.rs` test compares the McGill/AFsp 12-bit AIFF and
 AIFC samples with independent FFmpeg PCM oracles; the sample files and oracles
-are temporary inputs, not bundled fixtures.
+are temporary inputs, not bundled fixtures. A second optional corpus test
+checks six McGill AIFC edge cases; the reader tolerates a single missing final
+odd-chunk pad byte only when the file and chunk bounds prove that exact case.
 
 The WAVE reader handles top-level `data` and ordered `LIST/wavl` `data`/`slnt`
 segments in RIFF and RF64. Silence segments hold the previous interleaved frame;

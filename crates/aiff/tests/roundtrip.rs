@@ -462,6 +462,27 @@ fn rejects_form_and_chunk_bounds_before_reading_audio() {
 }
 
 #[test]
+fn tolerates_only_a_missing_final_odd_chunk_pad_byte() {
+    let mut missing_pad = aifc_g711(b"ULAW", &[0xff]);
+    missing_pad.pop();
+    let mut decoder = AiffDecoder::new(Cursor::new(missing_pad)).unwrap();
+    let block = decoder.read_frames(1).unwrap().unwrap();
+    let Samples::I16(samples) = block.samples() else {
+        panic!("μ-law audio must decode to signed 16-bit PCM");
+    };
+    assert_eq!(samples, &[decode_mulaw(0xff)]);
+
+    let mut missing_audio = aifc_g711(b"ULAW", &[0xff, 0x7f]);
+    missing_audio.pop();
+    assert!(AiffDecoder::new(Cursor::new(missing_audio)).is_err());
+
+    let mut overrun = aifc_g711(b"ULAW", &[0xff]);
+    let declared_form_size = u32::from_be_bytes(overrun[4..8].try_into().unwrap()) + 2;
+    overrun[4..8].copy_from_slice(&declared_form_size.to_be_bytes());
+    assert!(AiffDecoder::new(Cursor::new(overrun)).is_err());
+}
+
+#[test]
 fn allows_zero_frame_file_without_an_ssnd_chunk() {
     let without_ssnd = |mut bytes: Vec<u8>| {
         let sound = bytes
