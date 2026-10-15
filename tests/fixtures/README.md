@@ -685,6 +685,17 @@ ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
   encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg -- --ignored --exact
 ```
 
+The ignored `encodes_aifc_float_compatible_with_ffmpeg` test checks both AIFC
+IEEE float widths (`fl32` and `fl64`). It encodes stereo samples including
+signed zero, minimum positive normal, and maximum finite values, then requires
+both Zemer and FFmpeg to reproduce the exact little-endian PCM bytes. Run it
+with:
+
+```sh
+ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
+  encodes_aifc_float_compatible_with_ffmpeg -- --ignored --exact
+```
+
 The ignored `encodes_aifc_g711_compatible_with_ffmpeg` test encodes the full
 16-bit input-code range with both A-law and μ-law, then compares FFmpeg and
 Zemer's decoded PCM. Run it with:

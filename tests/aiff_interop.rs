@@ -187,6 +187,69 @@ fn encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg() {
 
 #[test]
 #[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
+fn encodes_aifc_float_compatible_with_ffmpeg() {
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
+    let cases = [
+        (
+            SampleFormat::Float32,
+            "f32le",
+            Samples::F32(vec![
+                0.0,
+                -0.0,
+                1.0,
+                -1.0,
+                0.5,
+                -0.5,
+                f32::MIN_POSITIVE,
+                f32::MAX,
+                0.125,
+                -0.125,
+            ]),
+        ),
+        (
+            SampleFormat::Float64,
+            "f64le",
+            Samples::F64(vec![
+                0.0,
+                -0.0,
+                1.0,
+                -1.0,
+                0.5,
+                -0.5,
+                f64::MIN_POSITIVE,
+                f64::MAX,
+                0.125,
+                -0.125,
+            ]),
+        ),
+    ];
+
+    for (format, pcm_format, samples) in cases {
+        let spec = AudioSpec::new(48_000, 2, format).unwrap();
+        let input = PcmBuffer::new(spec, samples).unwrap();
+        let mut encoder = AiffEncoder::new_aifc(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_block(&input).unwrap();
+        let encoded = encoder.finish().unwrap().get_ref().clone();
+        let oracle = decode_ffmpeg(&ffmpeg, &encoded, pcm_format);
+
+        let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+        assert_eq!(decoder.spec(), spec);
+        let mut actual = Vec::new();
+        let mut frames = 0;
+        while let Some(block) = decoder.read_frames(3).unwrap() {
+            frames += block.frames();
+            append_pcm_bytes(block.samples(), &mut actual);
+        }
+        let mut expected = Vec::new();
+        append_pcm_bytes(input.samples(), &mut expected);
+        assert_eq!(frames, input.frames());
+        assert_eq!(actual, expected, "Zemer {format:?} round-trip");
+        assert_eq!(oracle, expected, "FFmpeg {format:?} decode");
+    }
+}
+
+#[test]
+#[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
 fn encodes_aifc_g711_compatible_with_ffmpeg() {
     let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
     let spec = AudioSpec::new(8_000, 2, SampleFormat::PcmI16).unwrap();
