@@ -9,10 +9,12 @@ The format's data offset locates the annotation and audio; a data size of
 ``0xffffffff`` means that audio continues to end of file.
 
 Supported encodings are signed linear PCM 8/16/24/32-bit, IEEE float32/64,
-G.711 μ-law, and G.711 A-law. Other AU encoding codes return an unsupported
-error. Audio is decoded and encoded in bounded blocks. The decoder rejects
-invalid offsets, truncated declared audio, and payloads that end in a partial
-sample frame.
+G.711 μ-law and A-law, and G.721 ADPCM. G.721 is restricted to mono 8 kHz
+audio. Its byte-oriented AU payload represents two frames per byte, so the
+writer rejects a final odd sample-frame count. Other AU encoding codes return
+an unsupported error. Audio is decoded and encoded in bounded blocks. The
+decoder rejects invalid offsets, truncated declared audio, and payloads that
+end in a partial sample frame.
 
 The raw annotation is available through ``AuDecoder::annotation()`` and can be
 set before writing samples with ``AuEncoder::set_annotation()``. Valid UTF-8
@@ -21,9 +23,15 @@ copies the encoded audio without decoding it; if the COMMENT value is
 unchanged, the original annotation bytes are retained exactly. An edited
 COMMENT is written as UTF-8 followed by a NUL terminator and alignment padding.
 
+AU encoding 23 uses the shared G.726 codec at 32 kbit/s. Sun's G.721 utility
+packs the first codeword into the low nibble [SunOS G.721 packing]_; the AU
+reader and writer use that packing. ITU-T G.726 replaces G.721 and states
+compatibility with systems based on the 1988 G.721 edition [ITU-T G.726]_.
+
 The CLI detects AU by its ``.snd`` signature, regardless of the filename
-extension. Use ``--format au`` for sample-format-selected AU output, or
-``--format au_alaw`` and ``--format au_mulaw`` for explicit G.711 output.
+extension. Use ``--format au`` for sample-format-selected AU output,
+``--format au_alaw`` and ``--format au_mulaw`` for explicit G.711 output, or
+``--format au_g721`` for mono 8 kHz signed 16-bit G.721 output.
 Only COMMENT metadata has an AU annotation mapping.
 
 The format profile follows the [Oracle AU documentation] and is checked
@@ -34,3 +42,5 @@ this implementation follows Oracle's documented big-endian layout.
 .. [Oracle AU documentation] https://docs.oracle.com/cd/E19253-01/816-5174/6mbb98ucf/index.html
 .. [McGill AU overview] https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/AU/AU.html
 .. [McGill AU sample list] https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/AU/Samples.html
+.. [SunOS G.721 packing] https://www.typewritten.org/Manual/Sun/SunOS/4.1.4/man1/adpcm_enc.html
+.. [ITU-T G.726] https://www.itu.int/rec/T-REC-G.726-199012-I%21%21PDF-E

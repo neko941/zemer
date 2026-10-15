@@ -51,6 +51,7 @@ version = "0.7.0"
 dependencies = [
  "zemer-core",
  "zemer-g711",
+ "zemer-g726",
 ]
 
 [[package]]

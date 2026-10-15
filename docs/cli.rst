@@ -100,8 +100,15 @@ The same command can explicitly select G.711 output in WAVE, AIFF-C, or AU:
    cargo run -p zemer -- convert --format aifc_mulaw input.wav output-mulaw.aifc
    cargo run -p zemer -- convert --format au_alaw input.wav output-alaw.au
    cargo run -p zemer -- convert --format au_mulaw input.wav output-mulaw.au
+
    cargo run -p zemer -- convert --format aifc_ima4 input.wav output-ima4.aifc
    cargo run -p zemer -- convert --format aifc_g726 --bitrate 40 input-8khz.wav output-g726.aifc
+
+AU G.721 output is available for mono 8 kHz signed 16-bit input:
+
+.. code-block:: console
+
+   cargo run -p zemer -- convert --format au_g721 voice.wav voice-g721.au
 
 The output file must not already exist. Conversion keeps the input sample rate
 and channel count and carries text tags supported by both formats. It does not

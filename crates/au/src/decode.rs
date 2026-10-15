@@ -1,6 +1,7 @@
 use std::io::{Read, Seek, SeekFrom};
 
 use g711::{decode_alaw, decode_mulaw};
+use g726::{G726Decoder, G726Rate};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::{MAX_ANNOTATION_BYTES, MINIMUM_DATA_OFFSET, UNKNOWN_DATA_SIZE};
@@ -15,6 +16,7 @@ enum Encoding {
     Float64,
     MuLaw,
     ALaw,
+    G721,
 }
 
 impl Encoding {
@@ -27,6 +29,7 @@ impl Encoding {
             5 => Ok(Self::Linear32),
             6 => Ok(Self::Float32),
             7 => Ok(Self::Float64),
+            23 => Ok(Self::G721),
             27 => Ok(Self::ALaw),
             _ => Err(AudioError::Unsupported("unsupported AU encoding")),
         }
@@ -35,7 +38,7 @@ impl Encoding {
     fn sample_format(self) -> SampleFormat {
         match self {
             Self::Linear8 => SampleFormat::PcmU8,
-            Self::Linear16 | Self::MuLaw | Self::ALaw => SampleFormat::PcmI16,
+            Self::Linear16 | Self::MuLaw | Self::ALaw | Self::G721 => SampleFormat::PcmI16,
             Self::Linear24 => SampleFormat::PcmI24,
             Self::Linear32 => SampleFormat::PcmI32,
             Self::Float32 => SampleFormat::Float32,
@@ -45,7 +48,7 @@ impl Encoding {
 
     fn bytes_per_sample(self) -> u64 {
         match self {
-            Self::Linear8 | Self::MuLaw | Self::ALaw => 1,
+            Self::Linear8 | Self::MuLaw | Self::ALaw | Self::G721 => 1,
             Self::Linear16 => 2,
             Self::Linear24 => 3,
             Self::Linear32 | Self::Float32 => 4,
@@ -62,6 +65,8 @@ pub struct AuDecoder<R> {
     encoding: Encoding,
     data_bytes_remaining: u64,
     frame_bytes: u64,
+    g721_decoder: Option<G726Decoder>,
+    g721_pending_sample: Option<i16>,
 }
 
 impl<R: Read + Seek> AuDecoder<R> {
@@ -88,6 +93,11 @@ impl<R: Read + Seek> AuDecoder<R> {
                 "invalid AU sample rate or channel count",
             ));
         }
+        if matches!(encoding, Encoding::G721) && (sample_rate != 8_000 || channels != 1) {
+            return Err(AudioError::Unsupported(
+                "AU G.721 requires 8 kHz mono audio",
+            ));
+        }
         let data_bytes = if data_size == UNKNOWN_DATA_SIZE {
             file_end - data_offset
         } else {
@@ -99,15 +109,27 @@ impl<R: Read + Seek> AuDecoder<R> {
         if data_end > file_end {
             return Err(AudioError::InvalidFormat("AU audio data exceeds the file"));
         }
-        let frame_bytes = encoding
-            .bytes_per_sample()
-            .checked_mul(u64::from(channels))
-            .ok_or(AudioError::InvalidFormat("AU sample frame size overflow"))?;
+        let frame_bytes = if matches!(encoding, Encoding::G721) {
+            1
+        } else {
+            encoding
+                .bytes_per_sample()
+                .checked_mul(u64::from(channels))
+                .ok_or(AudioError::InvalidFormat("AU sample frame size overflow"))?
+        };
         if data_bytes % frame_bytes != 0 {
             return Err(AudioError::InvalidFormat(
                 "AU audio data ends in a partial sample frame",
             ));
         }
+        let g721_decoder = if matches!(encoding, Encoding::G721) {
+            Some(
+                G726Decoder::new(G726Rate::Kbps32, 1)
+                    .map_err(|_| AudioError::InvalidFormat("invalid AU G.721 configuration"))?,
+            )
+        } else {
+            None
+        };
         let annotation_size = usize::try_from(data_offset - 24)
             .map_err(|_| AudioError::InvalidFormat("AU annotation is too large"))?;
         if annotation_size > MAX_ANNOTATION_BYTES {
@@ -134,6 +156,8 @@ impl<R: Read + Seek> AuDecoder<R> {
             encoding,
             data_bytes_remaining: data_bytes,
             frame_bytes,
+            g721_decoder,
+            g721_pending_sample: None,
         })
     }
 
@@ -158,6 +182,9 @@ impl<R: Read + Seek> AudioDecoder for AuDecoder<R> {
                 "max_frames must be greater than zero",
             ));
         }
+        if matches!(self.encoding, Encoding::G721) {
+            return self.read_g721_frames(max_frames);
+        }
         if self.data_bytes_remaining == 0 {
             return Ok(None);
         }
@@ -177,6 +204,48 @@ impl<R: Read + Seek> AudioDecoder for AuDecoder<R> {
 }
 
 impl<R: Read + Seek> AuDecoder<R> {
+    fn read_g721_frames(&mut self, max_frames: usize) -> Result<Option<PcmBuffer>, AudioError> {
+        let mut samples = Vec::new();
+        if let Some(sample) = self.g721_pending_sample.take() {
+            samples.push(sample);
+        }
+        let wanted = max_frames - samples.len();
+        let byte_count = u64::try_from(wanted.div_ceil(2))
+            .unwrap_or(u64::MAX)
+            .min(self.data_bytes_remaining);
+        if byte_count == 0 && samples.is_empty() {
+            return Ok(None);
+        }
+        if byte_count != 0 {
+            let byte_count = usize::try_from(byte_count)
+                .map_err(|_| AudioError::InvalidData("AU G.721 block is too large"))?;
+            let mut packed = Vec::new();
+            packed
+                .try_reserve_exact(byte_count)
+                .map_err(|_| AudioError::InvalidData("AU G.721 allocation failed"))?;
+            packed.resize(byte_count, 0);
+            self.reader.read_exact(&mut packed)?;
+            let sample_count = byte_count
+                .checked_mul(2)
+                .ok_or(AudioError::InvalidData("AU G.721 block is too large"))?;
+            let decoded = self
+                .g721_decoder
+                .as_mut()
+                .ok_or(AudioError::InvalidData("AU G.721 decoder is unavailable"))?
+                .decode_packed_lsb(&packed, sample_count)
+                .map_err(|_| AudioError::InvalidData("invalid AU G.721 payload"))?;
+            self.data_bytes_remaining -= u64::try_from(byte_count)
+                .map_err(|_| AudioError::InvalidData("AU G.721 block is too large"))?;
+            samples.extend(decoded);
+        }
+        if samples.len() > max_frames {
+            self.g721_pending_sample = samples.pop();
+        }
+        PcmBuffer::new(self.spec, Samples::I16(samples))
+            .map(Some)
+            .map_err(Into::into)
+    }
+
     fn read_samples(&mut self, sample_count: usize) -> Result<PcmBuffer, AudioError> {
         match self.encoding {
             Encoding::Linear8 => {
@@ -274,6 +343,7 @@ impl<R: Read + Seek> AuDecoder<R> {
                 }
                 PcmBuffer::new(self.spec, Samples::I16(values)).map_err(Into::into)
             }
+            Encoding::G721 => unreachable!("G.721 uses its packed streaming path"),
         }
     }
 }
