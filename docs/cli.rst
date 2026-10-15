@@ -140,7 +140,7 @@ does not convert between DSD and PCM.
 Metadata editing
 ----------------
 
-Update RIFF INFO tags in WAVE, NAME/AUTH/ANNO and ID3 text in AIFF/AIFC, AU
+Update RIFF INFO tags in WAVE, NAME/AUTH/(c)/ANNO and ID3 text in AIFF/AIFC, AU
 COMMENT annotations, DSF ID3 text frames, DSDIFF title/artist/general comments,
 Vorbis comments in native
 FLAC or Ogg-FLAC, or APEv2 text items in WavPack while preserving tags that are

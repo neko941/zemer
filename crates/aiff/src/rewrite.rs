@@ -73,7 +73,7 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
                 metadata_bytes = add_metadata_bytes(metadata_bytes, tag.len() as u64)?;
                 write_id3_chunk(&mut writer, &tag)?;
             }
-        } else if matches!(&header[..4], b"NAME" | b"AUTH" | b"ANNO") {
+        } else if matches!(&header[..4], b"NAME" | b"AUTH" | b"(c) " | b"ANNO") {
             reader.seek(SeekFrom::Start(chunk_end))?;
         } else {
             if matches!(&header[..4], b"COMT" | b"MARK") {
@@ -86,6 +86,7 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
     for (key, id) in [
         ("title", *b"NAME"),
         ("artist", *b"AUTH"),
+        ("copyright", *b"(c) "),
         ("comment", *b"ANNO"),
     ] {
         let values = metadata.values(key);

@@ -1121,9 +1121,12 @@ fn aiff_conversion_preserves_typed_metadata_across_aiff_and_aifc() {
         marker_id: 3,
         text: b"mastered take".to_vec(),
     }];
+    let mut metadata = Metadata::default();
+    metadata.insert("copyright", "1988 Apple Computer, Inc.");
     let id3_tag = id3_private_tag();
     let mut encoder = AiffEncoder::new(File::create(&input_path).unwrap(), spec).unwrap();
     encoder.set_id3_tag(&id3_tag).unwrap();
+    encoder.set_metadata(&metadata).unwrap();
     encoder.set_markers(&markers).unwrap();
     encoder.set_comments(&comments).unwrap();
     encoder.write_block(&audio).unwrap();
@@ -1146,7 +1149,17 @@ fn aiff_conversion_preserves_typed_metadata_across_aiff_and_aifc() {
         assert_eq!(decoder.is_aifc(), format == "aifc");
         assert_eq!(decoder.markers(), markers);
         assert_eq!(decoder.comments(), comments);
-        assert_eq!(decoder.id3_tag(), Some(id3_tag.as_slice()));
+        assert_eq!(
+            decoder.metadata().values("COPYRIGHT"),
+            ["1988 Apple Computer, Inc."]
+        );
+        assert!(
+            decoder
+                .id3_tag()
+                .unwrap()
+                .windows(4)
+                .any(|frame| frame == b"PRIV")
+        );
         assert_eq!(decoder.read_frames(3).unwrap().unwrap(), audio);
         assert!(decoder.read_frames(1).unwrap().is_none());
         let _ = fs::remove_file(output_path);
@@ -1345,6 +1358,8 @@ fn metadata_edit_preserves_aiff_and_aifc_audio() {
                 "--set",
                 "TITLE=Edited",
                 "--set",
+                "COPYRIGHT=2026 Zemer",
+                "--set",
                 "COMMENT=first",
                 "--set",
                 "COMMENT=second",
@@ -1363,6 +1378,7 @@ fn metadata_edit_preserves_aiff_and_aifc_audio() {
         );
         let mut decoder = AiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
         assert_eq!(decoder.metadata().values("TITLE"), ["Edited"]);
+        assert_eq!(decoder.metadata().values("COPYRIGHT"), ["2026 Zemer"]);
         assert_eq!(decoder.metadata().values("COMMENT"), ["first", "second"]);
         assert_eq!(decoder.read_frames(8).unwrap().unwrap(), audio);
         assert!(decoder.read_frames(1).unwrap().is_none());

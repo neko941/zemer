@@ -34,8 +34,9 @@ writes the same hint. The ``G726Rate`` enum is re-exported from the ``aiff``
 crate. The clean-room encoder matches an independent SpanDSP codeword oracle at
 all four rates.
 AIFF-C output includes the required ``FVER`` chunk. Both readers and writers
-map ``NAME``, ``AUTH``, and repeated ``ANNO`` chunks to TITLE, ARTIST, and
-COMMENT.
+map ``NAME``, ``AUTH``, ``(c) ``, and repeated ``ANNO`` chunks to TITLE,
+ARTIST, COPYRIGHT, and COMMENT. The copyright chunk is ASCII text and may
+appear at most once.
 
 The reader also accepts one ``ID3 `` chunk as a compatibility extension. The
 chunk payload is a bounded ID3v2 tag parsed by the reusable ``zemer-id3``
