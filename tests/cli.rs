@@ -7,6 +7,7 @@ use std::{
 };
 
 use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker};
+use au::{AuDecoder, AuEncoder};
 use dsdiff::DsdiffDecoder;
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, OggFlacDecoder, OggFlacEncoder};
@@ -873,6 +874,93 @@ fn convert_encodes_g711_only_when_explicitly_selected() {
         let _ = fs::remove_file(output_path);
     }
     let _ = fs::remove_file(input_path);
+}
+
+#[test]
+fn au_cli_inspects_converts_preserves_annotations_and_edits_comments() {
+    let input_path = temporary_path().with_extension("au");
+    let converted_path = temporary_path().with_extension("au");
+    let edited_path = temporary_path().with_extension("au");
+    let g711_path = temporary_path().with_extension("au");
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![i16::MIN, -1, 0, 1, i16::MAX])).unwrap();
+    let mut encoder = AuEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_annotation(b"\0opaque\xff").unwrap();
+    encoder.write_block(&audio).unwrap();
+    fs::write(&input_path, encoder.finish().unwrap().into_inner()).unwrap();
+
+    let inspected = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&input_path)
+        .output()
+        .unwrap();
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains("\"format\":\"au\""));
+
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "au"])
+        .arg(&input_path)
+        .arg(&converted_path)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let mut decoded = AuDecoder::new(File::open(&converted_path).unwrap()).unwrap();
+    assert_eq!(decoded.annotation(), b"\0opaque\xff");
+    assert_eq!(decoded.read_frames(8).unwrap().unwrap(), audio);
+
+    let edited = Command::new(cli_path())
+        .args(["metadata", "edit", "--set", "COMMENT=voice note"])
+        .arg(&input_path)
+        .arg(&edited_path)
+        .output()
+        .unwrap();
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
+    let edited_bytes = fs::read(&edited_path).unwrap();
+    let mut decoded = AuDecoder::new(Cursor::new(edited_bytes.clone())).unwrap();
+    assert_eq!(decoded.metadata().values("COMMENT"), ["voice note"]);
+    assert_eq!(decoded.read_frames(8).unwrap().unwrap(), audio);
+    let edited_offset = u32::from_be_bytes(edited_bytes[4..8].try_into().unwrap()) as usize;
+    let original_bytes = fs::read(&input_path).unwrap();
+    let original_offset = u32::from_be_bytes(original_bytes[4..8].try_into().unwrap()) as usize;
+    assert_eq!(
+        &edited_bytes[edited_offset..],
+        &original_bytes[original_offset..]
+    );
+
+    let g711 = Command::new(cli_path())
+        .args(["convert", "--format", "au_mulaw", "--json"])
+        .arg(&input_path)
+        .arg(&g711_path)
+        .output()
+        .unwrap();
+    assert!(
+        g711.status.success(),
+        "{}",
+        String::from_utf8_lossy(&g711.stderr)
+    );
+    assert!(String::from_utf8_lossy(&g711.stdout).contains("\"output_encoding\":\"au_mulaw\""));
+    let decoded = AuDecoder::new(File::open(&g711_path).unwrap()).unwrap();
+    assert_eq!(decoded.spec().sample_format(), SampleFormat::PcmI16);
+    assert_eq!(
+        u32::from_be_bytes(fs::read(&g711_path).unwrap()[12..16].try_into().unwrap()),
+        1
+    );
+
+    for path in [input_path, converted_path, edited_path, g711_path] {
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[test]
