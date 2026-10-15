@@ -43,3 +43,77 @@ fn wav_writer_rejects_metadata_it_cannot_represent() {
         WavWriter::new_with_metadata(Cursor::new(Vec::new()), audio.spec(), &metadata).is_err()
     );
 }
+
+#[test]
+fn wav_ima_adpcm_streams_mono_and_stereo_with_fact_trimming() {
+    for channels in [1, 2] {
+        let spec = AudioSpec::new(32_000, channels, SampleFormat::PcmI16).unwrap();
+        let source: Vec<i16> = (0..257 * usize::from(channels))
+            .map(|index| ((index * 97) as i32 - 12_000).clamp(-32_768, 32_767) as i16)
+            .collect();
+        let audio = PcmBuffer::new(spec, Samples::I16(source.clone())).unwrap();
+        let mut metadata = Metadata::default();
+        metadata.insert("title", "IMA block test");
+        let mut writer = WavWriter::new_ima_adpcm_with_metadata_and_container(
+            Cursor::new(Vec::new()),
+            spec,
+            &metadata,
+            wav::WavContainer::Rf64,
+        )
+        .unwrap();
+        let Samples::I16(audio_samples) = audio.samples() else {
+            unreachable!();
+        };
+        for block in audio_samples.chunks(41 * usize::from(channels)) {
+            writer
+                .write_block(&PcmBuffer::new(spec, Samples::I16(block.to_vec())).unwrap())
+                .unwrap();
+        }
+        let bytes = writer.finish().unwrap().into_inner();
+        assert_eq!(&bytes[12..16], b"ds64");
+        let rf64_header = 36;
+        assert_eq!(
+            u16::from_le_bytes(
+                bytes[20 + rf64_header..22 + rf64_header]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x0011
+        );
+        assert_eq!(
+            u16::from_le_bytes(
+                bytes[34 + rf64_header..36 + rf64_header]
+                    .try_into()
+                    .unwrap()
+            ),
+            4
+        );
+        assert_eq!(
+            u32::from_le_bytes(
+                bytes[48 + rf64_header..52 + rf64_header]
+                    .try_into()
+                    .unwrap()
+            ),
+            257
+        );
+
+        let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.spec(), spec);
+        assert_eq!(decoder.metadata(), &metadata);
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_frames(17).unwrap() {
+            let Samples::I16(samples) = block.samples() else {
+                panic!("IMA ADPCM must decode to signed 16-bit PCM");
+            };
+            decoded.extend_from_slice(samples);
+        }
+        assert_eq!(decoded.len(), source.len());
+        let max_error = source
+            .iter()
+            .zip(decoded)
+            .map(|(left, right)| (i32::from(*left) - i32::from(right)).abs())
+            .max()
+            .unwrap();
+        assert!(max_error < 3_000, "maximum IMA ADPCM error was {max_error}");
+    }
+}

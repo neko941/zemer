@@ -2,6 +2,7 @@ mod bext;
 mod cue;
 mod decode;
 mod encode;
+mod ima_adpcm;
 mod info;
 mod rewrite;
 mod sampler;

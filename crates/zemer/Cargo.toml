@@ -22,4 +22,5 @@ wavpack.workspace = true
 aiff.workspace = true
 au.workspace = true
 g711.workspace = true
+ima-adpcm.workspace = true
 dsdiff.workspace = true
