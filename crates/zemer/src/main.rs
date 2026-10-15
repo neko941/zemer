@@ -29,6 +29,8 @@ use zemer_core::{
 
 #[path = "cue.rs"]
 mod cue_cli;
+#[path = "iso.rs"]
+mod iso_cli;
 
 struct Report {
     format: &'static str,
@@ -159,6 +161,7 @@ enum CommandReport {
     Convert(Report, PathBuf),
     ConvertDsd(DsdReport, PathBuf),
     Cue(cue_cli::CueReport),
+    Iso(iso_cli::IsoReport),
     MetadataEdit(MetadataEditReport),
 }
 
@@ -244,6 +247,27 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Ok(CommandReport::Iso(report)) => {
+            if json {
+                println!("{}", iso_report_json(&report));
+            } else {
+                println!("operation: iso_{}", report.action);
+                println!("image: {}", report.image.display());
+                println!("volume_id: {}", report.volume_id);
+                println!("entry_count: {}", report.entries.len());
+                for entry in &report.entries {
+                    if entry.directory {
+                        println!("directory: {}", entry.path);
+                    } else {
+                        println!("file: {} ({})", entry.path, entry.size);
+                    }
+                }
+                if let Some(output) = &report.output {
+                    println!("output: {}", output.display());
+                }
+            }
+            ExitCode::SUCCESS
+        }
         Ok(CommandReport::MetadataEdit(report)) => {
             if json {
                 println!(
@@ -284,6 +308,12 @@ fn command_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         "convert" => convert_args(args),
         "cue" => cue_cli::run(&args[1..])
             .map(CommandReport::Cue)
+            .map_err(|message| CliError {
+                kind: "invalid_data",
+                message,
+            }),
+        "iso" => iso_cli::run(&args[1..])
+            .map(CommandReport::Iso)
             .map_err(|message| CliError {
                 kind: "invalid_data",
                 message,
@@ -1739,7 +1769,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|wav_ima_adpcm|aiff|aifc|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|wav_ima_adpcm|aiff|aifc|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>... | zemer iso inspect [--json] <image.iso> | zemer iso extract [--json] <image.iso> <new-output-dir>".to_owned(),
     }
 }
 
@@ -1865,6 +1895,38 @@ fn report_json(report: &Report) -> String {
         json.push(']');
     }
     json.push_str("}}");
+    json
+}
+
+fn iso_report_json(report: &iso_cli::IsoReport) -> String {
+    let mut json = format!(
+        "{{\"operation\":{},\"image\":{},\"volume_id\":{},\"entry_count\":{},\"entries\":[",
+        json_string(&format!("iso_{}", report.action)),
+        json_string(&report.image.display().to_string()),
+        json_string(&report.volume_id),
+        report.entries.len(),
+    );
+    for (index, entry) in report.entries.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        let _ = write!(
+            json,
+            "{{\"path\":{},\"type\":{},\"size\":{}}}",
+            json_string(&entry.path),
+            json_string(if entry.directory { "directory" } else { "file" }),
+            entry.size,
+        );
+    }
+    json.push(']');
+    if let Some(output) = &report.output {
+        let _ = write!(
+            json,
+            ",\"output\":{}",
+            json_string(&output.display().to_string())
+        );
+    }
+    json.push('}');
     json
 }
 

@@ -138,9 +138,11 @@ These are related tools, not interchangeable audio formats:
 - **BIN/CUE:** inspect and extract supported tracks; create images and cue
   sheets from supported source layouts while preserving track type, pregap, and
   index information where representable.
-- **ISO:** inspect supported image filesystems and extract files; create an ISO
-  from an explicit directory or disc layout when its filesystem rules are
-  implemented and tested.
+- **ISO:** generic ISO 9660 inspection and safe extraction now support
+  single-volume primary/Joliet images with non-interleaved files. Rock Ridge,
+  multi-volume images, image creation, and other filesystem extensions remain
+  planned; SACD DSD ISO is separate and deferred pending public specifications
+  and fixture rights.
 - **NRG (Nero image):** evaluate image inspection, audio/mixed-mode track
   extraction, and conversion to supported layouts. Nero describes NRG as its
   proprietary image format for uses that include audio CDs and mixed-mode

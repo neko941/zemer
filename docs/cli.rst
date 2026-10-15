@@ -200,3 +200,19 @@ This workflow currently accepts UTF-8 or Shift-JIS CUE text, WAVE file entries,
 and AUDIO tracks. Track boundaries must map exactly to sample frames; the
 command errors rather than rounding timestamps. It reads and writes audio
 through Zemer's WAVE crate.
+
+ISO 9660 images
+---------------
+
+Inspect an image and list its files, or extract them into a new directory:
+
+.. code-block:: console
+
+   zemer iso inspect --json album.iso
+   zemer iso extract album.iso extracted-album
+
+The reader uses 2048-byte logical blocks and selects a Joliet supplementary
+volume when present, otherwise the primary volume. It supports one volume and
+does not handle interleaved filesystems. Extraction rejects unsafe or
+case-colliding paths and requires the destination directory not to exist.
+This is generic ISO 9660 filesystem support; SACD DSD ISO parsing is separate.

@@ -1,0 +1,18 @@
+ISO 9660 images
+===============
+
+The ``zemer-iso9660`` crate reads ISO 9660 images using 2048-byte logical
+blocks. It inspects the primary volume and uses a Joliet supplementary volume
+when available, traverses directories, and streams regular files to a writer.
+The CLI exposes inspection and safe extraction:
+
+.. code-block:: console
+
+   zemer iso inspect [--json] image.iso
+   zemer iso extract [--json] image.iso new-output-directory
+
+Extraction refuses an existing destination and validates all paths before
+creating it. It rejects path traversal, unsafe cross-platform names, and
+case-insensitive collisions. The initial profile supports single-volume,
+non-interleaved ISO 9660 images; multi-volume sets and interleaved files are
+not supported. This filesystem reader does not parse SACD DSD ISO structures.

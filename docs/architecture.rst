@@ -25,6 +25,8 @@ writers:
   mapping, producing the same shared PCM and metadata types.
 * ``cue`` parses and writes CUE sheet models without depending on a codec or
   audio container implementation.
+* ``iso9660`` inspects generic ISO 9660 filesystems and streams file contents;
+  it does not parse SACD DSD images.
 
 Format crates and codecs should remain independent when multiple containers
 can carry the same audio encoding. For example, PCM can be used by WAV, AIFF,

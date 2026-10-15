@@ -50,6 +50,7 @@ vectors pass bit-exactly at DSD64/128/256.
    dsdiff
    ogg
    cue
+   iso9660
    cli
    architecture
    api

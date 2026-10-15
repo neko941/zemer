@@ -158,6 +158,14 @@ Rust library crate ``cue`` (Cargo package ``zemer-cue``)
   AUDIO tracks, with a 16 MiB input bound and ``CUEFile::to_cue_string()``
   validation.
 
+Rust library crate ``iso9660`` (Cargo package ``zemer-iso9660``)
+--------------------------------------------------------------------------------
+
+* ``IsoImage<R>`` inspects a seekable image and exposes its volume ID and
+  directory entries.
+* ``copy_file`` streams one entry to a writer; ``extract_to`` validates paths
+  and extracts to a new destination directory.
+
 Rust library crate ``wav`` (Cargo package ``zemer-wav``)
 ------------------------------------------------------------
 
