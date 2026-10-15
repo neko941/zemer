@@ -1,0 +1,15 @@
+[package]
+name = "zemer-g726"
+description = "Clean-room G.726 ADPCM codec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "g726"
+
+[dependencies]
+
+[dev-dependencies]
+g711 = { workspace = true }

@@ -1,8 +1,10 @@
 use std::io::{Seek, SeekFrom, Write};
 
 use g711::{G711Encoding, encode_alaw, encode_mulaw};
+use g726::{G726Encoder, G726Packing};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
+use crate::G726Rate;
 use crate::comment::{AiffComment, validate_comments, write_comments_chunk};
 use crate::marker::{AiffMarker, validate_markers, write_markers_chunk};
 
@@ -21,6 +23,7 @@ pub struct AiffEncoder<W> {
     markers: Vec<AiffMarker>,
     g711: Option<G711Encoding>,
     ima4: bool,
+    g726: Option<G726Encoder>,
     ima4_buffer: Vec<i16>,
     ima4_states: Vec<Option<crate::ima4::State>>,
     poisoned: bool,
@@ -31,6 +34,14 @@ pub struct AiffEncoder<W> {
 pub enum AiffKind {
     Aiff,
     Aifc,
+}
+
+#[derive(Clone, Copy)]
+enum AiffCodec {
+    Pcm,
+    G711(G711Encoding),
+    Ima4,
+    G726(G726Rate),
 }
 
 impl<W: Write + Seek> AiffEncoder<W> {
@@ -71,8 +82,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             spec,
             &Metadata::default(),
             AiffKind::Aiff,
-            None,
-            false,
+            AiffCodec::Pcm,
             Some(bits_per_sample),
         )
     }
@@ -90,8 +100,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             spec,
             &Metadata::default(),
             AiffKind::Aifc,
-            None,
-            false,
+            AiffCodec::Pcm,
             Some(bits_per_sample),
         )
     }
@@ -115,8 +124,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             spec,
             metadata,
             AiffKind::Aifc,
-            Some(encoding),
-            false,
+            AiffCodec::G711(encoding),
             None,
         )
     }
@@ -127,7 +135,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
         metadata: &Metadata,
         kind: AiffKind,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(writer, spec, metadata, kind, None, false, None)
+        Self::new_configured(writer, spec, metadata, kind, AiffCodec::Pcm, None)
     }
 
     pub fn new_aifc_ima4(writer: W, spec: AudioSpec) -> Result<Self, AudioError> {
@@ -139,7 +147,36 @@ impl<W: Write + Seek> AiffEncoder<W> {
         spec: AudioSpec,
         metadata: &Metadata,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(writer, spec, metadata, AiffKind::Aifc, None, true, None)
+        Self::new_configured(
+            writer,
+            spec,
+            metadata,
+            AiffKind::Aifc,
+            AiffCodec::Ima4,
+            None,
+        )
+    }
+
+    /// Creates an 8 kHz AIFC G.726 encoder with an explicit bitrate.
+    pub fn new_aifc_g726(writer: W, spec: AudioSpec, rate: G726Rate) -> Result<Self, AudioError> {
+        Self::new_aifc_g726_with_metadata(writer, spec, rate, &Metadata::default())
+    }
+
+    /// Creates an 8 kHz AIFC G.726 encoder with an explicit bitrate and metadata.
+    pub fn new_aifc_g726_with_metadata(
+        writer: W,
+        spec: AudioSpec,
+        rate: G726Rate,
+        metadata: &Metadata,
+    ) -> Result<Self, AudioError> {
+        Self::new_configured(
+            writer,
+            spec,
+            metadata,
+            AiffKind::Aifc,
+            AiffCodec::G726(rate),
+            None,
+        )
     }
 
     fn new_configured(
@@ -147,10 +184,18 @@ impl<W: Write + Seek> AiffEncoder<W> {
         spec: AudioSpec,
         metadata: &Metadata,
         kind: AiffKind,
-        g711: Option<G711Encoding>,
-        ima4: bool,
+        codec: AiffCodec,
         requested_bits_per_sample: Option<u16>,
     ) -> Result<Self, AudioError> {
+        let g711 = match codec {
+            AiffCodec::G711(encoding) => Some(encoding),
+            _ => None,
+        };
+        let ima4 = matches!(codec, AiffCodec::Ima4);
+        let g726_rate = match codec {
+            AiffCodec::G726(rate) => Some(rate),
+            _ => None,
+        };
         validate_metadata(metadata)?;
         if ima4 && (kind != AiffKind::Aifc || spec.sample_format() != SampleFormat::PcmI16) {
             return Err(AudioError::InvalidData(
@@ -160,6 +205,17 @@ impl<W: Write + Seek> AiffEncoder<W> {
         if g711.is_some() && spec.sample_format() != SampleFormat::PcmI16 {
             return Err(AudioError::InvalidData(
                 "AIFC G.711 encoding requires signed 16-bit PCM input",
+            ));
+        }
+        if g726_rate.is_some()
+            && (kind != AiffKind::Aifc
+                || spec.sample_format() != SampleFormat::PcmI16
+                || spec.sample_rate() != 8_000
+                || g711.is_some()
+                || ima4)
+        {
+            return Err(AudioError::InvalidData(
+                "AIFC G.726 encoding requires 8 kHz signed 16-bit PCM input",
             ));
         }
         if spec.speaker_mask().is_some() {
@@ -192,6 +248,12 @@ impl<W: Write + Seek> AiffEncoder<W> {
             SampleFormat::Float64 => 64,
         };
         let bits_per_sample = requested_bits_per_sample.unwrap_or(container_bits);
+        let g726 = g726_rate
+            .map(|rate| {
+                G726Encoder::new(rate, usize::from(spec.channels()), G726Packing::LsbFirst)
+                    .map_err(|_| AudioError::InvalidData("invalid AIFC G.726 encoder settings"))
+            })
+            .transpose()?;
         let integer_pcm = matches!(
             spec.sample_format(),
             SampleFormat::PcmU8
@@ -221,23 +283,27 @@ impl<W: Write + Seek> AiffEncoder<W> {
         if kind == AiffKind::Aifc {
             writer.write_all(b"FVER\0\0\0\x04\xa2\x80\x51\x40")?;
         }
-        let (bits, compression, compression_name) = match (g711, ima4, spec.sample_format()) {
-            (_, true, _) => (16_u16, *b"ima4", b"IMA 4:1".as_slice()),
-            (Some(G711Encoding::ALaw), false, _) => (16_u16, *b"alaw", b"ALaw 2:1".as_slice()),
-            (Some(G711Encoding::MuLaw), false, _) => (16_u16, *b"ulaw", b"uLaw 2:1".as_slice()),
-            (
-                None,
-                false,
-                SampleFormat::PcmU8
-                | SampleFormat::PcmI16
-                | SampleFormat::PcmI24
-                | SampleFormat::PcmI32,
-            ) => (bits_per_sample, *b"NONE", b"not compressed".as_slice()),
-            (None, false, SampleFormat::Float32) => {
-                (32, *b"fl32", b"32-bit floating point".as_slice())
-            }
-            (None, false, SampleFormat::Float64) => {
-                (64, *b"fl64", b"64-bit floating point".as_slice())
+        let (bits, compression, compression_name) = if g726_rate.is_some() {
+            (16_u16, *b"G726", b"G.726".as_slice())
+        } else {
+            match (g711, ima4, spec.sample_format()) {
+                (_, true, _) => (16_u16, *b"ima4", b"IMA 4:1".as_slice()),
+                (Some(G711Encoding::ALaw), false, _) => (16_u16, *b"alaw", b"ALaw 2:1".as_slice()),
+                (Some(G711Encoding::MuLaw), false, _) => (16_u16, *b"ulaw", b"uLaw 2:1".as_slice()),
+                (
+                    None,
+                    false,
+                    SampleFormat::PcmU8
+                    | SampleFormat::PcmI16
+                    | SampleFormat::PcmI24
+                    | SampleFormat::PcmI32,
+                ) => (bits_per_sample, *b"NONE", b"not compressed".as_slice()),
+                (None, false, SampleFormat::Float32) => {
+                    (32, *b"fl32", b"32-bit floating point".as_slice())
+                }
+                (None, false, SampleFormat::Float64) => {
+                    (64, *b"fl64", b"64-bit floating point".as_slice())
+                }
             }
         };
         let comm_size = if kind == AiffKind::Aiff {
@@ -260,6 +326,16 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 writer.write_all(&[0])?;
             }
         }
+        if let Some(rate) = g726_rate {
+            writer.write_all(b"APPL\0\0\0\x0cstocG726")?;
+            let bitrate: u32 = match rate {
+                G726Rate::Kbps16 => 16_000,
+                G726Rate::Kbps24 => 24_000,
+                G726Rate::Kbps32 => 32_000,
+                G726Rate::Kbps40 => 40_000,
+            };
+            writer.write_all(&bitrate.to_be_bytes())?;
+        }
         writer.write_all(b"SSND\0\0\0\0\0\0\0\0\0\0\0\0")?;
         let data_size_offset = writer.stream_position()? - 12;
         let mut encoder = Self {
@@ -277,6 +353,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             markers: Vec::new(),
             g711,
             ima4,
+            g726,
             ima4_buffer: Vec::new(),
             ima4_states: vec![None; usize::from(spec.channels())],
             poisoned: false,
@@ -351,6 +428,17 @@ impl<W: Write + Seek> AiffEncoder<W> {
     }
 
     fn write_samples(&mut self, samples: &Samples) -> Result<(), AudioError> {
+        if let Some(encoder) = &mut self.g726 {
+            let Samples::I16(values) = samples else {
+                return Err(AudioError::InvalidData(
+                    "AIFC G.726 encoding requires signed 16-bit PCM input",
+                ));
+            };
+            let bytes = encoder
+                .encode(values)
+                .map_err(|_| AudioError::InvalidData("AIFC G.726 block is too large"))?;
+            return self.write_encoded_block(bytes);
+        }
         if self.ima4 {
             let Samples::I16(values) = samples else {
                 return Err(AudioError::InvalidData(
@@ -558,6 +646,10 @@ impl<W: Write + Seek> AiffEncoder<W> {
     }
 
     fn finish_inner(&mut self) -> Result<(), AudioError> {
+        if let Some(encoder) = &mut self.g726 {
+            let bytes = encoder.finish();
+            self.write_encoded_block(bytes)?;
+        }
         if self.ima4 && !self.ima4_buffer.is_empty() {
             let packet_samples = usize::from(self.spec.channels()) * 64;
             self.ima4_buffer.resize(packet_samples, 0);

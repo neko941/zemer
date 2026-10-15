@@ -3,7 +3,8 @@ AIFF and AIFC
 
 The ``zemer-aiff`` crate reads seekable AIFF/AIFC streams and writes seekable
 AIFF integer PCM or AIFC integer/IEEE-float streams. It implements
-``AudioDecoder`` and ``AudioEncoder`` and depends only on ``zemer-core``.
+``AudioDecoder`` and ``AudioEncoder`` and reuses ``zemer-core``, ``g711``, and
+``g726`` for shared models and codecs.
 
 The decoder accepts integer sample widths from 1 through 32 bits, preserving
 left-aligned valid bits inside the shared 8/16/24/32-bit sample containers. The
@@ -24,6 +25,14 @@ It also decodes AIFC A-law/μ-law using both Apple lowercase and SGI uppercase
 compression IDs, and writes the lowercase Apple IDs when selected through
 ``new_aifc_g711``. G.711 expands to signed 16-bit PCM and lossy encoding accepts
 only signed 16-bit input.
+The library decodes and encodes AIFC ``G726`` at 16, 24, 32, and 40 kbit/s.
+Both directions require 8 kHz signed 16-bit PCM. The McGill ``stocG726`` APPL
+hint supplies the rate for decoding; other files must use
+``AiffDecoder::new_with_g726_rate`` because AIFF-C does not define a general
+G.726 bitrate field. ``AiffEncoder::new_aifc_g726`` takes an explicit rate and
+writes the same hint. The ``G726Rate`` enum is re-exported from the ``aiff``
+crate. The clean-room encoder matches an independent SpanDSP codeword oracle at
+all four rates.
 AIFF-C output includes the required ``FVER`` chunk. Both readers and writers
 map ``NAME``, ``AUTH``, and repeated ``ANNO`` chunks to TITLE, ARTIST, and
 COMMENT.
@@ -76,4 +85,5 @@ The CLI identifies AIFF and AIFC by their FORM signature, so filenames do not
 need conventional extensions. It can inspect either and convert to ``aiff``
 or ``aifc`` output. AIFF output accepts integer PCM. AIFC output additionally
 accepts float32/64 and preserves those sample bits. ``aifc_ima4`` encodes lossy
-16-bit input and reports packet-padded output frames.
+16-bit input and reports packet-padded output frames. The CLI does not yet
+expose a G.726 output option; use the library API for explicit-rate encoding.

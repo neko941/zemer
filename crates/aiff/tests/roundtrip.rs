@@ -1,7 +1,8 @@
 use std::io::Cursor;
 
-use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker, rewrite_metadata};
+use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker, G726Rate, rewrite_metadata};
 use g711::{G711Encoding, decode_alaw, decode_mulaw, encode_alaw, encode_mulaw};
+use g726::{G726Decoder, G726Encoder, G726Packing};
 use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 fn audio(format: SampleFormat) -> PcmBuffer {
@@ -75,6 +76,139 @@ fn aifc_g711(compression: &[u8; 4], audio: &[u8]) -> Vec<u8> {
     let mut bytes = aifc(compression, 16, audio);
     bytes[34..38].copy_from_slice(&(audio.len() as u32).to_be_bytes());
     bytes
+}
+
+fn pack_g726_lsb(codes: &[u8], width: u8) -> Vec<u8> {
+    let mut packed = vec![0; (codes.len() * usize::from(width)).div_ceil(8)];
+    for (index, &code) in codes.iter().enumerate() {
+        for bit in 0..usize::from(width) {
+            let position = index * usize::from(width) + bit;
+            packed[position / 8] |= ((code >> bit) & 1) << (position % 8);
+        }
+    }
+    packed
+}
+
+fn aifc_g726(codes: &[u8], include_bitrate_hint: bool) -> Vec<u8> {
+    let packed = pack_g726_lsb(codes, 5);
+    let mut bytes = aifc(b"G726", 16, &packed);
+    bytes[34..38].copy_from_slice(&(codes.len() as u32).to_be_bytes());
+    bytes[40..50].copy_from_slice(&[0x40, 0x0b, 0xfa, 0, 0, 0, 0, 0, 0, 0]);
+    if include_bitrate_hint {
+        let mut hint = b"stocG726".to_vec();
+        hint.extend_from_slice(&40_000_u32.to_be_bytes());
+        append_form_chunk(&mut bytes, b"APPL", &hint);
+    }
+    bytes
+}
+
+#[test]
+fn aifc_g726_decodes_lsb_packing_with_and_without_stoc_bitrate_hint() {
+    let codes: Vec<u8> = (0..97).map(|index| ((index * 7 + 3) & 31) as u8).collect();
+    let packed = pack_g726_lsb(&codes, 5);
+    let mut reference = G726Decoder::new(G726Rate::Kbps40, 1).unwrap();
+    let expected = reference.decode_packed_lsb(&packed, codes.len()).unwrap();
+
+    for (include_hint, explicit_rate) in [(true, false), (false, true)] {
+        let bytes = aifc_g726(&codes, include_hint);
+        let mut decoder = if explicit_rate {
+            AiffDecoder::new_with_g726_rate(Cursor::new(bytes), G726Rate::Kbps40).unwrap()
+        } else {
+            AiffDecoder::new(Cursor::new(bytes)).unwrap()
+        };
+        assert_eq!(
+            decoder.spec(),
+            AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap()
+        );
+        let mut actual = Vec::new();
+        for count in [1, 2, 7, 13, 3, 31, 40] {
+            if actual.len() == expected.len() {
+                break;
+            }
+            let count = count.min(expected.len() - actual.len());
+            let block = decoder.read_frames(count).unwrap().unwrap();
+            let Samples::I16(samples) = block.samples() else {
+                panic!("G.726 must decode to signed 16-bit PCM");
+            };
+            actual.extend_from_slice(samples);
+        }
+        assert_eq!(actual, expected);
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+}
+
+#[test]
+fn aifc_g726_requires_a_rate_when_no_recognized_hint_is_present() {
+    let bytes = aifc_g726(&[0, 1, 2, 3, 4], false);
+    assert!(AiffDecoder::new(Cursor::new(bytes.clone())).is_err());
+    assert!(AiffDecoder::new_with_g726_rate(Cursor::new(bytes), G726Rate::Kbps40).is_ok());
+}
+
+#[test]
+fn aifc_g726_requires_the_standard_8khz_sample_rate() {
+    let spec = AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap();
+    assert!(AiffEncoder::new_aifc_g726(Cursor::new(Vec::new()), spec, G726Rate::Kbps32).is_err());
+
+    let mut bytes = aifc_g726(&[0, 1, 2, 3], true);
+    bytes[40..50].copy_from_slice(&[0x40, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0]);
+    assert!(AiffDecoder::new(Cursor::new(bytes)).is_err());
+}
+
+#[test]
+fn aifc_g726_encoder_writes_hint_and_streams_partial_codewords() {
+    for channels in [1, 2] {
+        let spec = AudioSpec::new(8_000, channels, SampleFormat::PcmI16).unwrap();
+        let samples: Vec<_> = (0..103 * usize::from(channels))
+            .map(|index| ((index * 1_231) as i16).wrapping_mul(17))
+            .collect();
+        for rate in [
+            G726Rate::Kbps16,
+            G726Rate::Kbps24,
+            G726Rate::Kbps32,
+            G726Rate::Kbps40,
+        ] {
+            let mut encoder =
+                AiffEncoder::new_aifc_g726(Cursor::new(Vec::new()), spec, rate).unwrap();
+            let split = 37 * usize::from(channels);
+            encoder
+                .write_block(
+                    &PcmBuffer::new(spec, Samples::I16(samples[..split].to_vec())).unwrap(),
+                )
+                .unwrap();
+            encoder
+                .write_block(
+                    &PcmBuffer::new(spec, Samples::I16(samples[split..].to_vec())).unwrap(),
+                )
+                .unwrap();
+            let bytes = encoder.finish().unwrap().get_ref().clone();
+            assert_eq!(&chunk_body(&bytes, b"COMM")[18..22], b"G726");
+            assert_eq!(
+                u32::from_be_bytes(chunk_body(&bytes, b"COMM")[2..6].try_into().unwrap()),
+                103
+            );
+            assert_eq!(
+                u16::from_be_bytes(chunk_body(&bytes, b"COMM")[0..2].try_into().unwrap()),
+                channels
+            );
+            let mut expected_encoder =
+                G726Encoder::new(rate, usize::from(channels), G726Packing::LsbFirst).unwrap();
+            let mut packed = expected_encoder.encode(&samples).unwrap();
+            packed.extend(expected_encoder.finish());
+            let expected = G726Decoder::new(rate, usize::from(channels))
+                .unwrap()
+                .decode_packed_lsb(&packed, samples.len())
+                .unwrap();
+            let mut decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
+            let mut actual = Vec::new();
+            while let Some(block) = decoder.read_frames(19).unwrap() {
+                let Samples::I16(block) = block.samples() else {
+                    panic!("G.726 must decode to signed 16-bit PCM");
+                };
+                actual.extend_from_slice(block);
+            }
+            assert_eq!(actual, expected, "{rate:?}, {channels} channels");
+        }
+    }
 }
 
 #[test]

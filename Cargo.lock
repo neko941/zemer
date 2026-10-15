@@ -40,6 +40,7 @@ version = "0.7.0"
 dependencies = [
  "zemer-core",
  "zemer-g711",
+ "zemer-g726",
 ]
 
 [[package]]
@@ -95,6 +96,13 @@ dependencies = [
 [[package]]
 name = "zemer-g711"
 version = "0.7.0"
+
+[[package]]
+name = "zemer-g726"
+version = "0.7.0"
+dependencies = [
+ "zemer-g711",
+]
 
 [[package]]
 name = "zemer-metadata"

@@ -8,5 +8,6 @@ mod rewrite;
 pub use comment::AiffComment;
 pub use decode::AiffDecoder;
 pub use encode::{AiffEncoder, AiffKind};
+pub use g726::G726Rate;
 pub use marker::AiffMarker;
 pub use rewrite::rewrite_metadata;
