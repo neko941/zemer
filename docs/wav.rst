@@ -48,6 +48,11 @@ explicitly for 64-bit file and data sizes. Call ``finish`` to write final sizes
 and obtain the output stream; errors from finalization are returned to the
 caller.
 
+Float and G.711 output includes the non-PCM ``fmt`` extension and ``fact``
+sample count required by WAVE. The count is per channel; RF64 output uses the
+32-bit sentinel when it exceeds that field's range and retains the full count
+in ``ds64``.
+
 .. code-block:: rust
 
    use std::{fs::File, io::BufWriter};
