@@ -2,7 +2,6 @@
 
 mod decode;
 mod encode;
-mod id3;
 mod rewrite;
 
 pub use decode::DsfDecoder;

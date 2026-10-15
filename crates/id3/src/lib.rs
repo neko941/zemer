@@ -4,7 +4,7 @@ use zemer_core::{AudioError, Metadata};
 
 const MAX_ID3_TAG_BYTES: usize = 64 * 1024 * 1024;
 
-pub(super) fn encode_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError> {
+pub fn encode_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError> {
     if metadata.iter().next().is_none() {
         return Ok(Vec::new());
     }
@@ -35,7 +35,7 @@ pub(super) fn encode_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError
             .is_none()
         {
             return Err(AudioError::InvalidData(
-                "DSF ID3 metadata exceeds its size limit",
+                "ID3 metadata exceeds its size limit",
             ));
         }
         let mut payload = Vec::new();
@@ -57,18 +57,18 @@ pub(super) fn encode_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError
     }
     if body.len() > MAX_ID3_TAG_BYTES {
         return Err(AudioError::InvalidData(
-            "DSF ID3 metadata exceeds its size limit",
+            "ID3 metadata exceeds its size limit",
         ));
     }
     let size = u32::try_from(body.len())
         .ok()
         .filter(|&size| size < (1 << 28))
         .ok_or(AudioError::InvalidData(
-            "DSF ID3 metadata exceeds its size limit",
+            "ID3 metadata exceeds its size limit",
         ))?;
     let mut tag = Vec::new();
     tag.try_reserve_exact(10 + body.len())
-        .map_err(|_| AudioError::InvalidData("DSF ID3 metadata is too large"))?;
+        .map_err(|_| AudioError::InvalidData("ID3 metadata is too large"))?;
     tag.extend_from_slice(b"ID3\x04\x00\x00");
     tag.extend_from_slice(&[
         ((size >> 21) & 0x7f) as u8,
@@ -80,9 +80,9 @@ pub(super) fn encode_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError
     Ok(tag)
 }
 
-pub(super) fn rewrite_metadata_tag(tag: &[u8], metadata: &Metadata) -> Result<Vec<u8>, AudioError> {
+pub fn rewrite_metadata_tag(tag: &[u8], metadata: &Metadata) -> Result<Vec<u8>, AudioError> {
     let mut reader = std::io::Cursor::new(tag);
-    let (parsed, _) = read_metadata(&mut reader, 0, tag.len() as u64)?;
+    let (parsed, _) = read_tag_at_end(&mut reader, 0, tag.len() as u64)?;
     if parsed != *metadata {
         let header = tag
             .get(..10)
@@ -113,14 +113,14 @@ pub(super) fn rewrite_metadata_tag(tag: &[u8], metadata: &Metadata) -> Result<Ve
         }
         if output_body.len() > MAX_ID3_TAG_BYTES {
             return Err(AudioError::InvalidData(
-                "DSF ID3 metadata exceeds its size limit",
+                "ID3 metadata exceeds its size limit",
             ));
         }
         let size = u32::try_from(output_body.len())
             .ok()
             .filter(|&size| size < (1 << 28))
             .ok_or(AudioError::InvalidData(
-                "DSF ID3 metadata exceeds its size limit",
+                "ID3 metadata exceeds its size limit",
             ))?;
         let output_flags = flags & if version == 4 { 0x30 } else { 0x20 };
         let mut output =
@@ -297,7 +297,7 @@ fn encode_metadata_frames(
         body.extend_from_slice(&payload);
         if body.len() > MAX_ID3_TAG_BYTES {
             return Err(AudioError::InvalidData(
-                "DSF ID3 metadata exceeds its size limit",
+                "ID3 metadata exceeds its size limit",
             ));
         }
     }
@@ -314,10 +314,10 @@ fn append_frame(body: &mut Vec<u8>, id: [u8; 4], payload: &[u8]) -> Result<(), A
         .checked_add(10)
         .filter(|&size| size <= MAX_ID3_TAG_BYTES.saturating_sub(body.len()))
         .ok_or(AudioError::InvalidData(
-            "DSF ID3 metadata exceeds its size limit",
+            "ID3 metadata exceeds its size limit",
         ))?;
     body.try_reserve_exact(frame_size)
-        .map_err(|_| AudioError::InvalidData("DSF ID3 metadata is too large"))?;
+        .map_err(|_| AudioError::InvalidData("ID3 metadata is too large"))?;
     body.extend_from_slice(&id);
     body.extend_from_slice(&[
         ((size >> 21) & 0x7f) as u8,
@@ -330,7 +330,7 @@ fn append_frame(body: &mut Vec<u8>, id: [u8; 4], payload: &[u8]) -> Result<(), A
     body.extend_from_slice(payload);
     if body.len() > MAX_ID3_TAG_BYTES {
         return Err(AudioError::InvalidData(
-            "DSF ID3 metadata exceeds its size limit",
+            "ID3 metadata exceeds its size limit",
         ));
     }
     Ok(())
@@ -356,7 +356,7 @@ fn mapped_frame_id(key: &str) -> Option<[u8; 4]> {
     })
 }
 
-pub(super) fn read_metadata<R: Read + Seek>(
+pub fn read_tag_at_end<R: Read + Seek>(
     reader: &mut R,
     offset: u64,
     file_size: u64,
@@ -365,7 +365,7 @@ pub(super) fn read_metadata<R: Read + Seek>(
     let mut header = [0; 10];
     reader.read_exact(&mut header)?;
     if &header[..3] != b"ID3" {
-        return Err(AudioError::InvalidFormat("invalid DSF ID3 tag header"));
+        return Err(AudioError::InvalidFormat("invalid ID3 tag header"));
     }
     let version = header[3];
     let flags = header[5];
@@ -375,13 +375,13 @@ pub(super) fn read_metadata<R: Read + Seek>(
         4 => 0xf0,
         _ => {
             return Err(AudioError::Unsupported(
-                "DSF ID3 metadata requires ID3v2.3 or ID3v2.4",
+                "ID3 metadata requires ID3v2.3 or ID3v2.4",
             ));
         }
     };
     if header[4] == 0xff || flags & !allowed_flags != 0 {
         return Err(AudioError::InvalidFormat(
-            "invalid DSF ID3 tag version or flags",
+            "invalid ID3 tag version or flags",
         ));
     }
     let size = syncsafe(&header[6..10])?;
@@ -389,15 +389,15 @@ pub(super) fn read_metadata<R: Read + Seek>(
     let total_size = 10_u64
         .checked_add(u64::from(size))
         .and_then(|value| value.checked_add(footer_size as u64))
-        .ok_or(AudioError::InvalidData("DSF ID3 tag size overflow"))?;
+        .ok_or(AudioError::InvalidData("ID3 tag size overflow"))?;
     if size as usize > MAX_ID3_TAG_BYTES || offset.checked_add(total_size) != Some(file_size) {
         return Err(AudioError::InvalidData(
-            "DSF ID3 tag exceeds its bound or is not at end of file",
+            "ID3 tag exceeds its bound or is not at end of file",
         ));
     }
     let mut body = Vec::new();
     body.try_reserve_exact(size as usize)
-        .map_err(|_| AudioError::InvalidData("DSF ID3 tag is too large"))?;
+        .map_err(|_| AudioError::InvalidData("ID3 tag is too large"))?;
     body.resize(size as usize, 0);
     reader.read_exact(&mut body)?;
     let mut footer_bytes = Vec::new();
@@ -432,9 +432,9 @@ pub(super) fn read_metadata<R: Read + Seek>(
     Ok((metadata, raw))
 }
 
-pub(super) fn parse_id3_tag(bytes: &[u8]) -> Result<Metadata, AudioError> {
+pub fn parse_id3_tag(bytes: &[u8]) -> Result<Metadata, AudioError> {
     let mut reader = std::io::Cursor::new(bytes);
-    read_metadata(&mut reader, 0, bytes.len() as u64).map(|(metadata, _)| metadata)
+    read_tag_at_end(&mut reader, 0, bytes.len() as u64).map(|(metadata, _)| metadata)
 }
 
 fn extended_header_size(body: &[u8], version: u8, flags: u8) -> Result<usize, AudioError> {
@@ -732,13 +732,13 @@ mod tests {
 
     use zemer_core::Metadata;
 
-    use super::{MAX_ID3_TAG_BYTES, read_frames, read_metadata, rewrite_metadata_tag};
+    use super::{MAX_ID3_TAG_BYTES, read_frames, read_tag_at_end, rewrite_metadata_tag};
 
     #[test]
     fn ignores_and_preserves_id3v22_compressed_tags() {
         let mut tag = b"ID3\x02\0\x40\0\0\0\x03".to_vec();
         tag.extend_from_slice(&[0x01, 0x02, 0x03]);
-        let (metadata, raw) = read_metadata(&mut Cursor::new(&tag), 0, tag.len() as u64).unwrap();
+        let (metadata, raw) = read_tag_at_end(&mut Cursor::new(&tag), 0, tag.len() as u64).unwrap();
         assert_eq!(metadata, Metadata::default());
         assert_eq!(raw, tag);
         let mut edited = Metadata::default();
@@ -792,7 +792,7 @@ mod tests {
         ]);
         tag.extend_from_slice(&body);
         let mut reader = Cursor::new(tag.clone());
-        let (metadata, raw) = read_metadata(&mut reader, 0, tag.len() as u64).unwrap();
+        let (metadata, raw) = read_tag_at_end(&mut reader, 0, tag.len() as u64).unwrap();
         assert_eq!(metadata.values("TITLE"), ["Title"]);
         assert_eq!(metadata.values("REPLAYGAIN_GAIN"), ["-3 dB"]);
         assert_eq!(raw, tag);
@@ -871,7 +871,7 @@ mod tests {
         let file_size = tag.len() as u64;
         let mut reader = Cursor::new(tag.clone());
         assert_eq!(
-            read_metadata(&mut reader, 0, file_size)
+            read_tag_at_end(&mut reader, 0, file_size)
                 .unwrap()
                 .0
                 .values("TITLE"),
@@ -886,14 +886,14 @@ mod tests {
             b"3DI"
         );
         let mut reader = Cursor::new(rewritten.clone());
-        let actual = read_metadata(&mut reader, 0, rewritten.len() as u64)
+        let actual = read_tag_at_end(&mut reader, 0, rewritten.len() as u64)
             .unwrap()
             .0;
         assert_eq!(actual, edited);
 
         *tag.last_mut().unwrap() ^= 1;
         let mut reader = Cursor::new(tag);
-        assert!(read_metadata(&mut reader, 0, file_size).is_err());
+        assert!(read_tag_at_end(&mut reader, 0, file_size).is_err());
     }
 
     #[test]
@@ -915,7 +915,7 @@ mod tests {
         assert_eq!(rewritten[5] & 0x40, 0);
         let mut reader = Cursor::new(rewritten.clone());
         assert_eq!(
-            read_metadata(&mut reader, 0, rewritten.len() as u64)
+            read_tag_at_end(&mut reader, 0, rewritten.len() as u64)
                 .unwrap()
                 .0
                 .values("TITLE"),
@@ -961,7 +961,7 @@ mod tests {
         );
         let mut reader = Cursor::new(rewritten.clone());
         assert_eq!(
-            read_metadata(&mut reader, 0, rewritten.len() as u64)
+            read_tag_at_end(&mut reader, 0, rewritten.len() as u64)
                 .unwrap()
                 .0
                 .values("TITLE"),
@@ -980,7 +980,7 @@ mod tests {
         ]);
         let file_size = 10 + (MAX_ID3_TAG_BYTES + 1) as u64;
         let mut reader = Cursor::new(header);
-        assert!(read_metadata(&mut reader, 0, file_size).is_err());
+        assert!(read_tag_at_end(&mut reader, 0, file_size).is_err());
     }
 
     #[test]
@@ -992,7 +992,7 @@ mod tests {
         expected.insert("REPLAYGAIN_GAIN", "-3 dB");
         let tag = super::encode_metadata(&expected).unwrap();
         let mut reader = Cursor::new(tag.clone());
-        let actual = read_metadata(&mut reader, 0, tag.len() as u64).unwrap().0;
+        let actual = read_tag_at_end(&mut reader, 0, tag.len() as u64).unwrap().0;
         assert_eq!(actual, expected);
     }
 

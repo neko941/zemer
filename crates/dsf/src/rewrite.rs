@@ -2,7 +2,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 use zemer_core::{AudioError, Metadata};
 
-use crate::{decode::DsfDecoder, id3};
+use crate::decode::DsfDecoder;
+use id3::{encode_metadata, rewrite_metadata_tag};
 
 const DSF_DATA_HEADER_END: u64 = 92;
 
@@ -25,8 +26,8 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write>(
         .filter(|&end| end >= DSF_DATA_HEADER_END)
         .ok_or(AudioError::InvalidFormat("invalid DSF data size"))?;
     let tag = match old_tag {
-        Some(tag) => id3::rewrite_metadata_tag(&tag, metadata)?,
-        None => id3::encode_metadata(metadata)?,
+        Some(tag) => rewrite_metadata_tag(&tag, metadata)?,
+        None => encode_metadata(metadata)?,
     };
     let has_tag = !tag.is_empty();
     let file_size = data_end

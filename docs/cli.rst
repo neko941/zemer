@@ -121,7 +121,7 @@ does not convert between DSD and PCM.
 Metadata editing
 ----------------
 
-Update RIFF INFO tags in WAVE, NAME/AUTH/ANNO text chunks in AIFF/AIFC, DSF ID3
+Update RIFF INFO tags in WAVE, NAME/AUTH/ANNO and ID3 text in AIFF/AIFC, DSF ID3
 text frames, DSDIFF title/artist/general comments, Vorbis comments in native
 FLAC or Ogg-FLAC, or APEv2 text items in WavPack while preserving tags that are
 not named. DSF edits retain artwork and opaque ID3 frames and copy the DSD
@@ -144,9 +144,9 @@ bytes stay identical.
    zemer metadata edit --set "TITLE=New title" input.oga updated.oga --json
 
 FLAC keys may use printable ASCII other than ``=``; WAVE supports TITLE,
-ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO; AIFF/AIFC support
-ASCII TITLE, ARTIST, and COMMENT; APEv2 keys use printable ASCII and text
-values use UTF-8. DSF writes ID3v2.4 UTF-8 text. DSDIFF title, artist, and
+ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO; AIFF/AIFC native
+chunks support ASCII TITLE, ARTIST, and COMMENT, while the non-standard ID3
+chunk supports common UTF-8 ID3 text. DSF writes ID3v2.4 UTF-8 text. DSDIFF title, artist, and
 comment text is printable ASCII. WAVE edits preserve unrecognized
 chunks and INFO subchunks. WavPack edits retain binary, external, and reserved
 APEv2 items and any trailing ID3v1 bytes. If editing fails, the partial output

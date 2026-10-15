@@ -2,7 +2,7 @@ use std::io::{Seek, SeekFrom, Write};
 
 use zemer_core::{AudioError, DsdBuffer, DsdEncoder, DsdSpec, Metadata};
 
-use crate::id3::{encode_metadata, parse_id3_tag};
+use id3::{encode_metadata, parse_id3_tag};
 
 const BLOCK_BYTES: usize = 4096;
 const HEADER_BYTES: u64 = 92;

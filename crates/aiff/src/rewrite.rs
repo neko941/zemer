@@ -1,8 +1,9 @@
 use std::io::{Read, Seek, SeekFrom, Write};
 
+use id3::{encode_metadata, rewrite_metadata_tag};
 use zemer_core::{AudioError, Metadata};
 
-use crate::encode::{validate_metadata, write_text_chunk};
+use crate::encode::{add_metadata_bytes, id3_metadata, validate_metadata, write_text_chunk};
 
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
 
@@ -34,6 +35,8 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
     writer.write_all(b"FORM\0\0\0\0")?;
     writer.write_all(&form[8..12])?;
     reader.seek(SeekFrom::Start(12))?;
+    let mut id3_seen = false;
+    let mut metadata_bytes = 0_u64;
     while reader.stream_position()? < form_end {
         let position = reader.stream_position()?;
         if form_end - position < 8 {
@@ -50,9 +53,32 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
         if chunk_end > form_end {
             return Err(AudioError::InvalidFormat("AIFF chunk extends past FORM"));
         }
-        if matches!(&header[..4], b"NAME" | b"AUTH" | b"ANNO") {
+        if &header[..4] == b"ID3 " {
+            if id3_seen || size == 0 || size > 16 * 1024 * 1024 {
+                return Err(AudioError::InvalidFormat(
+                    "invalid or duplicate AIFF ID3 chunk",
+                ));
+            }
+            id3_seen = true;
+            let tag_len = usize::try_from(size)
+                .map_err(|_| AudioError::InvalidFormat("AIFF ID3 tag is too large"))?;
+            let mut tag = Vec::new();
+            tag.try_reserve_exact(tag_len)
+                .map_err(|_| AudioError::InvalidFormat("AIFF ID3 tag is too large"))?;
+            tag.resize(tag_len, 0);
+            reader.read_exact(&mut tag)?;
+            reader.seek(SeekFrom::Start(chunk_end))?;
+            let tag = rewrite_metadata_tag(&tag, metadata)?;
+            if !tag.is_empty() {
+                metadata_bytes = add_metadata_bytes(metadata_bytes, tag.len() as u64)?;
+                write_id3_chunk(&mut writer, &tag)?;
+            }
+        } else if matches!(&header[..4], b"NAME" | b"AUTH" | b"ANNO") {
             reader.seek(SeekFrom::Start(chunk_end))?;
         } else {
+            if matches!(&header[..4], b"COMT" | b"MARK") {
+                metadata_bytes = add_metadata_bytes(metadata_bytes, size)?;
+            }
             writer.write_all(&header)?;
             copy_exact(&mut reader, &mut writer, size + (size & 1))?;
         }
@@ -62,8 +88,22 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
         ("artist", *b"AUTH"),
         ("comment", *b"ANNO"),
     ] {
-        for value in metadata.values(key) {
-            write_text_chunk(&mut writer, &id, value)?;
+        let values = metadata.values(key);
+        if values.iter().all(|value| value.is_ascii()) {
+            for value in values {
+                metadata_bytes = add_metadata_bytes(
+                    metadata_bytes,
+                    8 + value.len() as u64 + (value.len() & 1) as u64,
+                )?;
+                write_text_chunk(&mut writer, &id, value)?;
+            }
+        }
+    }
+    if !id3_seen {
+        let tag = encode_metadata(&id3_metadata(metadata))?;
+        if !tag.is_empty() {
+            add_metadata_bytes(metadata_bytes, tag.len() as u64)?;
+            write_id3_chunk(&mut writer, &tag)?;
         }
     }
     let rewritten_form_end = writer.stream_position()?;
@@ -84,6 +124,21 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
     writer.seek(SeekFrom::Start(rewritten_form_end))?;
     reader.seek(SeekFrom::Start(form_end))?;
     copy_exact(&mut reader, &mut writer, physical_end - form_end)?;
+    Ok(())
+}
+
+fn write_id3_chunk(writer: &mut impl Write, tag: &[u8]) -> Result<(), AudioError> {
+    if tag.len() > 16 * 1024 * 1024 {
+        return Err(AudioError::InvalidData("AIFF ID3 tag exceeds 16 MiB"));
+    }
+    let size = u32::try_from(tag.len())
+        .map_err(|_| AudioError::InvalidData("AIFF ID3 tag exceeds its size limit"))?;
+    writer.write_all(b"ID3 ")?;
+    writer.write_all(&size.to_be_bytes())?;
+    writer.write_all(tag)?;
+    if size & 1 != 0 {
+        writer.write_all(&[0])?;
+    }
     Ok(())
 }
 

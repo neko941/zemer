@@ -11,3 +11,4 @@ name = "dsf"
 
 [dependencies]
 zemer-core.workspace = true
+id3.workspace = true

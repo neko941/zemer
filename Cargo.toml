@@ -3,6 +3,7 @@ members = [
     "crates/core",
     "crates/dsd",
     "crates/metadata",
+    "crates/id3",
     "crates/pcm",
     "crates/wav",
     "crates/cue",
@@ -56,6 +57,7 @@ version = "0.7.0"
 zemer-core = { path = "crates/core", version = "0.7.0" }
 zemer-dsd = { path = "crates/dsd", version = "0.7.0" }
 zemer-metadata = { path = "crates/metadata", version = "0.7.0" }
+id3 = { package = "zemer-id3", path = "crates/id3", version = "0.7.0" }
 zemer-pcm = { path = "crates/pcm", version = "0.7.0" }
 wav = { package = "zemer-wav", path = "crates/wav", version = "0.7.0" }
 cue = { package = "zemer-cue", path = "crates/cue", version = "0.7.0" }

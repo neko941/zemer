@@ -27,6 +27,13 @@ Crate ``zemer-metadata``
 * ``apev2::ApeTag`` — bounded APEv2 footer parsing/writing, UTF-8 text mapping,
   and text replacement that retains non-text items.
 
+Crate ``zemer-id3``
+-------------------
+
+* Bounded ID3v2.2/v2.3/v2.4 text parsing and metadata rewriting shared by the
+  DSF and AIFF/AIFC crates; unrecognized frames are retained as opaque data
+  during metadata updates.
+
 Crate ``zemer-ogg``
 -------------------
 
@@ -74,7 +81,7 @@ Rust library crate ``aiff`` (Cargo package ``zemer-aiff``)
   position, and raw Pascal-string name bytes; ``AiffDecoder::markers()`` reads
   records and ``AiffEncoder::set_markers()`` writes them.
 * ``rewrite_metadata`` — replaces TITLE/ARTIST/COMMENT chunks while preserving
-  encoded audio, unknown chunks, and trailing bytes.
+  encoded audio, unknown chunks, ID3 opaque frames, and trailing bytes.
 
 Crate ``zemer-dsd``
 -------------------
