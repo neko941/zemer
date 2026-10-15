@@ -7,6 +7,9 @@ use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, Sampl
 
 use crate::G726Rate;
 use crate::comment::{AiffComment, validate_comments, write_comments_chunk};
+use crate::instrument::{
+    AiffInstrument, validate_instrument, validate_instrument_markers, write_instrument_chunk,
+};
 use crate::marker::{AiffMarker, validate_markers, write_markers_chunk};
 
 pub struct AiffEncoder<W> {
@@ -23,6 +26,7 @@ pub struct AiffEncoder<W> {
     id3_tag: Option<Vec<u8>>,
     comments: Vec<AiffComment>,
     markers: Vec<AiffMarker>,
+    instrument: Option<AiffInstrument>,
     g711: Option<G711Encoding>,
     ima4: bool,
     g726: Option<G726Encoder>,
@@ -354,6 +358,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             id3_tag: None,
             comments: Vec::new(),
             markers: Vec::new(),
+            instrument: None,
             g711,
             ima4,
             g726,
@@ -403,7 +408,12 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 "AIFF comments must be set before audio samples",
             ));
         }
-        validate_combined_metadata(&self.metadata, comments, &self.markers)?;
+        validate_combined_metadata(
+            &self.metadata,
+            comments,
+            &self.markers,
+            self.instrument.as_ref(),
+        )?;
         let mut copied = Vec::new();
         copied
             .try_reserve_exact(comments.len())
@@ -420,13 +430,35 @@ impl<W: Write + Seek> AiffEncoder<W> {
             ));
         }
         validate_markers(markers)?;
-        validate_combined_metadata(&self.metadata, &self.comments, markers)?;
+        validate_combined_metadata(
+            &self.metadata,
+            &self.comments,
+            markers,
+            self.instrument.as_ref(),
+        )?;
         let mut copied = Vec::new();
         copied
             .try_reserve_exact(markers.len())
             .map_err(|_| AudioError::InvalidData("AIFF MARK is too large"))?;
         copied.extend_from_slice(markers);
         self.markers = copied;
+        Ok(())
+    }
+
+    pub fn set_instrument(&mut self, instrument: &AiffInstrument) -> Result<(), AudioError> {
+        if self.frames != 0 || self.finished {
+            return Err(AudioError::InvalidData(
+                "AIFF instrument must be set before audio samples",
+            ));
+        }
+        validate_instrument(instrument)?;
+        validate_combined_metadata(
+            &self.metadata,
+            &self.comments,
+            &self.markers,
+            Some(instrument),
+        )?;
+        self.instrument = Some(instrument.clone());
         Ok(())
     }
 
@@ -660,7 +692,12 @@ impl<W: Write + Seek> AiffEncoder<W> {
         }
         let metadata = parse_id3_tag(tag)?;
         validate_metadata(&metadata)?;
-        validate_combined_metadata(&metadata, &self.comments, &self.markers)?;
+        validate_combined_metadata(
+            &metadata,
+            &self.comments,
+            &self.markers,
+            self.instrument.as_ref(),
+        )?;
         self.metadata = metadata;
         self.id3_tag = Some(tag.to_vec());
         Ok(())
@@ -699,12 +736,20 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 "AIFF marker position exceeds the sample-frame count",
             ));
         }
+        if let Some(instrument) = &self.instrument {
+            validate_instrument_markers(instrument, &self.markers)?;
+        }
         let id3_tag = match &self.id3_tag {
             Some(tag) => rewrite_metadata_tag(tag, &self.metadata)?,
             None => encode_metadata(&id3_metadata(&self.metadata))?,
         };
         add_metadata_bytes(
-            validate_combined_metadata(&self.metadata, &self.comments, &self.markers)?,
+            validate_combined_metadata(
+                &self.metadata,
+                &self.comments,
+                &self.markers,
+                self.instrument.as_ref(),
+            )?,
             id3_tag.len() as u64,
         )?;
         for (key, id) in [
@@ -727,6 +772,9 @@ impl<W: Write + Seek> AiffEncoder<W> {
         }
         write_comments_chunk(&mut self.writer, &self.comments)?;
         write_markers_chunk(&mut self.writer, &self.markers)?;
+        if let Some(instrument) = &self.instrument {
+            write_instrument_chunk(&mut self.writer, instrument)?;
+        }
         let end = self.writer.stream_position()?;
         let form_size = end
             .checked_sub(8)
@@ -815,7 +863,12 @@ impl<W: Write + Seek> AudioEncoder for AiffEncoder<W> {
             ));
         }
         validate_metadata(metadata)?;
-        validate_combined_metadata(metadata, &self.comments, &self.markers)?;
+        validate_combined_metadata(
+            metadata,
+            &self.comments,
+            &self.markers,
+            self.instrument.as_ref(),
+        )?;
         self.metadata = metadata.clone();
         Ok(())
     }
@@ -873,6 +926,7 @@ fn validate_combined_metadata(
     metadata: &Metadata,
     comments: &[AiffComment],
     markers: &[AiffMarker],
+    instrument: Option<&AiffInstrument>,
 ) -> Result<u64, AudioError> {
     let text_size = ["title", "artist", "comment"]
         .iter()
@@ -889,6 +943,9 @@ fn validate_combined_metadata(
         .ok_or(AudioError::InvalidData("AIFF metadata size overflow"))?;
     let comment_size = validate_comments(comments)?;
     let marker_size = validate_markers(markers)?;
+    if let Some(instrument) = instrument {
+        validate_instrument(instrument)?;
+    }
     let total_size = text_size
         .checked_add(if comments.is_empty() {
             0
@@ -902,6 +959,7 @@ fn validate_combined_metadata(
                 marker_size + 8
             })
         })
+        .and_then(|size| size.checked_add(if instrument.is_some() { 28 } else { 0 }))
         .ok_or(AudioError::InvalidData("AIFF metadata size overflow"))?;
     if total_size > 16 * 1024 * 1024 {
         return Err(AudioError::Unsupported("AIFF metadata exceeds 16 MiB"));
