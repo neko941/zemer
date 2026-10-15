@@ -1078,6 +1078,11 @@ mod tests {
 
     use super::{add_metadata_bytes, extended_rate};
 
+    const INDEPENDENT_DWVW_16: [u8; 20] = [
+        0x01, 0x8f, 0x85, 0xe0, 0x08, 0x31, 0x8f, 0x68, 0x36, 0xc1, 0x5f, 0xe8, 0xdf, 0x36, 0x28,
+        0xdb, 0x40, 0x4d, 0x13, 0xd7,
+    ];
+
     #[test]
     fn aggregate_metadata_limit_includes_id3_and_native_chunks() {
         let limit = 16 * 1024 * 1024;
@@ -1088,23 +1093,7 @@ mod tests {
 
     #[test]
     fn aifc_dwvw_decodes_independent_16_bit_payload() {
-        let payload = [
-            0x01, 0x8f, 0x85, 0xe0, 0x08, 0x31, 0x8f, 0x68, 0x36, 0xc1, 0x5f, 0xe8, 0xdf, 0x36,
-            0x28, 0xdb, 0x40, 0x4d, 0x13, 0xd7,
-        ];
-        let mut file = b"FORM\0\0\0\0AIFC".to_vec();
-        file.extend_from_slice(b"FVER\0\0\0\x04\xa2\x80\x51\x40");
-        file.extend_from_slice(b"COMM\0\0\0\x1c");
-        file.extend_from_slice(&1_u16.to_be_bytes());
-        file.extend_from_slice(&9_u32.to_be_bytes());
-        file.extend_from_slice(&16_u16.to_be_bytes());
-        file.extend_from_slice(&extended_rate(44_100).unwrap());
-        file.extend_from_slice(b"DWVW\x04DWVW");
-        file.push(0);
-        file.extend_from_slice(b"SSND\0\0\0\x1c\0\0\0\0\0\0\0\0");
-        file.extend_from_slice(&payload);
-        let form_size = (file.len() - 8) as u32;
-        file[4..8].copy_from_slice(&form_size.to_be_bytes());
+        let file = aifc_dwvw_file(1, 9, &INDEPENDENT_DWVW_16);
 
         let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
         assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
@@ -1113,6 +1102,46 @@ mod tests {
             &Samples::I16([287, 4255, 8549, 12341, 15845, 18660, 20931, 22349, 23079].to_vec())
         );
         assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn aifc_dwvw_decodes_independent_payloads_per_stereo_channel() {
+        let channel_payload = &INDEPENDENT_DWVW_16[..18];
+        let mut stereo_payload = channel_payload.to_vec();
+        stereo_payload.extend_from_slice(channel_payload);
+        let file = aifc_dwvw_file(2, 9, &stereo_payload);
+
+        let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
+        let expected_channel = [287, 4255, 8549, 12341, 15845, 18660, 20931, 22349, 23079];
+        let expected: Vec<_> = expected_channel
+            .into_iter()
+            .flat_map(|sample| [sample, sample])
+            .collect();
+        assert_eq!(
+            decoder.read_frames(9).unwrap().unwrap().samples(),
+            &Samples::I16(expected)
+        );
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    fn aifc_dwvw_file(channels: u16, frame_count: u32, payload: &[u8]) -> Vec<u8> {
+        let mut file = b"FORM\0\0\0\0AIFC".to_vec();
+        file.extend_from_slice(b"FVER\0\0\0\x04\xa2\x80\x51\x40");
+        file.extend_from_slice(b"COMM\0\0\0\x1c");
+        file.extend_from_slice(&channels.to_be_bytes());
+        file.extend_from_slice(&frame_count.to_be_bytes());
+        file.extend_from_slice(&16_u16.to_be_bytes());
+        file.extend_from_slice(&extended_rate(44_100).unwrap());
+        file.extend_from_slice(b"DWVW\x04DWVW");
+        file.push(0);
+        let sound_chunk_size = 8 + payload.len() as u32;
+        file.extend_from_slice(b"SSND");
+        file.extend_from_slice(&sound_chunk_size.to_be_bytes());
+        file.extend_from_slice(&[0; 8]);
+        file.extend_from_slice(payload);
+        let form_size = (file.len() - 8) as u32;
+        file[4..8].copy_from_slice(&form_size.to_be_bytes());
+        file
     }
 
     #[test]
