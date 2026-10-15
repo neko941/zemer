@@ -6,10 +6,16 @@ AIFF integer PCM or AIFC integer/IEEE-float streams. It implements
 ``AudioDecoder`` and ``AudioEncoder`` and depends only on ``zemer-core``.
 
 The decoder accepts integer sample widths from 1 through 32 bits, preserving
-left-aligned valid bits inside the shared 8/16/24/32-bit sample containers. It
-reads big-endian AIFF PCM, AIFC ``NONE``/``twos`` big-endian PCM, AIFC ``sowt``
-little-endian PCM, and AIFC ``fl32``/``fl64`` IEEE floating-point audio. The
-writer emits full-width AIFF integer PCM and AIFC integer PCM or float32/64.
+left-aligned valid bits inside the shared 8/16/24/32-bit sample containers. The
+library writer can select a valid bit depth from 1 through 32 with
+``AiffEncoder::new_with_bits_per_sample`` or
+``AiffEncoder::new_aifc_with_bits_per_sample``. The selected depth must fit the
+input sample container (8, 16, 24, or 32 bits); unused low bits are cleared,
+which truncates precision. Existing constructors write the full container
+width. The decoder also reads big-endian AIFF PCM, AIFC ``NONE``/``twos``
+big-endian PCM, AIFC ``sowt`` little-endian PCM, and AIFC ``fl32``/``fl64``
+IEEE floating-point audio. The writer emits AIFF integer PCM and AIFC integer
+PCM at the selected valid depth, or float32/64 at full precision.
 Apple IMA4 AIFC packets decode to signed 16-bit PCM; ``new_aifc_ima4`` writes
 IMA4 only when explicitly selected. Each packet contains 64 frames per channel.
 AIFF-C stores the packet count in COMM for this profile, so the final packet

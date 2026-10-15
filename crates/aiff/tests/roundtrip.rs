@@ -105,6 +105,97 @@ fn integer_pcm_round_trips_and_maps_ascii_metadata() {
 }
 
 #[test]
+fn requested_pcm_bit_depths_write_left_aligned_valid_bits() {
+    let u8_spec = AudioSpec::new(48_000, 1, SampleFormat::PcmU8).unwrap();
+    let u8_input = PcmBuffer::new(u8_spec, Samples::U8(vec![0, 1, 127, 128, 255])).unwrap();
+    let mut encoder =
+        AiffEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), u8_spec, 4).unwrap();
+    encoder.write_block(&u8_input).unwrap();
+    let encoded = encoder.finish().unwrap().get_ref().clone();
+    assert_eq!(
+        u16::from_be_bytes(chunk_body(&encoded, b"COMM")[6..8].try_into().unwrap()),
+        4
+    );
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(
+        decoder.read_frames(8).unwrap().unwrap(),
+        PcmBuffer::new(u8_spec, Samples::U8(vec![0, 0, 112, 128, 240])).unwrap()
+    );
+
+    let i16_spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
+    let i16_values = vec![i16::MIN, -3_001, -1, 0, 1, 3_001, i16::MAX];
+    let i16_expected: Vec<_> = i16_values.iter().map(|value| value & !0x0f).collect();
+    let i16_input = PcmBuffer::new(i16_spec, Samples::I16(i16_values)).unwrap();
+    let mut encoder =
+        AiffEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), i16_spec, 12).unwrap();
+    encoder.write_block(&i16_input).unwrap();
+    let encoded = encoder.finish().unwrap().get_ref().clone();
+    assert_eq!(
+        u16::from_be_bytes(chunk_body(&encoded, b"COMM")[6..8].try_into().unwrap()),
+        12
+    );
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(
+        decoder.read_frames(8).unwrap().unwrap(),
+        PcmBuffer::new(i16_spec, Samples::I16(i16_expected)).unwrap()
+    );
+
+    let i24_spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI24).unwrap();
+    let i24_values = vec![-8_388_608, -123_457, -1, 0, 1, 123_457, 8_388_607];
+    let i24_expected: Vec<_> = i24_values.iter().map(|value| value & !0x0f).collect();
+    let i24_input = PcmBuffer::new(i24_spec, Samples::I24(i24_values)).unwrap();
+    let mut encoder =
+        AiffEncoder::new_aifc_with_bits_per_sample(Cursor::new(Vec::new()), i24_spec, 20).unwrap();
+    encoder.write_block(&i24_input).unwrap();
+    let encoded = encoder.finish().unwrap().get_ref().clone();
+    assert_eq!(
+        u16::from_be_bytes(chunk_body(&encoded, b"COMM")[6..8].try_into().unwrap()),
+        20
+    );
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(
+        decoder.read_frames(8).unwrap().unwrap(),
+        PcmBuffer::new(i24_spec, Samples::I24(i24_expected)).unwrap()
+    );
+
+    let i32_spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI32).unwrap();
+    let i32_values = vec![i32::MIN, -123_457, -1, 0, 1, 123_457, i32::MAX];
+    let i32_expected: Vec<_> = i32_values.iter().map(|value| value & !0x0f).collect();
+    let i32_input = PcmBuffer::new(i32_spec, Samples::I32(i32_values)).unwrap();
+    let mut encoder =
+        AiffEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), i32_spec, 28).unwrap();
+    encoder.write_block(&i32_input).unwrap();
+    let encoded = encoder.finish().unwrap().get_ref().clone();
+    assert_eq!(
+        u16::from_be_bytes(chunk_body(&encoded, b"COMM")[6..8].try_into().unwrap()),
+        28
+    );
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(
+        decoder.read_frames(8).unwrap().unwrap(),
+        PcmBuffer::new(i32_spec, Samples::I32(i32_expected)).unwrap()
+    );
+}
+
+#[test]
+fn requested_pcm_bit_depth_must_fit_sample_container() {
+    let u8_spec = AudioSpec::new(48_000, 1, SampleFormat::PcmU8).unwrap();
+    assert!(AiffEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), u8_spec, 0).is_err());
+    let i16_spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap();
+    assert!(AiffEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), i16_spec, 8).is_err());
+    assert!(
+        AiffEncoder::new_aifc_with_bits_per_sample(Cursor::new(Vec::new()), i16_spec, 17).is_err()
+    );
+    let float_spec = AudioSpec::new(48_000, 1, SampleFormat::Float32).unwrap();
+    assert!(
+        AiffEncoder::new_aifc_with_bits_per_sample(Cursor::new(Vec::new()), float_spec, 32)
+            .is_err()
+    );
+    let i32_spec = AudioSpec::new(48_000, 1, SampleFormat::PcmI32).unwrap();
+    assert!(AiffEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), i32_spec, 33).is_err());
+}
+
+#[test]
 fn typed_comments_round_trip_timestamp_marker_and_odd_text() {
     let original = audio(SampleFormat::PcmI16);
     let comments = vec![

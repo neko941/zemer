@@ -63,6 +63,9 @@ Rust library crate ``aiff`` (Cargo package ``zemer-aiff``)
 * ``AiffEncoder<W>`` — writes AIFF integer PCM or AIFC integer PCM/float,
   explicitly selected G.711, or explicitly selected IMA4 streams; it implements
   ``AudioEncoder`` and finalizes frame/chunk lengths at ``finish()``.
+  ``new_with_bits_per_sample`` and ``new_aifc_with_bits_per_sample`` select
+  1–32 valid bits for integer PCM and clear unused low bits in the existing
+  sample container.
 * ``AiffKind`` — names the AIFF or AIFC output profile.
 * ``AiffComment`` — typed ``COMT`` record with timestamp, marker ID, and raw
   text bytes; ``AiffDecoder::comments()`` reads records and
