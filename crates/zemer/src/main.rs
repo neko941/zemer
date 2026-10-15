@@ -8,7 +8,7 @@ use std::{
     process::ExitCode,
 };
 
-use aiff::{AiffDecoder, AiffEncoder, AiffMarker};
+use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker};
 use dsdiff::{DsdiffDecoder, DsdiffEncoder};
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
@@ -41,6 +41,7 @@ struct AudioInput {
     decoder: Box<dyn AudioDecoder>,
     format: &'static str,
     container: Option<WavContainer>,
+    aiff_comments: Option<Vec<AiffComment>>,
     aiff_markers: Option<Vec<AiffMarker>>,
 }
 
@@ -635,6 +636,7 @@ fn convert_audio(
 ) -> Result<Report, CliError> {
     let AudioInput {
         mut decoder,
+        aiff_comments,
         aiff_markers,
         ..
     } = open_decoder(&input)?;
@@ -773,6 +775,11 @@ fn convert_audio(
                         .set_markers(markers)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
+                if let Some(comments) = &aiff_comments {
+                    encoder
+                        .set_comments(comments)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
                 Box::new(encoder)
             }
             OutputFormat::Aifc => {
@@ -784,6 +791,11 @@ fn convert_audio(
                 if let Some(markers) = &aiff_markers {
                     encoder
                         .set_markers(markers)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                if let Some(comments) = &aiff_comments {
+                    encoder
+                        .set_comments(comments)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
                 Box::new(encoder)
@@ -801,6 +813,11 @@ fn convert_audio(
                         .set_markers(markers)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
+                if let Some(comments) = &aiff_comments {
+                    encoder
+                        .set_comments(comments)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
                 Box::new(encoder)
             }
             OutputFormat::AifcIma4 => {
@@ -810,6 +827,11 @@ fn convert_audio(
                 if let Some(markers) = &aiff_markers {
                     encoder
                         .set_markers(markers)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                if let Some(comments) = &aiff_comments {
+                    encoder
+                        .set_comments(comments)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
                 Box::new(encoder)
@@ -1190,6 +1212,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             decoder: Box::new(decoder),
             format: "flac",
             container: None,
+            aiff_comments: None,
             aiff_markers: None,
         })
     } else if is_ogg {
@@ -1211,6 +1234,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
                 decoder: Box::new(decoder),
                 format: "ogg-vorbis",
                 container: None,
+                aiff_comments: None,
                 aiff_markers: None,
             })
         } else {
@@ -1220,6 +1244,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
                 decoder: Box::new(decoder),
                 format: "ogg-flac",
                 container: None,
+                aiff_comments: None,
                 aiff_markers: None,
             })
         }
@@ -1230,11 +1255,19 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             decoder: Box::new(decoder),
             format: "wavpack",
             container: None,
+            aiff_comments: None,
             aiff_markers: None,
         })
     } else if is_form {
         let decoder = AiffDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
         let format = if decoder.is_aifc() { "aifc" } else { "aiff" };
+        let mut comments = Vec::new();
+        comments
+            .try_reserve_exact(decoder.comments().len())
+            .map_err(|_| {
+                cli_audio_error(AudioError::InvalidData("AIFF COMT is too large"), path)
+            })?;
+        comments.extend_from_slice(decoder.comments());
         let mut markers = Vec::new();
         markers
             .try_reserve_exact(decoder.markers().len())
@@ -1246,6 +1279,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             decoder: Box::new(decoder),
             format,
             container: None,
+            aiff_comments: (!comments.is_empty()).then_some(comments),
             aiff_markers: (!markers.is_empty()).then_some(markers),
         })
     } else {
@@ -1255,6 +1289,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             decoder: Box::new(decoder),
             format: "wav",
             container: Some(container),
+            aiff_comments: None,
             aiff_markers: None,
         })
     }
