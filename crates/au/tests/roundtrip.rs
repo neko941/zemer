@@ -141,6 +141,32 @@ fn malformed_headers_and_partial_frames_are_rejected() {
 }
 
 #[test]
+fn malformed_mcgill_headers_are_rejected_by_decode_and_metadata_rewrite() {
+    for (offset, data_size, annotation) in
+        [(24_u32, 1_u32, &[][..]), (28_u32, 2_u32, &[0, 0, 0, 0][..])]
+    {
+        let mut file = b".snd".to_vec();
+        file.extend_from_slice(&offset.to_be_bytes());
+        file.extend_from_slice(&data_size.to_be_bytes());
+        file.extend_from_slice(&1_u32.to_be_bytes());
+        file.extend_from_slice(&8_000_u32.to_be_bytes());
+        file.extend_from_slice(&1_u32.to_be_bytes());
+        file.extend_from_slice(annotation);
+        file.push(0xff);
+
+        assert!(AuDecoder::new(Cursor::new(file.clone())).is_err());
+        assert!(
+            rewrite_metadata(
+                Cursor::new(file),
+                &mut Cursor::new(Vec::new()),
+                &Metadata::default(),
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn metadata_rewrite_changes_only_annotation_and_keeps_unknown_annotation_when_unchanged() {
     let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap();
     let audio = PcmBuffer::new(spec, Samples::U8(vec![128, 129, 127])).unwrap();

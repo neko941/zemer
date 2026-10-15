@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom};
 use g711::{decode_alaw, decode_mulaw};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
-use crate::{MAX_ANNOTATION_BYTES, UNKNOWN_DATA_SIZE};
+use crate::{MAX_ANNOTATION_BYTES, MINIMUM_DATA_OFFSET, UNKNOWN_DATA_SIZE};
 
 #[derive(Clone, Copy)]
 enum Encoding {
@@ -78,7 +78,7 @@ impl<R: Read + Seek> AuDecoder<R> {
         let sample_rate = u32::from_be_bytes(header[16..20].try_into().unwrap());
         let channels = u32::from_be_bytes(header[20..24].try_into().unwrap());
         let file_end = reader.seek(SeekFrom::End(0))?;
-        if data_offset < 24 || data_offset > file_end {
+        if data_offset < MINIMUM_DATA_OFFSET || data_offset > file_end {
             return Err(AudioError::InvalidFormat(
                 "AU data offset is outside the file",
             ));

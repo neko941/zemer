@@ -2,7 +2,9 @@ use std::io::{Read, Seek, SeekFrom, Write};
 
 use zemer_core::{AudioError, Metadata};
 
-use crate::{MAX_ANNOTATION_BYTES, UNKNOWN_DATA_SIZE, decode::annotation_comment};
+use crate::{
+    MAX_ANNOTATION_BYTES, MINIMUM_DATA_OFFSET, UNKNOWN_DATA_SIZE, decode::annotation_comment,
+};
 
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
 
@@ -22,7 +24,7 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
     let old_offset = u64::from(u32::from_be_bytes(header[4..8].try_into().unwrap()));
     let data_size = u32::from_be_bytes(header[8..12].try_into().unwrap());
     let file_end = reader.seek(SeekFrom::End(0))?;
-    if old_offset < 24 || old_offset > file_end {
+    if old_offset < MINIMUM_DATA_OFFSET || old_offset > file_end {
         return Err(AudioError::InvalidFormat(
             "AU data offset is outside the file",
         ));
