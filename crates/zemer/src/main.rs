@@ -21,7 +21,7 @@ use wavpack::{
 };
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioError, AudioSpec, DsdDecoder, DsdEncoder, DsdSpec, Metadata,
-    SampleFormat, Samples, convert_sample_format, transcode_dsd,
+    SampleFormat, Samples, convert_sample_format, transcode_dsd_with_metadata,
 };
 
 #[path = "cue.rs"]
@@ -963,6 +963,18 @@ fn wave_metadata(metadata: &Metadata) -> Metadata {
     compatible
 }
 
+fn dsdiff_metadata(metadata: &Metadata) -> Metadata {
+    let mut compatible = Metadata::default();
+    for (key, values) in metadata.iter() {
+        if matches!(key, "TITLE" | "ARTIST" | "COMMENT" | "DSDIFF_CHANNEL_ID") {
+            for value in values {
+                compatible.insert(key, value.clone());
+            }
+        }
+    }
+    compatible
+}
+
 fn convert_dsd(
     input: PathBuf,
     output: PathBuf,
@@ -983,6 +995,11 @@ fn convert_dsd(
     let spec = decoder.dsd_spec();
     let declared_sample_count = decoder.sample_count();
     let metadata = decoder.metadata().clone();
+    let output_metadata = if matches!(format, OutputFormat::Dsdiff | OutputFormat::DsdiffDst) {
+        dsdiff_metadata(&metadata)
+    } else {
+        metadata.clone()
+    };
     let result = (|| {
         let mut encoder: Box<dyn DsdEncoder> = match format {
             OutputFormat::Dsf => {
@@ -993,9 +1010,6 @@ fn convert_dsd(
                         .set_id3_tag(tag)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
-                encoder
-                    .set_metadata(&metadata)
-                    .map_err(|error| cli_audio_error(error, &output))?;
                 Box::new(encoder)
             }
             OutputFormat::Dsdiff | OutputFormat::DsdiffDst => {
@@ -1006,7 +1020,7 @@ fn convert_dsd(
                 }
                 .map_err(|error| cli_audio_error(error, &output))?;
                 encoder
-                    .set_metadata(&metadata)
+                    .set_metadata(&output_metadata)
                     .map_err(|error| cli_audio_error(error, &output))?;
                 if let Some(comments) = &comments {
                     encoder
@@ -1021,17 +1035,15 @@ fn convert_dsd(
                 Box::new(encoder)
             }
             OutputFormat::WavPack => {
-                let mut encoder = WavPackDsdEncoder::new(output_file, spec)
-                    .map_err(|error| cli_audio_error(error, &output))?;
-                encoder
-                    .set_metadata(&metadata)
+                let encoder = WavPackDsdEncoder::new(output_file, spec)
                     .map_err(|error| cli_audio_error(error, &output))?;
                 Box::new(encoder)
             }
             _ => unreachable!("DSD conversion format was checked"),
         };
-        let octet_frames = transcode_dsd(&mut *decoder, &mut *encoder, 8192)
-            .map_err(|error| cli_audio_error(error, &input))?;
+        let octet_frames =
+            transcode_dsd_with_metadata(&mut *decoder, &mut *encoder, &output_metadata, 8192)
+                .map_err(|error| cli_audio_error(error, &input))?;
         let sample_count = sample_count_for_octets(octet_frames, declared_sample_count)
             .map_err(|error| cli_audio_error(error, &input))?;
         Ok(DsdReport {
@@ -1045,7 +1057,7 @@ fn convert_dsd(
             spec,
             octet_frames,
             sample_count,
-            metadata,
+            metadata: output_metadata,
         })
     })();
     if result.is_err() {

@@ -2285,3 +2285,110 @@ fn dsdiff_dst_conversion_writes_multiframe_compressed_audio_and_decodes_it() {
     let _ = fs::remove_file(output_path);
     let _ = fs::remove_file(bypass_path);
 }
+
+#[test]
+#[ignore = "requires the external CC0 DSF sample and FFmpeg DSF decoder"]
+fn dsdiff_dst_real_audio_matches_ffmpeg_pcm_oracle() {
+    let sample_path = std::env::var_os("ZEMER_DSDIFF_CC0_DSF")
+        .map(PathBuf::from)
+        .expect("set ZEMER_DSDIFF_CC0_DSF to the external CC0 Variatio 5 DSD64 DSF sample");
+    let input_path = temporary_path().with_extension("dsf");
+    let output_path = temporary_path().with_extension("dff");
+    let round_trip_path = temporary_path().with_extension("dsf");
+    let source_pcm_path = temporary_path().with_extension("source.f32le");
+    let output_pcm_path = temporary_path().with_extension("output.f32le");
+
+    let mut sample = DsfDecoder::new(File::open(sample_path).unwrap()).unwrap();
+    let metadata = sample.metadata().clone();
+    let spec = sample.dsd_spec();
+    // Ten complete frames keep this real-audio CLI and external-oracle check fast.
+    let frame_octets = 4_704 * 10;
+    let mut clip = DsfEncoder::new(
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&input_path)
+            .unwrap(),
+        spec,
+    )
+    .unwrap();
+    clip.set_metadata(&metadata).unwrap();
+    let mut copied_octets = 0;
+    while copied_octets < frame_octets {
+        let audio = sample
+            .read_dsd_octets(frame_octets - copied_octets)
+            .unwrap()
+            .unwrap();
+        copied_octets += audio.frames();
+        clip.write_dsd_octets(&audio).unwrap();
+    }
+    clip.finish().unwrap();
+
+    let source = DsfDecoder::new(File::open(&input_path).unwrap()).unwrap();
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "dsdiff_dst", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let dsdiff = DsdiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(dsdiff.dsd_spec(), source.dsd_spec());
+    assert_eq!(dsdiff.sample_count(), Some(source.sample_count()));
+    assert_eq!(
+        dsdiff.metadata().values("TITLE"),
+        source.metadata().values("TITLE")
+    );
+    assert_eq!(
+        dsdiff.metadata().values("ARTIST"),
+        source.metadata().values("ARTIST")
+    );
+    assert!(!source.metadata().values("ALBUM").is_empty());
+    assert!(dsdiff.metadata().values("ALBUM").is_empty());
+    let restored = Command::new(cli_path())
+        .args(["convert", "--format", "dsf", "--json"])
+        .arg(&output_path)
+        .arg(&round_trip_path)
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "{}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+
+    for (input, pcm) in [
+        (&input_path, &source_pcm_path),
+        (&round_trip_path, &output_pcm_path),
+    ] {
+        let decoded = Command::new("ffmpeg")
+            .args(["-v", "error", "-y", "-i"])
+            .arg(input)
+            .args(["-f", "f32le", "-acodec", "pcm_f32le"])
+            .arg(pcm)
+            .output()
+            .unwrap();
+        assert!(
+            decoded.status.success(),
+            "{}",
+            String::from_utf8_lossy(&decoded.stderr)
+        );
+    }
+    let source_pcm = fs::read(&source_pcm_path).unwrap();
+    assert!(!source_pcm.is_empty());
+    assert_eq!(source_pcm, fs::read(&output_pcm_path).unwrap());
+
+    for path in [
+        input_path,
+        output_path,
+        round_trip_path,
+        source_pcm_path,
+        output_pcm_path,
+    ] {
+        let _ = fs::remove_file(path);
+    }
+}
