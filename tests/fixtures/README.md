@@ -571,7 +571,9 @@ The ignored `tests/aiff_interop.rs::decodes_mcgill_afsp_profiles_against_ffmpeg`
 test compares 15 McGill AFsp samples sample-for-sample with FFmpeg raw PCM
 output. It covers AIFF and AIFC 8/12/16/24/32-bit integer PCM, `sowt`, float32,
 float64, and G.711 A-law/μ-law. The samples are not bundled because their
-redistribution terms are not stated on the sample page. From a POSIX shell,
+redistribution terms are not stated on the sample page. The 15 profiles and
+the separate 12-bit AIFF/AIFC PCM-oracle test were run on server5 on
+2026-10-15 and passed. From a POSIX shell,
 download them and run the test with FFmpeg:
 
 ```sh
