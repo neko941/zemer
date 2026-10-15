@@ -512,6 +512,31 @@ compares two McGill/AFsp 12-bit samples with FFmpeg-generated signed 16-bit PCM
 oracles. Both formats decode to the same 23,493-frame stereo signal at 8 kHz.
 The external files are not bundled.
 
+The ignored `tests/aiff_interop.rs::decodes_mcgill_afsp_profiles_against_ffmpeg`
+test compares 15 McGill AFsp samples sample-for-sample with FFmpeg raw PCM
+output. It covers AIFF and AIFC 8/12/16/24/32-bit integer PCM, `sowt`, float32,
+float64, and G.711 A-law/μ-law. The samples are not bundled because their
+redistribution terms are not stated on the sample page. From a POSIX shell,
+download them and run the test with FFmpeg:
+
+```sh
+base=https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/AIFF/Samples/AFsp
+dir=/tmp/zemer-mcgill-afsp
+mkdir -p "$dir"
+for sample in M1F1-AlawC-AFsp.aif M1F1-mulawC-AFsp.aif \
+  M1F1-int8-AFsp.aif M1F1-int8C-AFsp.aif \
+  M1F1-int12-AFsp.aif M1F1-int12C-AFsp.aif \
+  M1F1-int16-AFsp.aif M1F1-int16C-AFsp.aif M1F1-int16s-AFsp.aif \
+  M1F1-int24-AFsp.aif M1F1-int24C-AFsp.aif \
+  M1F1-int32-AFsp.aif M1F1-int32C-AFsp.aif \
+  M1F1-float32C-AFsp.aif M1F1-float64C-AFsp.aif; do
+  curl -fsSL "$base/$sample" -o "$dir/$sample"
+done
+ZEMER_MCGILL_AIFF_CORPUS="$dir" ZEMER_FFMPEG=ffmpeg \
+  cargo test -p zemer-tests --test aiff_interop \
+  decodes_mcgill_afsp_profiles_against_ffmpeg -- --ignored --exact
+```
+
 The ignored `tests/dst_iso_conformance.rs` tests use official ISO DST bitstreams
 and paired raw DSD reference MP4s kept outside the repository. Set
 `ZEMER_DST_COMPRESSED_DIR` and `ZEMER_DST_REFERENCE_DIR` to the corresponding
