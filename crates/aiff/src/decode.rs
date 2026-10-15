@@ -356,6 +356,11 @@ impl<R: Read + Seek> AiffDecoder<R> {
         }
         let (channels, frames, bits, rate, encoding) =
             common.ok_or(AudioError::InvalidFormat("AIFF file is missing COMM"))?;
+        if encoding == Encoding::Ima4 && !(1..=2).contains(&channels) {
+            return Err(AudioError::Unsupported(
+                "AIFC IMA4 supports mono or stereo audio",
+            ));
+        }
         if encoding == Encoding::G726 && rate != 8_000 {
             return Err(AudioError::Unsupported(
                 "AIFC G.726 requires an 8 kHz sample rate",

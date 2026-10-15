@@ -19,7 +19,9 @@ IEEE floating-point audio (including uppercase ``FL32``/``FL64`` aliases).
 The writer emits AIFF integer PCM and AIFC integer
 PCM at the selected valid depth, or float32/64 at full precision.
 Apple IMA4 AIFC packets decode to signed 16-bit PCM; ``new_aifc_ima4`` writes
-IMA4 only when explicitly selected. Each packet contains 64 frames per channel.
+IMA4 only when explicitly selected for mono or stereo. Generated mono and
+stereo output has been compared sample-for-sample with FFmpeg 4.2.2; wider
+channel counts are rejected. Each packet contains 64 frames per channel.
 AIFF-C stores the packet count in COMM for this profile, so the final packet
 may add up to 63 decoded padding frames.
 It also decodes AIFC A-law/μ-law using both Apple lowercase and SGI uppercase
