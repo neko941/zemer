@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::encode::WavContainer;
+use crate::info::key_from_id;
 use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{decode_alaw, decode_mulaw};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
@@ -796,15 +797,7 @@ fn parse_list_info<R: Read + Seek>(
                 "INFO subchunk exceeds LIST boundary",
             ));
         }
-        let key = match &header[..4] {
-            b"INAM" => Some("TITLE"),
-            b"IART" => Some("ARTIST"),
-            b"IPRD" => Some("ALBUM"),
-            b"ICRD" => Some("DATE"),
-            b"IGNR" => Some("GENRE"),
-            b"ICMT" => Some("COMMENT"),
-            _ => None,
-        };
+        let key = key_from_id(header[..4].try_into().unwrap());
         if let Some(key) = key {
             if size > MAX_INFO_VALUE {
                 return Err(AudioError::InvalidFormat(
@@ -833,6 +826,119 @@ fn parse_list_info<R: Read + Seek>(
         return Err(AudioError::InvalidFormat("trailing bytes in INFO list"));
     }
     Ok(())
+}
+
+pub(super) fn read_info_metadata<R: Read + Seek>(reader: &mut R) -> Result<Metadata, AudioError> {
+    reader.seek(SeekFrom::Start(0))?;
+    let mut header = [0; 12];
+    reader.read_exact(&mut header)?;
+    let rf64 = match &header[..4] {
+        b"RIFF" => false,
+        b"RF64" => true,
+        _ => {
+            return Err(AudioError::InvalidFormat(
+                "expected a RIFF/WAVE or RF64/WAVE file",
+            ));
+        }
+    };
+    if &header[8..] != b"WAVE" {
+        return Err(AudioError::InvalidFormat("expected a WAVE file form"));
+    }
+    let size32 = u32::from_le_bytes(header[4..8].try_into().unwrap());
+    if rf64 != (size32 == u32::MAX) {
+        return Err(AudioError::InvalidFormat("invalid RIFF/RF64 size field"));
+    }
+    let mut ds64 = None;
+    if rf64 {
+        let mut chunk = [0; 8];
+        reader.read_exact(&mut chunk)?;
+        if &chunk[..4] != b"ds64" {
+            return Err(AudioError::InvalidFormat(
+                "RF64 requires ds64 as the first chunk",
+            ));
+        }
+        let size = u32::from_le_bytes(chunk[4..].try_into().unwrap());
+        if !(28..=MAX_DS64_CHUNK).contains(&size) {
+            return Err(AudioError::InvalidFormat("invalid RF64 ds64 chunk size"));
+        }
+        let mut bytes = vec![0; size as usize];
+        reader.read_exact(&mut bytes)?;
+        ds64 = Some(parse_ds64(&bytes)?);
+        if size & 1 != 0 {
+            reader.seek(SeekFrom::Current(1))?;
+        }
+    }
+    let chunk_scan_start = reader.stream_position()?;
+    let riff_end = 8_u64
+        .checked_add(
+            ds64.as_ref()
+                .map_or(u64::from(size32), |info| info.riff_size),
+        )
+        .ok_or(AudioError::InvalidFormat("RIFF size overflow"))?;
+    let file_end = reader.seek(SeekFrom::End(0))?;
+    if riff_end > file_end || riff_end < 12 {
+        return Err(AudioError::InvalidFormat("RIFF size exceeds the file"));
+    }
+    reader.seek(SeekFrom::Start(chunk_scan_start))?;
+    let mut metadata = Metadata::default();
+    let (mut metadata_bytes, mut metadata_values) = (0, 0);
+    let mut first_data_seen = false;
+    while reader.stream_position()? < riff_end {
+        if riff_end - reader.stream_position()? < 8 {
+            return Err(AudioError::InvalidFormat("truncated RIFF chunk header"));
+        }
+        let mut chunk = [0; 8];
+        reader.read_exact(&mut chunk)?;
+        let size32 = u32::from_le_bytes(chunk[4..].try_into().unwrap());
+        let size = if size32 != u32::MAX {
+            u64::from(size32)
+        } else if rf64 && &chunk[..4] == b"data" && !first_data_seen {
+            ds64.as_ref().unwrap().data_size
+        } else if rf64 {
+            ds64.as_mut()
+                .and_then(|info| info.take_table_size(&chunk[..4]))
+                .ok_or(AudioError::InvalidFormat(
+                    "RF64 chunk size sentinel has no ds64 table entry",
+                ))?
+        } else {
+            return Err(AudioError::InvalidFormat(
+                "RIFF chunk size sentinel without RF64 ds64",
+            ));
+        };
+        let body = reader.stream_position()?;
+        let padded_end = body
+            .checked_add(size)
+            .and_then(|end| end.checked_add(size & 1))
+            .ok_or(AudioError::InvalidFormat("chunk size overflow"))?;
+        if padded_end > riff_end {
+            return Err(AudioError::InvalidFormat(
+                "chunk extends past the RIFF boundary",
+            ));
+        }
+        if &chunk[..4] == b"data" {
+            first_data_seen = true;
+        } else if &chunk[..4] == b"LIST" && size >= 4 && size <= u64::from(u32::MAX) {
+            let mut list_type = [0; 4];
+            reader.read_exact(&mut list_type)?;
+            if &list_type == b"INFO" {
+                reader.seek(SeekFrom::Start(body))?;
+                parse_list_info(
+                    reader,
+                    size as u32,
+                    &mut metadata,
+                    &mut metadata_bytes,
+                    &mut metadata_values,
+                )?;
+            }
+        }
+        reader.seek(SeekFrom::Start(padded_end))?;
+    }
+    if reader.stream_position()? != riff_end {
+        return Err(AudioError::InvalidFormat(
+            "RIFF chunk alignment exceeds the boundary",
+        ));
+    }
+    Ok(metadata)
 }
 
 fn reserve_info_value(

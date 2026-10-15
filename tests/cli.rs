@@ -739,6 +739,9 @@ fn convert_changes_sample_format_and_preserves_metadata() {
     metadata.insert("title", "Endian test");
     metadata.insert("artist", "Artist A");
     metadata.insert("artist", "Artist B");
+    metadata.insert("copyright", "CC0");
+    metadata.insert("engineer", "Engineer A");
+    metadata.insert("keywords", "quiet; generated");
     write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
 
     let output = Command::new(cli_path())
@@ -757,6 +760,9 @@ fn convert_changes_sample_format_and_preserves_metadata() {
     assert!(json.contains("\"sample_format\":\"pcm_i16\""));
     assert!(json.contains("\"TITLE\":[\"Endian test\"]"));
     assert!(json.contains("\"ARTIST\":[\"Artist A\",\"Artist B\"]"));
+    assert!(json.contains("\"COPYRIGHT\":[\"CC0\"]"));
+    assert!(json.contains("\"ENGINEER\":[\"Engineer A\"]"));
+    assert!(json.contains("\"KEYWORDS\":[\"quiet; generated\"]"));
 
     let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
     assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);

@@ -1288,10 +1288,7 @@ fn vorbis_channel_order(
 fn wave_metadata(metadata: &Metadata) -> Metadata {
     let mut compatible = Metadata::default();
     for (key, values) in metadata.iter() {
-        if matches!(
-            key,
-            "TITLE" | "ARTIST" | "ALBUM" | "DATE" | "GENRE" | "COMMENT"
-        ) {
+        if wav::supports_info_metadata_key(key) {
             for value in values {
                 compatible.insert(key, value.clone());
             }

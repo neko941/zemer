@@ -1,13 +1,14 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, VecDeque},
     io::{Read, Seek, SeekFrom, Write},
 };
 
 use zemer_core::{AudioError, Metadata};
 
 use crate::{
-    decode::{MAX_DS64_CHUNK, parse_ds64},
-    encode::{is_managed_info_id, metadata_chunk_size, write_info_chunk, write_info_subchunks},
+    decode::{MAX_DS64_CHUNK, parse_ds64, read_info_metadata},
+    encode::{metadata_chunk_size, write_info_chunk, write_info_subchunks},
+    info::is_managed_id,
 };
 
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
@@ -19,7 +20,7 @@ struct Chunk {
     table_size_offset: Option<u64>,
 }
 
-/// Rewrites RIFF INFO tags while copying all other WAVE chunk and audio bytes unchanged.
+/// Rewrites changed RIFF INFO tags while copying unchanged fields and audio bytes as-is.
 ///
 /// The caller should write to a new temporary file and replace the source only after success.
 pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
@@ -28,6 +29,23 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
     metadata: &Metadata,
 ) -> Result<W, AudioError> {
     metadata_chunk_size(metadata)?;
+    let original_metadata = read_info_metadata(&mut reader)?;
+    let mut changed_keys = BTreeSet::new();
+    let mut metadata_to_write = Metadata::default();
+    for (key, values) in metadata.iter() {
+        if original_metadata.values(key) != values {
+            changed_keys.insert(key.to_owned());
+            for value in values {
+                metadata_to_write.insert(key, value.clone());
+            }
+        }
+    }
+    for (key, _) in original_metadata.iter() {
+        if metadata.values(key).is_empty() {
+            changed_keys.insert(key.to_owned());
+        }
+    }
+    metadata_chunk_size(&metadata_to_write)?;
     reader.seek(SeekFrom::Start(0))?;
     let mut header = [0; 12];
     reader.read_exact(&mut header)?;
@@ -158,8 +176,8 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
 
         if &chunk_header[..4] == b"data" {
             first_data_seen = true;
-            if !wrote_metadata && metadata_chunk_size(metadata)? != 0 {
-                write_info_chunk(&mut writer, metadata)?;
+            if !wrote_metadata && metadata_chunk_size(&metadata_to_write)? != 0 {
+                write_info_chunk(&mut writer, &metadata_to_write)?;
                 wrote_metadata = true;
             }
         }
@@ -173,7 +191,8 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
                     size_is_sentinel: size32 == u32::MAX,
                     table_size_offset,
                 },
-                metadata,
+                &metadata_to_write,
+                &changed_keys,
                 &mut wrote_metadata,
             )?;
         } else {
@@ -219,6 +238,7 @@ fn rewrite_list_chunk<R: Read + Seek, W: Write + Seek>(
     writer: &mut W,
     chunk: Chunk,
     metadata: &Metadata,
+    changed_keys: &BTreeSet<String>,
     wrote_metadata: &mut bool,
 ) -> Result<(), AudioError> {
     let body_start = reader.stream_position()?;
@@ -260,7 +280,10 @@ fn rewrite_list_chunk<R: Read + Seek, W: Write + Seek>(
                 "INFO subchunk exceeds LIST boundary",
             ));
         }
-        if is_managed_info_id(subchunk_header[..4].try_into().unwrap()) {
+        let id = subchunk_header[..4].try_into().unwrap();
+        if is_managed_id(&id)
+            && crate::info::key_from_id(&id).is_some_and(|key| changed_keys.contains(key))
+        {
             reader.seek(SeekFrom::Current(padded_size as i64))?;
         } else {
             writer.write_all(&subchunk_header)?;
@@ -351,6 +374,7 @@ mod tests {
         chunk(&mut bytes, b"JUNK", &[0x31, 0x32, 0x33], 0xa5);
         let mut info = b"INFO".to_vec();
         chunk(&mut info, b"INAM", b"Old\0", 0);
+        chunk(&mut info, b"IENG", b"Ol\xff\0", 0);
         chunk(&mut info, b"XTRA", &[0x41, 0x42, 0x43], 0xcc);
         chunk(&mut bytes, b"LIST", &info, 0);
         chunk(&mut bytes, b"data", &[0x80, 0xff], 0);
@@ -441,6 +465,73 @@ mod tests {
         assert_eq!(
             decoder.read_frames(2).unwrap().unwrap().samples(),
             &Samples::U8(vec![0x80, 0xff])
+        );
+    }
+
+    #[test]
+    fn metadata_rewrite_replaces_all_registered_info_fields() {
+        let original = riff_file();
+        let mut metadata = Metadata::default();
+        metadata.insert("engineer", "New engineer");
+
+        let rewritten = rewrite_metadata(Cursor::new(original), Cursor::new(Vec::new()), &metadata)
+            .unwrap()
+            .into_inner();
+        let decoder = WavDecoder::new(Cursor::new(rewritten.clone())).unwrap();
+        assert_eq!(decoder.metadata().values("ENGINEER"), ["New engineer"]);
+        assert!(rewritten.windows(4).any(|window| window == b"IENG"));
+    }
+
+    #[test]
+    fn metadata_rewrite_preserves_unchanged_non_utf8_info_bytes() {
+        let original = riff_file();
+        let source = WavDecoder::new(Cursor::new(original.clone())).unwrap();
+        assert_eq!(
+            crate::decode::read_info_metadata(&mut Cursor::new(original.clone())).unwrap(),
+            *source.metadata()
+        );
+        let mut metadata = source.metadata().clone();
+        metadata.remove("TITLE");
+        metadata.insert("TITLE", "Updated title");
+
+        let rewritten = rewrite_metadata(Cursor::new(original), Cursor::new(Vec::new()), &metadata)
+            .unwrap()
+            .into_inner();
+        let decoder = WavDecoder::new(Cursor::new(rewritten.clone())).unwrap();
+        assert_eq!(decoder.metadata().values("TITLE"), ["Updated title"]);
+        assert_eq!(decoder.metadata().values("ENGINEER"), ["Ol\u{fffd}"]);
+        let engineer = rewritten
+            .windows(4)
+            .position(|bytes| bytes == b"IENG")
+            .unwrap();
+        assert_eq!(
+            &rewritten[engineer..engineer + 12],
+            b"IENG\x04\0\0\0Ol\xff\0"
+        );
+    }
+
+    #[test]
+    fn metadata_rewrite_does_not_require_a_supported_audio_codec() {
+        let mut original = riff_file();
+        original[20..22].copy_from_slice(&0x1234_u16.to_le_bytes());
+        let mut metadata =
+            crate::decode::read_info_metadata(&mut Cursor::new(original.clone())).unwrap();
+        metadata.remove("TITLE");
+        metadata.insert("TITLE", "Updated title");
+
+        let rewritten = rewrite_metadata(Cursor::new(original), Cursor::new(Vec::new()), &metadata)
+            .unwrap()
+            .into_inner();
+        assert!(rewritten.windows(4).any(|window| window == b"INAM"));
+        assert!(
+            rewritten
+                .windows(14)
+                .any(|window| window == b"Updated title\0")
+        );
+        assert!(
+            rewritten
+                .windows(12)
+                .any(|bytes| bytes == b"IENG\x04\0\0\0Ol\xff\0")
         );
     }
 

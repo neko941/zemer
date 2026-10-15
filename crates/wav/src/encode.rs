@@ -1,5 +1,6 @@
 use std::io::{Seek, SeekFrom, Write};
 
+use crate::info::id_from_key;
 use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{encode_alaw, encode_mulaw};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
@@ -587,7 +588,7 @@ pub(super) fn metadata_chunk_size(metadata: &Metadata) -> Result<u64, AudioError
     let mut list_size = 4_u64;
     let mut values = 0_u64;
     for (key, entries) in metadata.iter() {
-        info_id(key).ok_or(AudioError::Unsupported(
+        id_from_key(key).ok_or(AudioError::Unsupported(
             "WAVE INFO cannot store this metadata key",
         ))?;
         for value in entries.iter().filter(|value| !value.is_empty()) {
@@ -618,18 +619,6 @@ pub(super) fn metadata_chunk_size(metadata: &Metadata) -> Result<u64, AudioError
     Ok(8 + u64::from(list_chunk_size) + u64::from(list_chunk_size & 1))
 }
 
-fn info_id(key: &str) -> Option<[u8; 4]> {
-    match key {
-        "TITLE" => Some(*b"INAM"),
-        "ARTIST" => Some(*b"IART"),
-        "ALBUM" => Some(*b"IPRD"),
-        "DATE" => Some(*b"ICRD"),
-        "GENRE" => Some(*b"IGNR"),
-        "COMMENT" => Some(*b"ICMT"),
-        _ => None,
-    }
-}
-
 pub(super) fn write_info_chunk<W: Write>(
     writer: &mut W,
     metadata: &Metadata,
@@ -650,7 +639,7 @@ pub(super) fn write_info_subchunks<W: Write>(
     metadata: &Metadata,
 ) -> Result<(), AudioError> {
     for (key, entries) in metadata.iter() {
-        let id = info_id(key).ok_or(AudioError::Unsupported(
+        let id = id_from_key(key).ok_or(AudioError::Unsupported(
             "WAVE INFO cannot store this metadata key",
         ))?;
         for value in entries.iter().filter(|value| !value.is_empty()) {
@@ -666,13 +655,6 @@ pub(super) fn write_info_subchunks<W: Write>(
         }
     }
     Ok(())
-}
-
-pub(super) fn is_managed_info_id(id: &[u8; 4]) -> bool {
-    matches!(
-        id,
-        b"INAM" | b"IART" | b"IPRD" | b"ICRD" | b"IGNR" | b"ICMT"
-    )
 }
 
 fn write_sample_data<W: Write>(writer: &mut W, samples: &Samples) -> Result<(), AudioError> {
@@ -821,6 +803,54 @@ mod tests {
         let samples = [i16::MIN, -1, 0, 1, i16::MAX];
         assert_eq!(samples.map(encode_alaw), [0x2a, 0x55, 0xd5, 0xd5, 0xaa]);
         assert_eq!(samples.map(encode_mulaw), [0x00, 0x7f, 0xff, 0xff, 0x80]);
+    }
+
+    #[test]
+    fn writer_and_reader_round_trip_all_registered_info_fields() {
+        let fields = [
+            ("ARCHIVAL_LOCATION", *b"IARL"),
+            ("ARTIST", *b"IART"),
+            ("COMMISSIONED", *b"ICMS"),
+            ("COMMENT", *b"ICMT"),
+            ("COPYRIGHT", *b"ICOP"),
+            ("DATE", *b"ICRD"),
+            ("CROPPED", *b"ICRP"),
+            ("DIMENSIONS", *b"IDIM"),
+            ("DPI", *b"IDPI"),
+            ("ENGINEER", *b"IENG"),
+            ("GENRE", *b"IGNR"),
+            ("KEYWORDS", *b"IKEY"),
+            ("LIGHTNESS", *b"ILGT"),
+            ("MEDIUM", *b"IMED"),
+            ("TITLE", *b"INAM"),
+            ("PALETTE_SETTING", *b"IPLT"),
+            ("ALBUM", *b"IPRD"),
+            ("SUBJECT", *b"ISBJ"),
+            ("SOFTWARE", *b"ISFT"),
+            ("SHARPNESS", *b"ISHP"),
+            ("SOURCE", *b"ISRC"),
+            ("SOURCE_FORM", *b"ISRF"),
+            ("TECHNICIAN", *b"ITCH"),
+        ];
+        let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+        let mut metadata = Metadata::default();
+        for (key, _) in fields {
+            metadata.insert(key, format!("{key} value"));
+        }
+        metadata.insert("ENGINEER", "second engineer");
+
+        let mut writer =
+            WavWriter::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).unwrap();
+        writer
+            .write_block(&PcmBuffer::new(spec, Samples::I16(vec![123])).unwrap())
+            .unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+
+        for (_, id) in fields {
+            assert!(bytes.windows(4).any(|window| window == id));
+        }
+        let decoder = crate::WavDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.metadata(), &metadata);
     }
 
     #[test]
