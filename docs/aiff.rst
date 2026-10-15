@@ -20,7 +20,8 @@ The writer emits AIFF integer PCM and AIFC integer PCM at the selected valid
 depth, or float32/64 at full precision. AIFC ``sowt`` writes byte-swapped
 little-endian PCM through ``AiffEncoder::new_aifc_sowt`` (and its
 valid-bit-depth variant); choose it explicitly when producing that AIFC profile.
-Generated 16/24/32-bit stereo output matches FFmpeg's decoded PCM exactly.
+Byte layouts and round trips are checked at 8/16/24/32 bits; generated 16-bit
+stereo output matches FFmpeg's decoded PCM exactly.
 Apple IMA4 AIFC packets decode to signed 16-bit PCM; ``new_aifc_ima4`` writes
 IMA4 only when explicitly selected for mono or stereo. Generated mono and
 stereo output has been compared sample-for-sample with FFmpeg 4.2.2; wider

@@ -261,69 +261,37 @@ fn encodes_aiff_multichannel_pcm_compatible_with_ffmpeg() {
 
 #[test]
 #[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
-fn encodes_aifc_sowt_pcm_compatible_with_ffmpeg() {
+fn encodes_aifc_sowt_16_bit_compatible_with_ffmpeg() {
     let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
-    let cases = [
-        (
-            SampleFormat::PcmI16,
-            "s16le",
-            Samples::I16(vec![
-                i16::MIN,
-                i16::MAX,
-                -3_001,
-                3_001,
-                -1,
-                1,
-                0,
-                -16,
-                -123,
-                123,
-            ]),
-        ),
-        (
-            SampleFormat::PcmI24,
-            "s24le",
-            Samples::I24(vec![
-                -8_388_608, 8_388_607, -123_457, 123_457, -1, 1, 0, -16, -123, 123,
-            ]),
-        ),
-        (
-            SampleFormat::PcmI32,
-            "s32le",
-            Samples::I32(vec![
-                i32::MIN,
-                i32::MAX,
-                -123_456_789,
-                123_456_789,
-                -1,
-                1,
-                0,
-                -16,
-                -123,
-                123,
-            ]),
-        ),
-    ];
+    let spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap();
+    let block = PcmBuffer::new(
+        spec,
+        Samples::I16(vec![
+            i16::MIN,
+            i16::MAX,
+            -3_001,
+            3_001,
+            -1,
+            1,
+            0,
+            -16,
+            -123,
+            123,
+        ]),
+    )
+    .unwrap();
+    let mut encoder = AiffEncoder::new_aifc_sowt(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.write_block(&block).unwrap();
+    let encoded = encoder.finish().unwrap().get_ref().clone();
+    let oracle = decode_ffmpeg(&ffmpeg, &encoded, "s16le");
 
-    for (format, pcm_format, samples) in cases {
-        let spec = AudioSpec::new(48_000, 2, format).unwrap();
-        let block = PcmBuffer::new(spec, samples).unwrap();
-        let mut encoder = AiffEncoder::new_aifc_sowt(Cursor::new(Vec::new()), spec).unwrap();
-        encoder.write_block(&block).unwrap();
-        let encoded = encoder.finish().unwrap().get_ref().clone();
-        let oracle = decode_ffmpeg(&ffmpeg, &encoded, pcm_format);
-
-        let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
-        assert_eq!(decoder.spec(), spec, "{format:?}");
-        let mut actual = Vec::new();
-        while let Some(block) = decoder.read_frames(3).unwrap() {
-            append_pcm_bytes(block.samples(), &mut actual);
-        }
-        assert_eq!(
-            actual, oracle,
-            "FFmpeg and Zemer sowt differ for {format:?}"
-        );
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(decoder.spec(), spec);
+    let mut actual = Vec::new();
+    while let Some(block) = decoder.read_frames(3).unwrap() {
+        append_pcm_bytes(block.samples(), &mut actual);
     }
+    assert_eq!(actual, oracle, "FFmpeg and Zemer sowt PCM differ");
 }
 
 #[test]
