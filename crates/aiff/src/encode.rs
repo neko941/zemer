@@ -1118,19 +1118,29 @@ mod tests {
     #[test]
     fn aifc_dwvw_round_trips_interleaved_channels_across_blocks() {
         let spec = AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap();
-        let first = PcmBuffer::new(spec, Samples::I16(vec![-32_768, 32_767, -1, 1])).unwrap();
-        let second = PcmBuffer::new(spec, Samples::I16(vec![1234, -4567, 0, 0])).unwrap();
+        let samples = [
+            -30_000, 28_000, -25_000, -28_000, -16_000, 19_000, -8_000, -19_000, -1_000, 9_000, 0,
+            -9_000, 1_000, 3_000, 8_000, -3_000, 16_000, 15_000, 25_000, -15_000, 30_000, 27_000,
+            1_234, -27_000, -2_345, 5_555, 6_789, -5_555, -9_876, 11_111, 22_222, -11_111, -11_111,
+            2_222,
+        ];
         let mut encoder = AiffEncoder::new_aifc_dwvw(Cursor::new(Vec::new()), spec).unwrap();
-        encoder.write_block(&first).unwrap();
-        encoder.write_block(&second).unwrap();
+        for block in [&samples[..10], &samples[10..24], &samples[24..]] {
+            encoder
+                .write_block(&PcmBuffer::new(spec, Samples::I16(block.to_vec())).unwrap())
+                .unwrap();
+        }
         let file = encoder.finish().unwrap().get_ref().clone();
         assert!(file.windows(4).any(|window| window == b"DWVW"));
 
         let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
-        assert_eq!(
-            decoder.read_frames(4).unwrap().unwrap().samples(),
-            &Samples::I16(vec![-32_768, 32_767, -1, 1, 1234, -4567, 0, 0,])
-        );
-        assert!(decoder.read_frames(1).unwrap().is_none());
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_frames(5).unwrap() {
+            let Samples::I16(block) = block.samples() else {
+                panic!("AIFC DWVW sample format changed during decode");
+            };
+            decoded.extend_from_slice(block);
+        }
+        assert_eq!(decoded, samples);
     }
 }
