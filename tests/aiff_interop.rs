@@ -267,7 +267,18 @@ fn encodes_aifc_sowt_pcm_compatible_with_ffmpeg() {
         (
             SampleFormat::PcmI16,
             "s16le",
-            Samples::I16(vec![i16::MIN, i16::MAX, -3_001, 3_001, -1, 1, 0, -16, -123, 123]),
+            Samples::I16(vec![
+                i16::MIN,
+                i16::MAX,
+                -3_001,
+                3_001,
+                -1,
+                1,
+                0,
+                -16,
+                -123,
+                123,
+            ]),
         ),
         (
             SampleFormat::PcmI24,
@@ -308,7 +319,10 @@ fn encodes_aifc_sowt_pcm_compatible_with_ffmpeg() {
         while let Some(block) = decoder.read_frames(3).unwrap() {
             append_pcm_bytes(block.samples(), &mut actual);
         }
-        assert_eq!(actual, oracle, "FFmpeg and Zemer sowt differ for {format:?}");
+        assert_eq!(
+            actual, oracle,
+            "FFmpeg and Zemer sowt differ for {format:?}"
+        );
     }
 }
 

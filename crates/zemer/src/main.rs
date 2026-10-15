@@ -664,7 +664,9 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         || (valid_bits.is_some()
             && !matches!(
                 format,
-                OutputFormat::Aiff | OutputFormat::Aifc | OutputFormat::AifcDwvw
+                OutputFormat::Aiff
+                    | OutputFormat::Aifc
+                    | OutputFormat::AifcDwvw
                     | OutputFormat::AifcSowt
             ))
     {

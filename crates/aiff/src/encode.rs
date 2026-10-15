@@ -719,7 +719,11 @@ impl<W: Write + Seek> AiffEncoder<W> {
                     } else {
                         sample.to_be_bytes()
                     };
-                    bytes.extend_from_slice(if self.sowt { &bytes24[..3] } else { &bytes24[1..] });
+                    bytes.extend_from_slice(if self.sowt {
+                        &bytes24[..3]
+                    } else {
+                        &bytes24[1..]
+                    });
                 }
             }
             Samples::I32(values) => {

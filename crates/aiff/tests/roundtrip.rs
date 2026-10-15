@@ -41,13 +41,17 @@ fn aifc_sowt_writer_round_trips_integer_depths_and_emits_little_endian_pcm() {
             SampleFormat::PcmI24,
             Samples::I24(vec![-8_388_608, -1, 0, 8_388_607]),
             24,
-            vec![0x00, 0x00, 0x80, 0xff, 0xff, 0xff, 0, 0, 0, 0xff, 0xff, 0x7f],
+            vec![
+                0x00, 0x00, 0x80, 0xff, 0xff, 0xff, 0, 0, 0, 0xff, 0xff, 0x7f,
+            ],
         ),
         (
             SampleFormat::PcmI32,
             Samples::I32(vec![i32::MIN, -1, 0, i32::MAX]),
             32,
-            vec![0, 0, 0, 0x80, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x7f],
+            vec![
+                0, 0, 0, 0x80, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x7f,
+            ],
         ),
     ];
 
