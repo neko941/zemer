@@ -89,14 +89,16 @@ fn encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg() {
     let cases = [
         (
             SampleFormat::PcmU8,
-            8,
             "u8",
+            1,
+            1,
             Samples::U8(vec![0, 255, 1, 128, 127, 128, 17, 231, 63, 192]),
         ),
         (
             SampleFormat::PcmI16,
-            12,
             "s16le",
+            2,
+            9,
             Samples::I16(vec![
                 i16::MIN,
                 i16::MAX,
@@ -112,16 +114,18 @@ fn encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg() {
         ),
         (
             SampleFormat::PcmI24,
-            20,
             "s24le",
+            3,
+            17,
             Samples::I24(vec![
                 -8_388_608, 8_388_607, -123_457, 123_457, -1, 1, 0, -16, -123, 123,
             ]),
         ),
         (
             SampleFormat::PcmI32,
-            28,
             "s32le",
+            4,
+            25,
             Samples::I32(vec![
                 i32::MIN,
                 i32::MAX,
@@ -137,23 +141,31 @@ fn encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg() {
         ),
     ];
 
-    for (format, valid_bits, pcm_format, samples) in cases {
+    for (format, pcm_format, bytes_per_sample, first_valid_bits, samples) in cases {
         let spec = AudioSpec::new(48_000, 2, format).unwrap();
         let block = PcmBuffer::new(spec, samples).unwrap();
-        let mut encoder =
-            AiffEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), spec, valid_bits)
-                .unwrap();
-        encoder.write_block(&block).unwrap();
-        let encoded = encoder.finish().unwrap().get_ref().clone();
-        let oracle = decode_ffmpeg(&ffmpeg, &encoded, pcm_format);
+        let last_valid_bits = first_valid_bits + 7;
+        for valid_bits in first_valid_bits..=last_valid_bits {
+            let mut encoder =
+                AiffEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), spec, valid_bits)
+                    .unwrap();
+            encoder.write_block(&block).unwrap();
+            let encoded = encoder.finish().unwrap().get_ref().clone();
+            let oracle = decode_ffmpeg(&ffmpeg, &encoded, pcm_format);
 
-        let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
-        assert_eq!(decoder.spec(), spec, "{format:?}, {valid_bits} valid bits");
-        let mut actual = Vec::new();
-        while let Some(block) = decoder.read_frames(3).unwrap() {
-            append_pcm_bytes(block.samples(), &mut actual);
+            let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+            assert_eq!(decoder.spec(), spec, "{format:?}, {valid_bits} valid bits");
+            let mut actual = Vec::new();
+            while let Some(block) = decoder.read_frames(3).unwrap() {
+                append_pcm_bytes(block.samples(), &mut actual);
+            }
+            assert_eq!(
+                actual.len(),
+                block.samples().len() * bytes_per_sample,
+                "{format:?}, {valid_bits} valid bits frame count"
+            );
+            assert_eq!(actual, oracle, "{format:?}, {valid_bits} valid bits");
         }
-        assert_eq!(actual, oracle, "{format:?}, {valid_bits} valid bits");
     }
 }
 
