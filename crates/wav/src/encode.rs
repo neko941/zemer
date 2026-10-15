@@ -193,7 +193,7 @@ impl<W: Write + Seek> WavWriter<W> {
         let extensible = spec.speaker_mask().is_some();
         let non_pcm = legacy_tag != 1;
         let riff_overhead = (if extensible { 60_u64 } else { 36_u64 })
-            + if non_pcm && !extensible { 14 } else { 0 }
+            + if non_pcm && !extensible { 2 } else { 0 }
             + if non_pcm { 12 } else { 0 }
             + if container == WavContainer::Rf64 {
                 36
@@ -873,9 +873,10 @@ mod tests {
         ] {
             let spec = AudioSpec::new(48_000, 2, format).unwrap();
             let audio = PcmBuffer::new(spec, samples).unwrap();
-            let bytes = super::write_wav(Cursor::new(Vec::new()), &audio)
-                .unwrap()
-                .into_inner();
+            let mut writer = WavWriter::new(Cursor::new(Vec::new()), spec).unwrap();
+            assert_eq!(writer.riff_overhead, 50);
+            writer.write_block(&audio).unwrap();
+            let bytes = writer.finish().unwrap().into_inner();
 
             assert_eq!(&bytes[12..16], b"fmt ");
             assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 18);
@@ -895,9 +896,10 @@ mod tests {
         let spec =
             AudioSpec::new_with_speaker_mask(48_000, 2, SampleFormat::Float32, Some(3)).unwrap();
         let audio = PcmBuffer::new(spec, Samples::F32(vec![0.25, -0.5])).unwrap();
-        let bytes = super::write_wav(Cursor::new(Vec::new()), &audio)
-            .unwrap()
-            .into_inner();
+        let mut writer = WavWriter::new(Cursor::new(Vec::new()), spec).unwrap();
+        assert_eq!(writer.riff_overhead, 72);
+        writer.write_block(&audio).unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
 
         assert_eq!(&bytes[60..64], b"fact");
         assert_eq!(u32::from_le_bytes(bytes[68..72].try_into().unwrap()), 1);
@@ -1030,6 +1032,7 @@ mod tests {
         let mut writer =
             WavWriter::new_with_container(SparseWriter::default(), spec, WavContainer::Rf64)
                 .unwrap();
+        assert_eq!(writer.riff_overhead, 86);
         let data_bytes = (u64::from(u32::MAX) + 1) * 4;
         let data_start = writer.data_size_offset + 4;
         writer.data_bytes = data_bytes;
