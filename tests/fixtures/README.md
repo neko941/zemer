@@ -679,9 +679,9 @@ PCM SHA-256: mono `e5b640b07c28213fd7af23b3c8fce06994ee358d8e3726d32ff80fd7bec32
 stereo `53b982b4f9d52040dffeb3f36b6e8a99fbd8fa47e5ec0a3ec8ee270ec6c958a5`.
 
 The ignored `tests/aiff_interop.rs::encodes_aifc_ima4_compatible_with_ffmpeg`
-test feeds streamed stereo PCM through Zemer's IMA4 encoder, decodes the
-result independently with FFmpeg, and requires exact agreement between the
-two decoders, including the final padded packet. Set `ZEMER_FFMPEG` to the
+test feeds streamed mono and stereo PCM through Zemer's IMA4 encoder, decodes
+the results independently with FFmpeg, and requires exact agreement between
+the two decoders, including the final padded packet. Set `ZEMER_FFMPEG` to the
 FFmpeg executable and run:
 
 ```sh

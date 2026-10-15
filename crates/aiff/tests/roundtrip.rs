@@ -719,6 +719,17 @@ fn decodes_interleaved_stereo_ffmpeg_ima4_aifc_against_pcm_oracle() {
 }
 
 #[test]
+fn aifc_ima4_rejects_channel_counts_outside_mono_and_stereo() {
+    let spec = AudioSpec::new(8_000, 3, SampleFormat::PcmI16).unwrap();
+    assert!(AiffEncoder::new_aifc_ima4(Cursor::new(Vec::new()), spec).is_err());
+
+    let mut bytes = aifc(b"ima4", 16, &[0; 3 * 34]);
+    bytes[32..34].copy_from_slice(&3_u16.to_be_bytes());
+    bytes[34..38].copy_from_slice(&1_u32.to_be_bytes());
+    assert!(AiffDecoder::new(Cursor::new(bytes)).is_err());
+}
+
+#[test]
 fn ima4_encoder_pads_the_final_packet_and_streams_across_input_blocks() {
     let spec = AudioSpec::new(8_000, 2, SampleFormat::PcmI16).unwrap();
     let mut encoder = AiffEncoder::new_aifc_ima4(Cursor::new(Vec::new()), spec).unwrap();

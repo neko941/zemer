@@ -247,9 +247,13 @@ impl<W: Write + Seek> AiffEncoder<W> {
             _ => None,
         };
         validate_metadata(metadata)?;
-        if ima4 && (kind != AiffKind::Aifc || spec.sample_format() != SampleFormat::PcmI16) {
+        if ima4
+            && (kind != AiffKind::Aifc
+                || !(1..=2).contains(&spec.channels())
+                || spec.sample_format() != SampleFormat::PcmI16)
+        {
             return Err(AudioError::InvalidData(
-                "AIFC IMA4 encoding requires signed 16-bit PCM input",
+                "AIFC IMA4 encoding requires mono/stereo signed 16-bit PCM input",
             ));
         }
         if dwvw_enabled
