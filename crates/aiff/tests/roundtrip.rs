@@ -1,6 +1,9 @@
 use std::io::Cursor;
 
-use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker, G726Rate, rewrite_metadata};
+use aiff::{
+    AiffAudioRecording, AiffComment, AiffDecoder, AiffEncoder, AiffMarker, G726Rate,
+    rewrite_metadata,
+};
 use g711::{G711Encoding, decode_alaw, decode_mulaw, encode_alaw, encode_mulaw};
 use g726::{G726Decoder, G726Encoder, G726Packing};
 use zemer_core::{
@@ -915,6 +918,35 @@ fn decoder_rejects_duplicate_copyright_chunks() {
     append_form_chunk(&mut bytes, b"(c) ", b"first");
     append_form_chunk(&mut bytes, b"(c) ", b"second");
     assert!(AiffDecoder::new(Cursor::new(bytes)).is_err());
+}
+
+#[test]
+fn aifc_audio_recording_roundtrips_and_rejects_invalid_chunks() {
+    let spec = AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap();
+    let recording = AiffAudioRecording {
+        channel_status: std::array::from_fn(|index| index as u8),
+    };
+    let mut encoder = AiffEncoder::new_aifc(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_audio_recording(&recording).unwrap();
+    let mut bytes = encoder.finish().unwrap().get_ref().clone();
+    assert_eq!(chunk_body(&bytes, b"AESD"), &recording.channel_status);
+    assert_eq!(
+        AiffDecoder::new(Cursor::new(bytes.clone()))
+            .unwrap()
+            .audio_recording(),
+        Some(&recording)
+    );
+
+    append_form_chunk(&mut bytes, b"AESD", &recording.channel_status);
+    assert!(AiffDecoder::new(Cursor::new(bytes)).is_err());
+
+    let mut empty = AiffEncoder::new_aifc(Cursor::new(Vec::new()), spec).unwrap();
+    let mut bytes = empty.finish().unwrap().get_ref().clone();
+    append_form_chunk(&mut bytes, b"AESD", &[0; 23]);
+    assert!(AiffDecoder::new(Cursor::new(bytes)).is_err());
+
+    let mut encoder = AiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    assert!(encoder.set_audio_recording(&recording).is_err());
 }
 
 #[test]

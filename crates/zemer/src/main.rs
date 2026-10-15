@@ -8,7 +8,9 @@ use std::{
     process::ExitCode,
 };
 
-use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffInstrument, AiffMarker, G726Rate};
+use aiff::{
+    AiffAudioRecording, AiffComment, AiffDecoder, AiffEncoder, AiffInstrument, AiffMarker, G726Rate,
+};
 use au::{AuDecoder, AuEncoder};
 use dsdiff::{DsdiffDecoder, DsdiffEncoder};
 use dsf::{DsfDecoder, DsfEncoder};
@@ -46,6 +48,7 @@ struct AudioInput {
     aiff_comments: Option<Vec<AiffComment>>,
     aiff_markers: Option<Vec<AiffMarker>>,
     aiff_instrument: Option<AiffInstrument>,
+    aiff_audio_recording: Option<AiffAudioRecording>,
     aiff_id3_tag: Option<Vec<u8>>,
     au_annotation: Option<Vec<u8>>,
 }
@@ -705,6 +708,7 @@ fn convert_audio(
         aiff_comments,
         aiff_markers,
         aiff_instrument,
+        aiff_audio_recording,
         aiff_id3_tag,
         au_annotation,
         ..
@@ -872,6 +876,11 @@ fn convert_audio(
                     AiffEncoder::new_aifc(output_file, spec)
                 }
                 .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(recording) = &aiff_audio_recording {
+                    encoder
+                        .set_audio_recording(recording)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
                 if let Some(tag) = &aiff_id3_tag {
                     encoder
                         .set_id3_tag(tag)
@@ -948,6 +957,11 @@ fn convert_audio(
                     decoder.metadata(),
                 )
                 .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(recording) = &aiff_audio_recording {
+                    encoder
+                        .set_audio_recording(recording)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
                 if let Some(tag) = &aiff_id3_tag {
                     encoder
                         .set_id3_tag(tag)
@@ -977,6 +991,11 @@ fn convert_audio(
                 let mut encoder =
                     AiffEncoder::new_aifc_ima4_with_metadata(output_file, spec, decoder.metadata())
                         .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(recording) = &aiff_audio_recording {
+                    encoder
+                        .set_audio_recording(recording)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
                 if let Some(tag) = &aiff_id3_tag {
                     encoder
                         .set_id3_tag(tag)
@@ -1017,6 +1036,11 @@ fn convert_audio(
                     decoder.metadata(),
                 )
                 .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(recording) = &aiff_audio_recording {
+                    encoder
+                        .set_audio_recording(recording)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
                 if let Some(tag) = &aiff_id3_tag {
                     encoder
                         .set_id3_tag(tag)
@@ -1050,6 +1074,11 @@ fn convert_audio(
                     valid_bits,
                 )
                 .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(recording) = &aiff_audio_recording {
+                    encoder
+                        .set_audio_recording(recording)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
                 if let Some(tag) = &aiff_id3_tag {
                     encoder
                         .set_id3_tag(tag)
@@ -1482,6 +1511,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_comments: None,
             aiff_markers: None,
             aiff_instrument: None,
+            aiff_audio_recording: None,
             aiff_id3_tag: None,
             au_annotation: Some(annotation),
         })
@@ -1494,6 +1524,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_comments: None,
             aiff_markers: None,
             aiff_instrument: None,
+            aiff_audio_recording: None,
             aiff_id3_tag: None,
             au_annotation: None,
         })
@@ -1519,6 +1550,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
                 aiff_comments: None,
                 aiff_markers: None,
                 aiff_instrument: None,
+                aiff_audio_recording: None,
                 aiff_id3_tag: None,
                 au_annotation: None,
             })
@@ -1532,6 +1564,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
                 aiff_comments: None,
                 aiff_markers: None,
                 aiff_instrument: None,
+                aiff_audio_recording: None,
                 aiff_id3_tag: None,
                 au_annotation: None,
             })
@@ -1546,6 +1579,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_comments: None,
             aiff_markers: None,
             aiff_instrument: None,
+            aiff_audio_recording: None,
             aiff_id3_tag: None,
             au_annotation: None,
         })
@@ -1554,6 +1588,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
         let format = if decoder.is_aifc() { "aifc" } else { "aiff" };
         let id3_tag = decoder.id3_tag().map(<[u8]>::to_vec);
         let instrument = decoder.instrument().cloned();
+        let audio_recording = decoder.audio_recording().copied();
         let mut comments = Vec::new();
         comments
             .try_reserve_exact(decoder.comments().len())
@@ -1575,6 +1610,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_comments: (!comments.is_empty()).then_some(comments),
             aiff_markers: (!markers.is_empty()).then_some(markers),
             aiff_instrument: instrument,
+            aiff_audio_recording: audio_recording,
             aiff_id3_tag: id3_tag,
             au_annotation: None,
         })
@@ -1588,6 +1624,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_comments: None,
             aiff_markers: None,
             aiff_instrument: None,
+            aiff_audio_recording: None,
             aiff_id3_tag: None,
             au_annotation: None,
         })

@@ -10,6 +10,7 @@ use id3::parse_id3_tag;
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::G726Rate;
+use crate::audio_recording::{AiffAudioRecording, parse_audio_recording};
 use crate::comment::{AiffComment, parse_comments};
 use crate::dwvw_spool::map_dwvw_error;
 use crate::instrument::{AiffInstrument, parse_instrument, validate_instrument_markers};
@@ -41,6 +42,7 @@ pub struct AiffDecoder<R> {
     comments: Vec<AiffComment>,
     markers: Vec<AiffMarker>,
     instrument: Option<AiffInstrument>,
+    audio_recording: Option<AiffAudioRecording>,
     aifc: bool,
     encoding: Encoding,
     bits: u16,
@@ -98,6 +100,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
         let mut comments = None;
         let mut markers = None;
         let mut instrument = None;
+        let mut audio_recording = None;
         let mut g726_rate_hint = None;
         let mut metadata_bytes = 0_u64;
         while reader.stream_position()? < file_end {
@@ -300,6 +303,22 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     reader.read_exact(&mut bytes)?;
                     instrument = Some(parse_instrument(&bytes)?);
                 }
+                b"AESD" if aifc => {
+                    if audio_recording.is_some() || size != 24 {
+                        return Err(AudioError::InvalidFormat(
+                            "invalid or duplicate AIFF AESD chunk",
+                        ));
+                    }
+                    metadata_bytes = metadata_bytes
+                        .checked_add(size)
+                        .ok_or(AudioError::InvalidFormat("AIFF metadata size overflow"))?;
+                    if metadata_bytes > MAX_METADATA_BYTES {
+                        return Err(AudioError::InvalidFormat("AIFF metadata exceeds 16 MiB"));
+                    }
+                    let mut bytes = [0; 24];
+                    reader.read_exact(&mut bytes)?;
+                    audio_recording = Some(parse_audio_recording(&bytes)?);
+                }
                 b"APPL" if size == 12 => {
                     let mut bytes = [0; 12];
                     reader.read_exact(&mut bytes)?;
@@ -472,6 +491,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
             comments: comments.unwrap_or_default(),
             markers,
             instrument,
+            audio_recording,
             aifc,
             encoding,
             bits,
@@ -509,6 +529,11 @@ impl<R: Read + Seek> AiffDecoder<R> {
     /// Returns the standard 20-byte AIFF/AIFC Instrument chunk, if present.
     pub fn instrument(&self) -> Option<&AiffInstrument> {
         self.instrument.as_ref()
+    }
+
+    /// Returns the fixed 24-byte AES channel-status payload, if present.
+    pub fn audio_recording(&self) -> Option<&AiffAudioRecording> {
+        self.audio_recording.as_ref()
     }
 
     fn read_samples(&mut self, samples: usize) -> Result<Samples, AudioError> {

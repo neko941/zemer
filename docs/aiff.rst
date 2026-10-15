@@ -82,6 +82,13 @@ the same chunk ID for a different structure. AIFF/AIFC CLI conversions carry
 the standard instrument chunk alongside markers and comments; metadata edits
 preserve it byte-for-byte.
 
+The optional AIFC ``AESD`` audio-recording chunk is exposed as
+``AiffAudioRecording``. Its AES channel-status data is retained as exactly 24
+raw bytes; the decoder rejects wrong-sized or duplicate chunks, and the encoder
+can write it with ``set_audio_recording``. CLI conversion between AIFC files
+preserves this chunk. Converting to AIFF omits it because ``AESD`` is an AIFC
+extension.
+
 For compatibility with McGill's ``digit0v0.aiff`` sample, the reader accepts
 an AIFC ``COMM`` size of 18 when the immediately following bytes are exactly the
 ``NONE`` compression code and its canonical ``not compressed`` name. It then
