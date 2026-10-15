@@ -29,6 +29,7 @@ dependencies = [
  "zemer-dsf",
  "zemer-flac",
  "zemer-g711",
+ "zemer-iso9660",
  "zemer-ogg",
  "zemer-vorbis",
  "zemer-wav",
@@ -129,6 +130,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zemer-iso9660"
+version = "0.7.0"
+
+[[package]]
 name = "zemer-metadata"
 version = "0.7.0"
 
@@ -154,6 +159,7 @@ dependencies = [
  "zemer-dwvw",
  "zemer-flac",
  "zemer-g711",
+ "zemer-iso9660",
  "zemer-ogg",
  "zemer-vorbis",
  "zemer-wav",

@@ -1,0 +1,12 @@
+[package]
+name = "zemer-iso9660"
+description = "Clean-room ISO 9660 image inspection and extraction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "iso9660"
+
+[dependencies]
