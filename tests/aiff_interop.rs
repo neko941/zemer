@@ -1,11 +1,11 @@
 use std::{
     fs::File,
-    io::{BufReader, Read, Write},
-    process::Command,
+    io::{BufReader, Cursor, Read, Write},
+    process::{Command, Stdio},
 };
 
-use aiff::AiffDecoder;
-use zemer_core::{AudioDecoder, AudioSpec, SampleFormat, Samples};
+use aiff::{AiffDecoder, AiffEncoder};
+use zemer_core::{AudioDecoder, AudioSpec, PcmBuffer, SampleFormat, Samples};
 
 fn append_pcm_bytes(samples: &Samples, output: &mut Vec<u8>) {
     match samples {
@@ -29,6 +29,57 @@ fn append_pcm_bytes(samples: &Samples, output: &mut Vec<u8>) {
 }
 
 const FRAMES: u64 = 23_493;
+
+#[test]
+#[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
+fn encodes_aifc_ima4_compatible_with_ffmpeg() {
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
+    let spec = AudioSpec::new(8_000, 2, SampleFormat::PcmI16).unwrap();
+    let frames = 391;
+    let samples: Vec<_> = (0..frames)
+        .flat_map(|frame| {
+            [0, 1].map(|channel| (((frame * (173 + channel * 19)) % 32_000) as i32 - 16_000) as i16)
+        })
+        .collect();
+    let mut encoder = AiffEncoder::new_aifc_ima4(Cursor::new(Vec::new()), spec).unwrap();
+    for (start, end) in [(0, 59), (59, 211), (211, frames)] {
+        let block =
+            PcmBuffer::new(spec, Samples::I16(samples[start * 2..end * 2].to_vec())).unwrap();
+        encoder.write_block(&block).unwrap();
+    }
+    let encoded = encoder.finish().unwrap().get_ref().clone();
+
+    let mut ffmpeg = Command::new(ffmpeg)
+        .args([
+            "-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-f", "s16le", "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    ffmpeg.stdin.take().unwrap().write_all(&encoded).unwrap();
+    let oracle = ffmpeg.wait_with_output().unwrap();
+    assert!(
+        oracle.status.success(),
+        "FFmpeg rejected Zemer's AIFC IMA4 output: {}",
+        String::from_utf8_lossy(&oracle.stderr)
+    );
+
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(decoder.spec(), spec);
+    let mut actual = Vec::new();
+    let mut decoded_frames = 0;
+    while let Some(block) = decoder.read_frames(37).unwrap() {
+        decoded_frames += block.frames();
+        append_pcm_bytes(block.samples(), &mut actual);
+    }
+    assert_eq!(decoded_frames, 7 * 64);
+    assert_eq!(
+        actual, oracle.stdout,
+        "FFmpeg and Zemer IMA4 decoders differ"
+    );
+}
 
 #[test]
 #[ignore = "requires McGill AIFF/AIFC samples and FFmpeg PCM oracles in ZEMER_AIFF_12BIT_* environment variables"]
