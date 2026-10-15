@@ -89,7 +89,7 @@ support for every file with that extension.
 | WMA and other legacy formats | Evaluate supported variants and dependencies | Encode only where clean-room scope and licensing permit | Evaluate separately |
 | DSF (`.dsf`) | DSF 1.01 raw one-bit/eight-bit DSD decode and encode for mono through 5.1 at 2.8224/5.6448 MHz; reads common ID3v2.2/v2.3/v2.4 text and writes common ID3v2.4 text | CLI inspection, same-format copy with complete bounded ID3 retention, text metadata edits that preserve opaque frames, and DSF/native DSD WavPack transcoding without PCM | Supported for the implemented DSF 1.01 profile; ID3v2.2 compressed tags are ignored as specified, and cross-container artwork transfer is a separate workflow |
 | DSDIFF (`.dff`) | Read raw DSD across the full 1–65,535-channel `CHNL` range and compressed DST (up to 64 channels at DSD64/128/256) with optional frame CRC validation, title/artist, general and typed `COMT` comments, channel IDs, and typed markers | Write raw DSD or compressed DST with a clean-room first-order predictor and valid mode-0 bypass fallback; same-format metadata edits preserve audio, typed metadata, and unchanged/unknown chunks | Partial: all three full 300-frame `DST_02_02` vectors and the first 10 frames of every available ISO vector pass bit-exactly; the ISO archive omits `DST_05` vectors. Independent marker/DST interoperability coverage and patent/legal clearance remain open. |
-| SACD DSD ISO | Evaluate TOC/area inspection and extraction of readable DSD tracks from user-supplied images | Image creation only if specification-based workflows and tests are practical | Deferred pending a lawful normative source, usable test-image rights, and an explicit image/sector model; no DRM circumvention, DST is a separate codec |
+| SACD DSD ISO | Evaluate TOC/area inspection and extraction of readable DSD tracks from user-supplied images | Image creation only if specification-based workflows and tests are practical | Deferred: no authorized normative Scarlet Book layout or test-image rights are established. Public Sony/Philips material is architectural, while SACD also uses content protection. Revisit only with a lawful sector/TOC specification and readable, authorized test images; no DRM circumvention. DST is a separate codec. |
 
 Read and write are separate capabilities: a format may be readable before an
 encoder is ready. Formats that depend on restricted, undocumented, or
@@ -109,9 +109,11 @@ platform-specific implementations may remain unsupported.
   compression scheme; cross-container DSF artwork transfer remains separate.
 - Inspect SACD/DSD ISO navigation, stereo and multichannel areas, track
   boundaries, timing, and metadata only after normative documentation and
-  fixture rights are established. Any future extraction must stream readable,
-  unencrypted content and reject protected or undocumented paths; see the
-  internal feasibility notes.
+  fixture rights are established. The public Philips/Sony overview does not
+  define the binary TOC/sector layout, and the Library of Congress notes that
+  Scarlet Book access and implementation guidance are unclear. Any future
+  extraction must stream readable, unencrypted content and reject protected or
+  undocumented paths; see `docs-internal/REFERENCES.md`.
 - Expand DST conformance coverage when additional lawfully distributable
   reference vectors become available; the three `DST_05` archive vectors are
   currently missing.
