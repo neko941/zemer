@@ -89,7 +89,6 @@ pub(super) fn validate_instrument(instrument: &AiffInstrument) -> Result<(), Aud
         || !(-50..=50).contains(&instrument.detune)
         || instrument.low_note > instrument.high_note
         || instrument.high_note > 127
-        || !(1..=127).contains(&instrument.low_velocity)
         || instrument.low_velocity > instrument.high_velocity
         || instrument.high_velocity > 127
     {
@@ -223,5 +222,34 @@ mod tests {
             },
         ];
         assert!(super::validate_instrument_markers(&instrument, &markers).is_err());
+    }
+
+    #[test]
+    fn accepts_typhoon_full_velocity_range_vector() {
+        let bytes = [
+            0x32, 0x02, 0x00, 0x7f, 0x00, 0x7f, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x02,
+            0x00, 0x01, 0x00, 0x01, 0x00, 0x02,
+        ];
+        let instrument = parse_instrument(&bytes).unwrap();
+        assert_eq!(instrument.base_note, 50);
+        assert_eq!(instrument.detune, 2);
+        assert_eq!(instrument.low_velocity, 0);
+        assert_eq!(instrument.high_velocity, 127);
+        let mut encoded = Vec::new();
+        write_instrument_chunk(&mut encoded, &instrument).unwrap();
+        assert_eq!(&encoded[8..], &bytes);
+        let markers = [
+            crate::AiffMarker {
+                id: 1,
+                position: 64,
+                name: b"loop start".to_vec(),
+            },
+            crate::AiffMarker {
+                id: 2,
+                position: 744,
+                name: b"loop end".to_vec(),
+            },
+        ];
+        super::validate_instrument_markers(&instrument, &markers).unwrap();
     }
 }

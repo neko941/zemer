@@ -63,10 +63,13 @@ original COMT and MARK chunks byte-for-byte.
 The typed ``AiffInstrument`` API reads and writes the standard 20-byte
 ``INST`` chunk. It exposes MIDI note and velocity ranges, signed cents detune,
 gain in decibels, and optional forward or forward/backward sustain and release
-loops. Active loops must refer to marker IDs in ``MARK``. Other ``INST`` chunk
-sizes are skipped because the Apple IIGS format uses the same chunk ID for a
-different structure. AIFF/AIFC CLI conversions carry the standard instrument
-chunk alongside markers and comments; metadata edits preserve it byte-for-byte.
+loops. Active loops must refer to marker IDs in ``MARK``. Although the AIFF
+specification gives a low velocity range of 1 through 127, the reader and writer
+also accept zero because Typhoon-generated sampler files use 0–127 for the full
+range. Other ``INST`` chunk sizes are skipped because the Apple IIGS format uses
+the same chunk ID for a different structure. AIFF/AIFC CLI conversions carry
+the standard instrument chunk alongside markers and comments; metadata edits
+preserve it byte-for-byte.
 
 For compatibility with McGill's ``digit0v0.aiff`` sample, the reader accepts
 an AIFC ``COMM`` size of 18 when the immediately following bytes are exactly the
