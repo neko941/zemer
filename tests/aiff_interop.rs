@@ -30,6 +30,26 @@ fn append_pcm_bytes(samples: &Samples, output: &mut Vec<u8>) {
 
 const FRAMES: u64 = 23_493;
 
+fn decode_ffmpeg(ffmpeg: &std::ffi::OsStr, encoded: &[u8], pcm_format: &str) -> Vec<u8> {
+    let mut child = Command::new(ffmpeg)
+        .args(["-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-f"])
+        .arg(pcm_format)
+        .arg("pipe:1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(encoded).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "FFmpeg rejected AIFF output: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    output.stdout
+}
+
 #[test]
 #[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
 fn encodes_aifc_ima4_compatible_with_ffmpeg() {
@@ -48,23 +68,7 @@ fn encodes_aifc_ima4_compatible_with_ffmpeg() {
         encoder.write_block(&block).unwrap();
     }
     let encoded = encoder.finish().unwrap().get_ref().clone();
-
-    let mut ffmpeg = Command::new(ffmpeg)
-        .args([
-            "-v", "error", "-i", "pipe:0", "-map", "0:a:0", "-f", "s16le", "pipe:1",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    ffmpeg.stdin.take().unwrap().write_all(&encoded).unwrap();
-    let oracle = ffmpeg.wait_with_output().unwrap();
-    assert!(
-        oracle.status.success(),
-        "FFmpeg rejected Zemer's AIFC IMA4 output: {}",
-        String::from_utf8_lossy(&oracle.stderr)
-    );
+    let oracle = decode_ffmpeg(&ffmpeg, &encoded, "s16le");
 
     let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
     assert_eq!(decoder.spec(), spec);
@@ -75,10 +79,82 @@ fn encodes_aifc_ima4_compatible_with_ffmpeg() {
         append_pcm_bytes(block.samples(), &mut actual);
     }
     assert_eq!(decoded_frames, 7 * 64);
-    assert_eq!(
-        actual, oracle.stdout,
-        "FFmpeg and Zemer IMA4 decoders differ"
-    );
+    assert_eq!(actual, oracle, "FFmpeg and Zemer IMA4 decoders differ");
+}
+
+#[test]
+#[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
+fn encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg() {
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
+    let cases = [
+        (
+            SampleFormat::PcmU8,
+            8,
+            "u8",
+            Samples::U8(vec![0, 255, 1, 128, 127, 128, 17, 231, 63, 192]),
+        ),
+        (
+            SampleFormat::PcmI16,
+            12,
+            "s16le",
+            Samples::I16(vec![
+                i16::MIN,
+                i16::MAX,
+                -3_001,
+                3_001,
+                -1,
+                1,
+                0,
+                -16,
+                -123,
+                123,
+            ]),
+        ),
+        (
+            SampleFormat::PcmI24,
+            20,
+            "s24le",
+            Samples::I24(vec![
+                -8_388_608, 8_388_607, -123_457, 123_457, -1, 1, 0, -16, -123, 123,
+            ]),
+        ),
+        (
+            SampleFormat::PcmI32,
+            28,
+            "s32le",
+            Samples::I32(vec![
+                i32::MIN,
+                i32::MAX,
+                -123_456_789,
+                123_456_789,
+                -1,
+                1,
+                0,
+                -16,
+                -123,
+                123,
+            ]),
+        ),
+    ];
+
+    for (format, valid_bits, pcm_format, samples) in cases {
+        let spec = AudioSpec::new(48_000, 2, format).unwrap();
+        let block = PcmBuffer::new(spec, samples).unwrap();
+        let mut encoder =
+            AiffEncoder::new_with_bits_per_sample(Cursor::new(Vec::new()), spec, valid_bits)
+                .unwrap();
+        encoder.write_block(&block).unwrap();
+        let encoded = encoder.finish().unwrap().get_ref().clone();
+        let oracle = decode_ffmpeg(&ffmpeg, &encoded, pcm_format);
+
+        let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+        assert_eq!(decoder.spec(), spec, "{format:?}, {valid_bits} valid bits");
+        let mut actual = Vec::new();
+        while let Some(block) = decoder.read_frames(3).unwrap() {
+            append_pcm_bytes(block.samples(), &mut actual);
+        }
+        assert_eq!(actual, oracle, "{format:?}, {valid_bits} valid bits");
+    }
 }
 
 #[test]

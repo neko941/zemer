@@ -675,3 +675,13 @@ FFmpeg executable and run:
 ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
   encodes_aifc_ima4_compatible_with_ffmpeg -- --ignored --exact
 ```
+
+The ignored `encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg` test performs
+the same cross-decoder check for AIFF PCM: unsigned 8-bit and 12/20/28 valid
+bits in 16/24/32-bit containers, using stereo samples and odd frame counts.
+Run it with:
+
+```sh
+ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
+  encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg -- --ignored --exact
+```
