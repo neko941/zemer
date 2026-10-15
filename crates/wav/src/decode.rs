@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::encode::WavContainer;
+use crate::info::key_from_id;
 use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{decode_alaw, decode_mulaw};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
@@ -796,15 +797,7 @@ fn parse_list_info<R: Read + Seek>(
                 "INFO subchunk exceeds LIST boundary",
             ));
         }
-        let key = match &header[..4] {
-            b"INAM" => Some("TITLE"),
-            b"IART" => Some("ARTIST"),
-            b"IPRD" => Some("ALBUM"),
-            b"ICRD" => Some("DATE"),
-            b"IGNR" => Some("GENRE"),
-            b"ICMT" => Some("COMMENT"),
-            _ => None,
-        };
+        let key = key_from_id(header[..4].try_into().unwrap());
         if let Some(key) = key {
             if size > MAX_INFO_VALUE {
                 return Err(AudioError::InvalidFormat(

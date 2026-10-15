@@ -7,7 +7,8 @@ use zemer_core::{AudioError, Metadata};
 
 use crate::{
     decode::{MAX_DS64_CHUNK, parse_ds64},
-    encode::{is_managed_info_id, metadata_chunk_size, write_info_chunk, write_info_subchunks},
+    encode::{metadata_chunk_size, write_info_chunk, write_info_subchunks},
+    info::is_managed_id,
 };
 
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
@@ -260,7 +261,7 @@ fn rewrite_list_chunk<R: Read + Seek, W: Write + Seek>(
                 "INFO subchunk exceeds LIST boundary",
             ));
         }
-        if is_managed_info_id(subchunk_header[..4].try_into().unwrap()) {
+        if is_managed_id(subchunk_header[..4].try_into().unwrap()) {
             reader.seek(SeekFrom::Current(padded_size as i64))?;
         } else {
             writer.write_all(&subchunk_header)?;
@@ -351,6 +352,7 @@ mod tests {
         chunk(&mut bytes, b"JUNK", &[0x31, 0x32, 0x33], 0xa5);
         let mut info = b"INFO".to_vec();
         chunk(&mut info, b"INAM", b"Old\0", 0);
+        chunk(&mut info, b"IENG", b"Old engineer\0", 0);
         chunk(&mut info, b"XTRA", &[0x41, 0x42, 0x43], 0xcc);
         chunk(&mut bytes, b"LIST", &info, 0);
         chunk(&mut bytes, b"data", &[0x80, 0xff], 0);
@@ -442,6 +444,20 @@ mod tests {
             decoder.read_frames(2).unwrap().unwrap().samples(),
             &Samples::U8(vec![0x80, 0xff])
         );
+    }
+
+    #[test]
+    fn metadata_rewrite_replaces_all_registered_info_fields() {
+        let original = riff_file();
+        let mut metadata = Metadata::default();
+        metadata.insert("engineer", "New engineer");
+
+        let rewritten = rewrite_metadata(Cursor::new(original), Cursor::new(Vec::new()), &metadata)
+            .unwrap()
+            .into_inner();
+        let decoder = WavDecoder::new(Cursor::new(rewritten.clone())).unwrap();
+        assert_eq!(decoder.metadata().values("ENGINEER"), ["New engineer"]);
+        assert!(rewritten.windows(4).any(|window| window == b"IENG"));
     }
 
     #[test]
