@@ -2,7 +2,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use zemer_core::{AudioError, DsdBuffer, DsdDecoder, DsdSpec, Metadata};
 
-use crate::id3::read_metadata;
+use id3::read_tag_at_end;
 
 const DSD_HEADER_SIZE: u64 = 28;
 const FMT_CHUNK_SIZE: u64 = 52;
@@ -100,7 +100,7 @@ impl<R: Read + Seek> DsfDecoder<R> {
         let (metadata, id3_tag) = if metadata_offset == 0 {
             (Metadata::default(), None)
         } else {
-            let (metadata, tag) = read_metadata(&mut reader, metadata_offset, file_size)?;
+            let (metadata, tag) = read_tag_at_end(&mut reader, metadata_offset, file_size)?;
             (metadata, Some(tag))
         };
         reader.seek(SeekFrom::Start(DSD_HEADER_SIZE + FMT_CHUNK_SIZE + 12))?;

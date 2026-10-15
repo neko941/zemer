@@ -37,6 +37,14 @@ AIFF-C output includes the required ``FVER`` chunk. Both readers and writers
 map ``NAME``, ``AUTH``, and repeated ``ANNO`` chunks to TITLE, ARTIST, and
 COMMENT.
 
+The reader also accepts one ``ID3 `` chunk as a compatibility extension. The
+chunk payload is a bounded ID3v2 tag parsed by the reusable ``zemer-id3``
+crate. Common text fields map to ``Metadata``; other frames remain opaque when
+an AIFF/AIFC file is copied or its text tags are edited. The encoder writes an
+ID3 chunk for metadata fields that have no native AIFF text chunk. ID3-in-AIFF
+is outside the AIFF chunk set described by the McGill specification, so files
+that require strict AIFF interoperability should use the native text chunks.
+
 The typed ``AiffComment`` API reads and writes the AIFF ``COMT`` chunk while
 retaining each record's 1904-epoch timestamp, signed marker ID, and raw text
 bytes. The generic metadata map does not flatten these records, so timestamp
@@ -65,8 +73,9 @@ frames. Unknown chunks are skipped. AIFC MACE and other compression codes are
 not implemented; the writer does not preserve unknown chunks from a source
 file.
 ``rewrite_metadata`` replaces the supported text chunks while copying the
-audio bytes and unrecognized chunks without decoding them. It also retains
-bytes after the FORM boundary.
+audio bytes and unrecognized chunks without decoding them. It updates a
+present ID3 chunk while retaining opaque frames, or adds one for non-native
+metadata. It also retains bytes after the FORM boundary.
 
 The optional ignored ``decodes_external_12_bit_aiff_and_aifc_against_pcm_oracles``
 test compares McGill/AFsp 12-bit AIFF and AIFC sample files with separate FFmpeg

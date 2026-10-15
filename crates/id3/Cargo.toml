@@ -1,0 +1,13 @@
+[package]
+name = "zemer-id3"
+description = "Bounded ID3v2 text metadata parsing and rewriting for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "id3"
+
+[dependencies]
+zemer-core.workspace = true

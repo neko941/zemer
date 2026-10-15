@@ -22,7 +22,8 @@ and G.711 A-law/μ-law; it writes AIFF integer PCM and AIFC integer/float/G.711
 profiles. AIFF text chunks map to shared title, artist, and comment metadata;
 typed comments and sample-frame markers are also exposed and writable.
 The shared ``zemer-g711`` crate provides the companding functions for WAVE and
-AIFF-C.
+AIFF-C. The shared ``zemer-id3`` crate provides bounded ID3 text parsing and
+rewriting for DSF and AIFF/AIFC's non-standard ``ID3 `` chunk.
 The ``zemer-dsf`` crate reads and writes raw DSF 1.01 DSD streams for its
 documented channel/rate profile and maps common ID3 text fields. The
 ``zemer-dsdiff`` crate reads raw and DST-compressed DSDIFF/DFF audio, writes

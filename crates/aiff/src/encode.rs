@@ -2,6 +2,7 @@ use std::io::{Seek, SeekFrom, Write};
 
 use g711::{G711Encoding, encode_alaw, encode_mulaw};
 use g726::{G726Encoder, G726Packing};
+use id3::{encode_metadata, parse_id3_tag, rewrite_metadata_tag};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::G726Rate;
@@ -19,6 +20,7 @@ pub struct AiffEncoder<W> {
     frames: u64,
     data_bytes: u64,
     metadata: Metadata,
+    id3_tag: Option<Vec<u8>>,
     comments: Vec<AiffComment>,
     markers: Vec<AiffMarker>,
     g711: Option<G711Encoding>,
@@ -349,6 +351,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             frames: 0,
             data_bytes: 8,
             metadata: Metadata::default(),
+            id3_tag: None,
             comments: Vec::new(),
             markers: Vec::new(),
             g711,
@@ -645,6 +648,24 @@ impl<W: Write + Seek> AiffEncoder<W> {
         }
     }
 
+    /// Copies an ID3 tag while retaining frames this crate does not interpret.
+    pub fn set_id3_tag(&mut self, tag: &[u8]) -> Result<(), AudioError> {
+        if self.frames != 0 || self.finished {
+            return Err(AudioError::InvalidData(
+                "AIFF ID3 tag must be set before audio samples",
+            ));
+        }
+        if tag.len() > 16 * 1024 * 1024 {
+            return Err(AudioError::InvalidData("AIFF ID3 tag exceeds 16 MiB"));
+        }
+        let metadata = parse_id3_tag(tag)?;
+        validate_metadata(&metadata)?;
+        validate_combined_metadata(&metadata, &self.comments, &self.markers)?;
+        self.metadata = metadata;
+        self.id3_tag = Some(tag.to_vec());
+        Ok(())
+    }
+
     fn finish_inner(&mut self) -> Result<(), AudioError> {
         if let Some(encoder) = &mut self.g726 {
             let bytes = encoder.finish();
@@ -678,17 +699,31 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 "AIFF marker position exceeds the sample-frame count",
             ));
         }
+        let id3_tag = match &self.id3_tag {
+            Some(tag) => rewrite_metadata_tag(tag, &self.metadata)?,
+            None => encode_metadata(&id3_metadata(&self.metadata))?,
+        };
+        add_metadata_bytes(
+            validate_combined_metadata(&self.metadata, &self.comments, &self.markers)?,
+            id3_tag.len() as u64,
+        )?;
         for (key, id) in [
             ("title", *b"NAME"),
             ("artist", *b"AUTH"),
             ("comment", *b"ANNO"),
         ] {
-            for value in self.metadata.values(key) {
-                if let Err(error) = write_text_chunk(&mut self.writer, &id, value) {
-                    self.poisoned = true;
-                    return Err(error);
+            let values = self.metadata.values(key);
+            if values.iter().all(|value| value.is_ascii()) {
+                for value in values {
+                    if let Err(error) = write_text_chunk(&mut self.writer, &id, value) {
+                        self.poisoned = true;
+                        return Err(error);
+                    }
                 }
             }
+        }
+        if !id3_tag.is_empty() {
+            write_id3_chunk(&mut self.writer, &id3_tag)?;
         }
         write_comments_chunk(&mut self.writer, &self.comments)?;
         write_markers_chunk(&mut self.writer, &self.markers)?;
@@ -729,6 +764,21 @@ pub(super) fn write_text_chunk(
     writer.write_all(&(value.len() as u32).to_be_bytes())?;
     writer.write_all(value.as_bytes())?;
     if value.len() & 1 != 0 {
+        writer.write_all(&[0])?;
+    }
+    Ok(())
+}
+
+fn write_id3_chunk(writer: &mut impl Write, tag: &[u8]) -> Result<(), AudioError> {
+    if tag.len() > 16 * 1024 * 1024 {
+        return Err(AudioError::InvalidData("AIFF ID3 tag exceeds 16 MiB"));
+    }
+    let size = u32::try_from(tag.len())
+        .map_err(|_| AudioError::InvalidData("AIFF ID3 tag exceeds its size limit"))?;
+    writer.write_all(b"ID3 ")?;
+    writer.write_all(&size.to_be_bytes())?;
+    writer.write_all(tag)?;
+    if size & 1 != 0 {
         writer.write_all(&[0])?;
     }
     Ok(())
@@ -777,30 +827,23 @@ pub(super) fn validate_metadata(metadata: &Metadata) -> Result<(), AudioError> {
             "AIFF supports one TITLE and one ARTIST value",
         ));
     }
-    if metadata.iter().any(|(key, _)| {
-        !matches!(
-            key.to_ascii_lowercase().as_str(),
-            "title" | "artist" | "comment"
-        )
+    if metadata.iter().any(|(key, values)| {
+        key.is_empty()
+            || key.len() > 1_048_576
+            || key.as_bytes().contains(&0)
+            || values.iter().any(|value| value.as_bytes().contains(&0))
+            || values.iter().any(|value| value.len() > 1_048_576)
     }) {
         return Err(AudioError::Unsupported(
-            "AIFF metadata supports TITLE, ARTIST, and COMMENT",
-        ));
-    }
-    if metadata.iter().any(|(_, values)| {
-        values
-            .iter()
-            .any(|value| !value.is_ascii() || value.len() > 1_048_576)
-    }) {
-        return Err(AudioError::Unsupported(
-            "AIFF metadata must be ASCII and at most 1 MiB per value",
+            "invalid or oversized AIFF metadata value",
         ));
     }
     let metadata_bytes = metadata
         .iter()
-        .flat_map(|(_, values)| values)
-        .try_fold(0_u64, |total, value| {
-            total.checked_add(value.len() as u64 + 9)
+        .try_fold(0_u64, |total, (key, values)| {
+            values.iter().try_fold(total, |total, value| {
+                total.checked_add(key.len() as u64 + value.len() as u64 + 9)
+            })
         })
         .ok_or(AudioError::InvalidData("AIFF metadata size overflow"))?;
     if metadata_bytes > 16 * 1024 * 1024 {
@@ -809,21 +852,44 @@ pub(super) fn validate_metadata(metadata: &Metadata) -> Result<(), AudioError> {
     Ok(())
 }
 
+pub(super) fn id3_metadata(metadata: &Metadata) -> Metadata {
+    let mut id3_metadata = metadata.clone();
+    for key in ["title", "artist", "comment"] {
+        if metadata.values(key).iter().all(|value| value.is_ascii()) {
+            id3_metadata.remove(key);
+        }
+    }
+    id3_metadata
+}
+
+pub(super) fn add_metadata_bytes(current: u64, size: u64) -> Result<u64, AudioError> {
+    current
+        .checked_add(size)
+        .filter(|&total| total <= 16 * 1024 * 1024)
+        .ok_or(AudioError::InvalidData("AIFF metadata exceeds 16 MiB"))
+}
+
 fn validate_combined_metadata(
     metadata: &Metadata,
     comments: &[AiffComment],
     markers: &[AiffMarker],
-) -> Result<(), AudioError> {
-    let text_size = metadata
+) -> Result<u64, AudioError> {
+    let text_size = ["title", "artist", "comment"]
         .iter()
-        .flat_map(|(_, values)| values)
-        .try_fold(0_u64, |size, value| {
-            size.checked_add(8 + value.len() as u64 + (value.len() & 1) as u64)
+        .try_fold(0_u64, |size, key| {
+            let values = metadata.values(key);
+            if values.iter().all(|value| value.is_ascii()) {
+                values.iter().try_fold(size, |size, value| {
+                    size.checked_add(8 + value.len() as u64 + (value.len() & 1) as u64)
+                })
+            } else {
+                Some(size)
+            }
         })
         .ok_or(AudioError::InvalidData("AIFF metadata size overflow"))?;
     let comment_size = validate_comments(comments)?;
     let marker_size = validate_markers(markers)?;
-    if text_size
+    let total_size = text_size
         .checked_add(if comments.is_empty() {
             0
         } else {
@@ -836,9 +902,22 @@ fn validate_combined_metadata(
                 marker_size + 8
             })
         })
-        .is_none_or(|size| size > 16 * 1024 * 1024)
-    {
+        .ok_or(AudioError::InvalidData("AIFF metadata size overflow"))?;
+    if total_size > 16 * 1024 * 1024 {
         return Err(AudioError::Unsupported("AIFF metadata exceeds 16 MiB"));
     }
-    Ok(())
+    Ok(total_size)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::add_metadata_bytes;
+
+    #[test]
+    fn aggregate_metadata_limit_includes_id3_and_native_chunks() {
+        let limit = 16 * 1024 * 1024;
+        assert_eq!(add_metadata_bytes(limit - 1, 1).unwrap(), limit);
+        assert!(add_metadata_bytes(limit, 1).is_err());
+        assert!(add_metadata_bytes(u64::MAX, 1).is_err());
+    }
 }

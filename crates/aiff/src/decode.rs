@@ -2,6 +2,7 @@ use std::io::{Read, Seek, SeekFrom};
 
 use g711::{decode_alaw, decode_mulaw};
 use g726::G726Decoder;
+use id3::parse_id3_tag;
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::G726Rate;
@@ -29,6 +30,7 @@ pub struct AiffDecoder<R> {
     reader: R,
     spec: AudioSpec,
     metadata: Metadata,
+    id3_tag: Option<Vec<u8>>,
     comments: Vec<AiffComment>,
     markers: Vec<AiffMarker>,
     aifc: bool,
@@ -78,7 +80,9 @@ impl<R: Read + Seek> AiffDecoder<R> {
         let mut common = None;
         let mut version = None;
         let mut sound = None;
-        let mut metadata = Metadata::default();
+        let mut native_metadata = Metadata::default();
+        let mut id3_metadata = None;
+        let mut id3_tag = None;
         let mut comments = None;
         let mut markers = None;
         let mut g726_rate_hint = None;
@@ -196,10 +200,33 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     }
                     let value = String::from_utf8(bytes).unwrap();
                     match &header[..4] {
-                        b"NAME" => metadata.insert("title", value),
-                        b"AUTH" => metadata.insert("artist", value),
-                        _ => metadata.insert("comment", value),
+                        b"NAME" => native_metadata.insert("title", value),
+                        b"AUTH" => native_metadata.insert("artist", value),
+                        _ => native_metadata.insert("comment", value),
                     }
+                }
+                b"ID3 " => {
+                    if id3_tag.is_some() || size == 0 {
+                        return Err(AudioError::InvalidFormat(
+                            "invalid or duplicate AIFF ID3 chunk",
+                        ));
+                    }
+                    metadata_bytes = metadata_bytes
+                        .checked_add(size)
+                        .ok_or(AudioError::InvalidFormat("AIFF metadata size overflow"))?;
+                    if metadata_bytes > MAX_METADATA_BYTES {
+                        return Err(AudioError::InvalidFormat("AIFF metadata exceeds 16 MiB"));
+                    }
+                    let read_size = usize::try_from(size)
+                        .map_err(|_| AudioError::InvalidFormat("AIFF ID3 tag is too large"))?;
+                    let mut bytes = Vec::new();
+                    bytes
+                        .try_reserve_exact(read_size)
+                        .map_err(|_| AudioError::InvalidFormat("AIFF ID3 tag is too large"))?;
+                    bytes.resize(read_size, 0);
+                    reader.read_exact(&mut bytes)?;
+                    id3_metadata = Some(parse_id3_tag(&bytes)?);
+                    id3_tag = Some(bytes);
                 }
                 b"COMT" => {
                     if comments.is_some() {
@@ -355,10 +382,18 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     .map_err(|_| AudioError::InvalidFormat("invalid AIFF-C G.726 channels"))
             })
             .transpose()?;
+        let mut metadata = id3_metadata.unwrap_or_default();
+        for (key, values) in native_metadata.iter() {
+            metadata.remove(key);
+            for value in values {
+                metadata.insert(key, value.clone());
+            }
+        }
         Ok(Self {
             reader,
             spec,
             metadata,
+            id3_tag,
             comments: comments.unwrap_or_default(),
             markers,
             aifc,
@@ -380,6 +415,11 @@ impl<R: Read + Seek> AiffDecoder<R> {
 
     pub fn comments(&self) -> &[AiffComment] {
         &self.comments
+    }
+
+    /// Returns the complete bounded ID3 chunk payload for lossless AIFF copying.
+    pub fn id3_tag(&self) -> Option<&[u8]> {
+        self.id3_tag.as_deref()
     }
 
     /// Returns all typed MARK records in file order.

@@ -3,7 +3,9 @@ use std::io::Cursor;
 use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker, G726Rate, rewrite_metadata};
 use g711::{G711Encoding, decode_alaw, decode_mulaw, encode_alaw, encode_mulaw};
 use g726::{G726Decoder, G726Encoder, G726Packing};
-use zemer_core::{AudioDecoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
+use zemer_core::{
+    AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
+};
 
 fn audio(format: SampleFormat) -> PcmBuffer {
     let spec = AudioSpec::new(44_100, 2, format).unwrap();
@@ -47,6 +49,13 @@ fn append_form_chunk(form: &mut Vec<u8>, id: &[u8; 4], body: &[u8]) {
     form.splice(end..end, chunk);
     let size = (form.len() - 8) as u32;
     form[4..8].copy_from_slice(&size.to_be_bytes());
+}
+
+fn id3_with_private_frame() -> Vec<u8> {
+    let mut frame = b"PRIV\0\0\0\x04\0\0x\0\xde\xad".to_vec();
+    let mut tag = b"ID3\x04\0\0\0\0\0\x0e".to_vec();
+    tag.append(&mut frame);
+    tag
 }
 
 fn aifc(compression: &[u8; 4], bits: u16, audio: &[u8]) -> Vec<u8> {
@@ -766,13 +775,42 @@ fn pads_odd_size_ssnd_before_following_chunks() {
 }
 
 #[test]
-fn rejects_unrepresentable_metadata_before_writing_a_header() {
+fn writes_non_native_metadata_to_id3_chunk() {
     let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap();
     let mut metadata = Metadata::default();
-    metadata.insert("composer", "not mapped by AIFF");
-    let mut output = Cursor::new(Vec::new());
-    assert!(AiffEncoder::new_with_metadata(&mut output, spec, &metadata).is_err());
-    assert!(output.into_inner().is_empty());
+    metadata.insert("album", "Álbum");
+    metadata.insert("title", "Títle");
+    let mut encoder =
+        AiffEncoder::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).unwrap();
+    encoder
+        .write_block(&PcmBuffer::new(spec, Samples::U8(vec![128])).unwrap())
+        .unwrap();
+    let bytes = encoder.finish().unwrap().get_ref().clone();
+    assert!(chunk_body(&bytes, b"ID3 ").starts_with(b"ID3\x04"));
+    let decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(decoder.metadata(), &metadata);
+}
+
+#[test]
+fn encoder_retains_opaque_id3_frames_when_adding_text() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap();
+    let tag = id3_with_private_frame();
+    let mut metadata = Metadata::default();
+    metadata.insert("album", "Album");
+    let mut encoder = AiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_id3_tag(&tag).unwrap();
+    encoder.set_metadata(&metadata).unwrap();
+    encoder
+        .write_block(&PcmBuffer::new(spec, Samples::U8(vec![128])).unwrap())
+        .unwrap();
+    let bytes = encoder.finish().unwrap().get_ref().clone();
+    let decoder = AiffDecoder::new(Cursor::new(bytes.clone())).unwrap();
+    assert_eq!(decoder.metadata(), &metadata);
+    assert!(
+        chunk_body(&bytes, b"ID3 ")
+            .windows(4)
+            .any(|frame| frame == b"PRIV")
+    );
 }
 
 #[test]
@@ -789,6 +827,7 @@ fn rewrites_tags_without_changing_audio_unknown_chunks_or_trailing_data() {
             .unwrap();
     encoder.write_block(&original).unwrap();
     let mut input = encoder.finish().unwrap().get_ref().clone();
+    append_form_chunk(&mut input, b"ID3 ", &id3_with_private_frame());
     let comment_body = [0, 1, 0, 0, 0, 42, 0, 3, 0, 3, b'n', b'o', b't', 0];
     append_form_chunk(&mut input, b"COMT", &comment_body);
     let original_unknown = b"TEST\0\0\0\x03\x01\x02\x03\0".to_vec();
@@ -804,6 +843,7 @@ fn rewrites_tags_without_changing_audio_unknown_chunks_or_trailing_data() {
     new_tags.insert("title", "New title");
     new_tags.insert("comment", "one");
     new_tags.insert("comment", "two");
+    new_tags.insert("album", "New album");
     let mut output = Cursor::new(Vec::new());
     rewrite_metadata(Cursor::new(input), &mut output, &new_tags).unwrap();
     let output = output.into_inner();
@@ -816,6 +856,11 @@ fn rewrites_tags_without_changing_audio_unknown_chunks_or_trailing_data() {
     );
     assert_eq!(chunk_body(&output, b"SSND")[8..], original_audio);
     assert_eq!(chunk_body(&output, b"COMT"), comment_body);
+    assert!(
+        chunk_body(&output, b"ID3 ")
+            .windows(4)
+            .any(|frame| frame == b"PRIV")
+    );
     let mut decoder = AiffDecoder::new(Cursor::new(output)).unwrap();
     assert_eq!(decoder.metadata(), &new_tags);
     assert_eq!(decoder.read_frames(3).unwrap().unwrap(), original);

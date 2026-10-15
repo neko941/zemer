@@ -66,6 +66,24 @@ fn temporary_path() -> PathBuf {
     ))
 }
 
+fn id3_private_tag() -> Vec<u8> {
+    let payload = b"org.example\0opaque";
+    let mut frame = Vec::from(&b"PRIV"[..]);
+    frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+    frame.extend_from_slice(&[0, 0]);
+    frame.extend_from_slice(payload);
+    let body_len = frame.len();
+    let mut tag = Vec::from(&b"ID3\x04\0\0"[..]);
+    tag.extend_from_slice(&[
+        ((body_len >> 21) & 0x7f) as u8,
+        ((body_len >> 14) & 0x7f) as u8,
+        ((body_len >> 7) & 0x7f) as u8,
+        (body_len & 0x7f) as u8,
+    ]);
+    tag.extend_from_slice(&frame);
+    tag
+}
+
 fn dsd_bytes<D: DsdDecoder>(decoder: &mut D) -> Vec<u8> {
     let mut bytes = Vec::new();
     while let Some(block) = decoder.read_dsd_octets(257).unwrap() {
@@ -867,6 +885,7 @@ fn convert_inspects_and_converts_aiff_and_aifc() {
     .unwrap();
     let mut metadata = Metadata::default();
     metadata.insert("title", "AIFF CLI");
+    metadata.insert("album", "AIFF album");
     write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
 
     for (format, extension) in [("aiff", "aiff"), ("aifc", "aifc")] {
@@ -924,7 +943,9 @@ fn aiff_conversion_preserves_typed_metadata_across_aiff_and_aifc() {
         marker_id: 3,
         text: b"mastered take".to_vec(),
     }];
+    let id3_tag = id3_private_tag();
     let mut encoder = AiffEncoder::new(File::create(&input_path).unwrap(), spec).unwrap();
+    encoder.set_id3_tag(&id3_tag).unwrap();
     encoder.set_markers(&markers).unwrap();
     encoder.set_comments(&comments).unwrap();
     encoder.write_block(&audio).unwrap();
@@ -947,6 +968,7 @@ fn aiff_conversion_preserves_typed_metadata_across_aiff_and_aifc() {
         assert_eq!(decoder.is_aifc(), format == "aifc");
         assert_eq!(decoder.markers(), markers);
         assert_eq!(decoder.comments(), comments);
+        assert_eq!(decoder.id3_tag(), Some(id3_tag.as_slice()));
         assert_eq!(decoder.read_frames(3).unwrap().unwrap(), audio);
         assert!(decoder.read_frames(1).unwrap().is_none());
         let _ = fs::remove_file(output_path);
