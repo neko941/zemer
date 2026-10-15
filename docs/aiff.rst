@@ -52,6 +52,12 @@ padding, IDs, positions, and duplicate chunks. CLI conversion to AIFF or AIFC
 carries typed comments and markers to the output; metadata edits preserve the
 original COMT and MARK chunks byte-for-byte.
 
+For compatibility with McGill's ``digit0v0.aiff`` sample, the reader accepts
+an AIFC ``COMM`` size of 18 when the immediately following bytes are exactly the
+``NONE`` compression code and its canonical ``not compressed`` name. It then
+continues parsing after those out-of-bound fields. Other incomplete AIFC
+``COMM`` sizes remain invalid.
+
 Chunk bounds, odd-size padding, the AIFC version, the extended sample rate,
 SSND offsets, COMM frame counts, and metadata size are checked. ``SSND`` is
 required for non-empty audio and may be omitted when ``COMM`` declares zero

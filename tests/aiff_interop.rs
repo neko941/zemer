@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{BufReader, Read},
+    io::{BufReader, Read, Write},
     process::Command,
 };
 
@@ -196,6 +196,139 @@ fn decodes_mcgill_aifc_perverse_files_against_ffmpeg() {
         );
         // These files deliberately include SSND padding/trailing data beyond the COMM frame count.
         assert_eq!(&actual, &oracle.stdout[..expected_bytes], "{name} PCM");
+    }
+}
+
+#[test]
+#[ignore = "requires McGill CCRMA AIFF/AIFC samples in ZEMER_MCGILL_CCRMA_AIFF_CORPUS and FFmpeg in ZEMER_FFMPEG"]
+fn decodes_mcgill_ccrma_samples_against_ffmpeg() {
+    let corpus = std::env::var_os("ZEMER_MCGILL_CCRMA_AIFF_CORPUS")
+        .expect("set ZEMER_MCGILL_CCRMA_AIFF_CORPUS to the downloaded sample directory");
+    let corpus = std::path::PathBuf::from(corpus);
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to the FFmpeg binary");
+    let cases = [
+        (
+            "aiff-16.snd",
+            false,
+            44_100,
+            2,
+            SampleFormat::PcmI16,
+            "s16le",
+            32_928,
+        ),
+        (
+            "aiff-8.snd",
+            false,
+            44_100,
+            2,
+            SampleFormat::PcmU8,
+            "u8",
+            32_928,
+        ),
+        (
+            "alaw.aifc",
+            true,
+            44_100,
+            1,
+            SampleFormat::PcmI16,
+            "s16le",
+            1_622,
+        ),
+        (
+            "ulaw.aifc",
+            true,
+            44_100,
+            1,
+            SampleFormat::PcmI16,
+            "s16le",
+            1_622,
+        ),
+        (
+            "digit0v0.aiff",
+            true,
+            8_000,
+            1,
+            SampleFormat::PcmI16,
+            "s16le",
+            4_480,
+        ),
+        (
+            "wood12.aiff",
+            false,
+            44_100,
+            1,
+            SampleFormat::PcmI16,
+            "s16le",
+            1_622,
+        ),
+        (
+            "wood24.aiff",
+            false,
+            44_100,
+            1,
+            SampleFormat::PcmI24,
+            "s24le",
+            1_622,
+        ),
+    ];
+
+    for (name, aifc, sample_rate, channels, sample_format, pcm_muxer, expected_frames) in cases {
+        let path = corpus.join(name);
+        let mut decoder = AiffDecoder::new(File::open(&path).unwrap()).unwrap();
+        assert_eq!(decoder.is_aifc(), aifc, "{name}");
+        assert_eq!(decoder.spec().sample_rate(), sample_rate, "{name}");
+        assert_eq!(decoder.spec().channels(), channels, "{name}");
+        assert_eq!(decoder.spec().sample_format(), sample_format, "{name}");
+
+        let corrected_path = if name == "digit0v0.aiff" {
+            let mut corrected = std::fs::read(&path).unwrap();
+            let comm = corrected
+                .windows(4)
+                .position(|window| window == b"COMM")
+                .unwrap();
+            assert_eq!(&corrected[comm + 4..comm + 8], &18_u32.to_be_bytes());
+            assert_eq!(
+                &corrected[comm + 26..comm + 46],
+                b"NONE\x0enot compressed\0"
+            );
+            corrected[comm + 4..comm + 8].copy_from_slice(&38_u32.to_be_bytes());
+            let corrected_path =
+                std::env::temp_dir().join(format!("zemer-digit0v0-{}.aiff", std::process::id()));
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&corrected_path)
+                .unwrap()
+                .write_all(&corrected)
+                .unwrap();
+            Some(corrected_path)
+        } else {
+            None
+        };
+        let oracle_input = corrected_path.as_deref().unwrap_or(&path);
+        let oracle = Command::new(&ffmpeg)
+            .args(["-v", "error", "-i"])
+            .arg(oracle_input)
+            .args(["-map", "0:a:0", "-f", pcm_muxer, "pipe:1"])
+            .output();
+        if let Some(corrected_path) = corrected_path {
+            std::fs::remove_file(corrected_path).unwrap();
+        }
+        let oracle = oracle.unwrap();
+        assert!(
+            oracle.status.success(),
+            "FFmpeg failed for {name}: {}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+
+        let mut actual = Vec::new();
+        let mut frames = 0;
+        while let Some(block) = decoder.read_frames(257).unwrap() {
+            frames += block.frames();
+            append_pcm_bytes(block.samples(), &mut actual);
+        }
+        assert_eq!(frames, expected_frames, "{name}");
+        assert_eq!(actual, oracle.stdout, "{name} PCM");
     }
 }
 
