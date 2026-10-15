@@ -1,4 +1,7 @@
-use std::{collections::HashSet, io::{Read, Write}};
+use std::{
+    collections::HashSet,
+    io::{Read, Write},
+};
 
 use zemer_core::AudioError;
 
@@ -38,13 +41,13 @@ impl WavCueChunk {
         let mut points = Vec::new();
         let count = usize::try_from(count)
             .map_err(|_| AudioError::InvalidFormat("WAVE cue point count is too large"))?;
-        points.try_reserve_exact(count).map_err(|_| {
-            AudioError::InvalidFormat("WAVE cue point list is too large")
-        })?;
+        points
+            .try_reserve_exact(count)
+            .map_err(|_| AudioError::InvalidFormat("WAVE cue point list is too large"))?;
         let mut names = HashSet::new();
-        names.try_reserve(count).map_err(|_| {
-            AudioError::InvalidFormat("WAVE cue point list is too large")
-        })?;
+        names
+            .try_reserve(count)
+            .map_err(|_| AudioError::InvalidFormat("WAVE cue point list is too large"))?;
         for _ in 0..count {
             let mut bytes = [0; 24];
             reader.read_exact(&mut bytes)?;
@@ -69,7 +72,9 @@ impl WavCueChunk {
             .map_err(|_| AudioError::Unsupported("too many WAVE cue points"))?;
         let size = 4_u64 + u64::from(count) * 24;
         if size > u64::from(MAX_CHUNK_SIZE) {
-            return Err(AudioError::Unsupported("WAVE cue chunk exceeds the 16 MiB limit"));
+            return Err(AudioError::Unsupported(
+                "WAVE cue chunk exceeds the 16 MiB limit",
+            ));
         }
         let mut names = HashSet::new();
         names

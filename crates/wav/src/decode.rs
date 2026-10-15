@@ -3,8 +3,8 @@ use std::{
     io::{Read, Seek, SeekFrom},
 };
 
-use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use crate::encode::WavContainer;
+use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{decode_alaw, decode_mulaw};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
@@ -369,8 +369,9 @@ impl<R: Read + Seek> WavDecoder<R> {
                     if sampler.is_some() {
                         return Err(AudioError::InvalidFormat("duplicate WAVE sampler chunk"));
                     }
-                    let size = u32::try_from(chunk_size)
-                        .map_err(|_| AudioError::InvalidFormat("WAVE sampler chunk is too large"))?;
+                    let size = u32::try_from(chunk_size).map_err(|_| {
+                        AudioError::InvalidFormat("WAVE sampler chunk is too large")
+                    })?;
                     sampler = Some(WavSamplerChunk::read(&mut reader, size)?);
                 }
                 b"fmt " if parsed_spec.is_none() => {

@@ -1,10 +1,12 @@
 use std::io::Cursor;
 
 use wav::{
-    WavContainer, WavCueChunk, WavCuePoint, WavDecoder, WavSampleLoop, WavSamplerChunk,
-    WavWriter, rewrite_metadata,
+    WavContainer, WavCueChunk, WavCuePoint, WavDecoder, WavSampleLoop, WavSamplerChunk, WavWriter,
+    rewrite_metadata,
 };
-use zemer_core::{AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
+use zemer_core::{
+    AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
+};
 
 #[test]
 fn cue_and_sampler_chunks_round_trip_for_riff_and_rf64() {
@@ -40,8 +42,8 @@ fn cue_and_sampler_chunks_round_trip_for_riff_and_rf64() {
     };
 
     for container in [WavContainer::Riff, WavContainer::Rf64] {
-        let mut writer = WavWriter::new_with_container(Cursor::new(Vec::new()), spec, container)
-            .unwrap();
+        let mut writer =
+            WavWriter::new_with_container(Cursor::new(Vec::new()), spec, container).unwrap();
         writer.set_cue(Some(cue.clone())).unwrap();
         writer.set_sampler(Some(sampler.clone())).unwrap();
         writer.write_block(&audio).unwrap();

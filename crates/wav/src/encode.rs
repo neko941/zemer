@@ -301,11 +301,7 @@ impl<W: Write + Seek> WavWriter<W> {
     /// Adds or replaces a typed `cue ` chunk written after the audio data.
     pub fn set_cue(&mut self, cue: Option<WavCueChunk>) -> Result<(), AudioError> {
         self.ensure_metadata_writable()?;
-        let cue_bytes = cue
-            .as_ref()
-            .map(cue_chunk_bytes)
-            .transpose()?
-            .unwrap_or(0);
+        let cue_bytes = cue.as_ref().map(cue_chunk_bytes).transpose()?.unwrap_or(0);
         let sampler_bytes = self
             .sampler
             .as_ref()
@@ -341,15 +337,23 @@ impl<W: Write + Seek> WavWriter<W> {
             return Err(AudioError::InvalidData("WAVE writer is already finalized"));
         }
         if self.poisoned {
-            return Err(AudioError::InvalidData("WAVE writer is unusable after an earlier I/O failure"));
+            return Err(AudioError::InvalidData(
+                "WAVE writer is unusable after an earlier I/O failure",
+            ));
         }
         Ok(())
     }
 
-    fn replace_embedded_chunks(&mut self, cue_bytes: u64, sampler_bytes: u64) -> Result<(), AudioError> {
+    fn replace_embedded_chunks(
+        &mut self,
+        cue_bytes: u64,
+        sampler_bytes: u64,
+    ) -> Result<(), AudioError> {
         let chunk_bytes = cue_bytes
             .checked_add(sampler_bytes)
-            .ok_or(AudioError::Unsupported("WAVE embedded metadata size overflow"))?;
+            .ok_or(AudioError::Unsupported(
+                "WAVE embedded metadata size overflow",
+            ))?;
         let riff_size = self
             .riff_overhead
             .checked_add(self.data_bytes)
@@ -358,7 +362,9 @@ impl<W: Write + Seek> WavWriter<W> {
             .and_then(|size| size.checked_add(chunk_bytes))
             .ok_or(AudioError::Unsupported("WAVE output size overflow"))?;
         if self.container == WavContainer::Riff && riff_size > u64::from(u32::MAX) {
-            return Err(AudioError::Unsupported("WAVE metadata exceeds the RIFF/WAVE size limit"));
+            return Err(AudioError::Unsupported(
+                "WAVE metadata exceeds the RIFF/WAVE size limit",
+            ));
         }
         self.embedded_chunk_bytes = chunk_bytes;
         Ok(())
