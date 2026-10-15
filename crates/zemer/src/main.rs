@@ -8,7 +8,7 @@ use std::{
     process::ExitCode,
 };
 
-use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker};
+use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker, G726Rate};
 use dsdiff::{DsdiffDecoder, DsdiffEncoder};
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
@@ -73,6 +73,7 @@ enum OutputFormat {
     Aifc,
     AifcG711(G711Encoding),
     AifcIma4,
+    AifcG726,
     Dsf,
     Dsdiff,
     DsdiffDst,
@@ -85,6 +86,7 @@ impl OutputFormat {
             Self::G711(_) => Some(SampleFormat::PcmI16),
             Self::AifcG711(_) => Some(SampleFormat::PcmI16),
             Self::AifcIma4 => Some(SampleFormat::PcmI16),
+            Self::AifcG726 => Some(SampleFormat::PcmI16),
             Self::Flac | Self::OggFlac | Self::Aiff
                 if matches!(source, SampleFormat::Float32 | SampleFormat::Float64) =>
             {
@@ -114,6 +116,7 @@ impl OutputFormat {
             Self::AifcG711(G711Encoding::ALaw) => "aifc_alaw",
             Self::AifcG711(G711Encoding::MuLaw) => "aifc_mulaw",
             Self::AifcIma4 => "aifc_ima4",
+            Self::AifcG726 => "aifc_g726",
             Self::Dsf => "dsf",
             Self::Dsdiff => "dsdiff",
             Self::DsdiffDst => "dsdiff_dst",
@@ -563,9 +566,15 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         return convert_dsd(input, output, format, decoder, id3_tag, comments, markers)
             .map(|(report, path)| CommandReport::ConvertDsd(report, path));
     }
-    if bitrate.is_some()
-        && (!matches!(format, OutputFormat::WavPack | OutputFormat::Vorbis)
-            || bitrate.is_some_and(|value| !(24..=9600).contains(&value)))
+    let valid_bitrate = match format {
+        OutputFormat::WavPack | OutputFormat::Vorbis => {
+            bitrate.is_some_and(|value| (24..=9600).contains(&value))
+        }
+        OutputFormat::AifcG726 => bitrate.is_some_and(|value| matches!(value, 16 | 24 | 32 | 40)),
+        _ => false,
+    };
+    if (bitrate.is_some() && !valid_bitrate)
+        || (matches!(format, OutputFormat::AifcG726) && bitrate.is_none())
     {
         return Err(usage_error());
     }
@@ -579,6 +588,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
             | OutputFormat::Aifc
             | OutputFormat::AifcG711(_)
             | OutputFormat::AifcIma4
+            | OutputFormat::AifcG726
     ) && container.is_some()
     {
         return Err(usage_error());
@@ -614,6 +624,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "aifc_alaw" => Some(OutputFormat::AifcG711(G711Encoding::ALaw)),
         "aifc_mulaw" => Some(OutputFormat::AifcG711(G711Encoding::MuLaw)),
         "aifc_ima4" => Some(OutputFormat::AifcIma4),
+        "aifc_g726" => Some(OutputFormat::AifcG726),
         "flac" => Some(OutputFormat::Flac),
         "ogg_flac" => Some(OutputFormat::OggFlac),
         "vorbis" => Some(OutputFormat::Vorbis),
@@ -836,6 +847,33 @@ fn convert_audio(
                 }
                 Box::new(encoder)
             }
+            OutputFormat::AifcG726 => {
+                let rate = match bitrate_kbps {
+                    Some(16) => G726Rate::Kbps16,
+                    Some(24) => G726Rate::Kbps24,
+                    Some(32) => G726Rate::Kbps32,
+                    Some(40) => G726Rate::Kbps40,
+                    _ => unreachable!("G.726 bitrate is validated by convert_args"),
+                };
+                let mut encoder = AiffEncoder::new_aifc_g726_with_metadata(
+                    output_file,
+                    spec,
+                    rate,
+                    decoder.metadata(),
+                )
+                .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(markers) = &aiff_markers {
+                    encoder
+                        .set_markers(markers)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                if let Some(comments) = &aiff_comments {
+                    encoder
+                        .set_comments(comments)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                Box::new(encoder)
+            }
             OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::DsdiffDst => {
                 unreachable!("DSD output uses the DSD interface")
             }
@@ -882,6 +920,7 @@ fn convert_audio(
                 OutputFormat::Aifc => "aifc",
                 OutputFormat::AifcG711(_) => "aifc",
                 OutputFormat::AifcIma4 => "aifc",
+                OutputFormat::AifcG726 => "aifc",
                 OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::DsdiffDst => {
                     unreachable!("DSD output uses the DSD interface")
                 }
@@ -892,7 +931,10 @@ fn convert_audio(
             metadata: decoder.metadata().clone(),
             output_encoding: matches!(
                 format,
-                OutputFormat::G711(_) | OutputFormat::AifcG711(_) | OutputFormat::AifcIma4
+                OutputFormat::G711(_)
+                    | OutputFormat::AifcG711(_)
+                    | OutputFormat::AifcIma4
+                    | OutputFormat::AifcG726
             )
             .then(|| format.name()),
             container: (!matches!(
@@ -905,6 +947,7 @@ fn convert_audio(
                     | OutputFormat::Aifc
                     | OutputFormat::AifcG711(_)
                     | OutputFormat::AifcIma4
+                    | OutputFormat::AifcG726
                     | OutputFormat::Dsf
             ))
             .then_some(container),
@@ -1359,7 +1402,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|aifc_alaw|aifc_mulaw|aifc_ima4|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600 kbps for Vorbis/WavPack>] [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 
