@@ -1,10 +1,32 @@
 use std::{
     fs::File,
     io::{BufReader, Read},
+    process::Command,
 };
 
 use aiff::AiffDecoder;
 use zemer_core::{AudioDecoder, AudioSpec, SampleFormat, Samples};
+
+fn append_pcm_bytes(samples: &Samples, output: &mut Vec<u8>) {
+    match samples {
+        Samples::U8(values) => output.extend_from_slice(values),
+        Samples::I16(values) => values
+            .iter()
+            .for_each(|sample| output.extend_from_slice(&sample.to_le_bytes())),
+        Samples::I24(values) => values
+            .iter()
+            .for_each(|sample| output.extend_from_slice(&sample.to_le_bytes()[..3])),
+        Samples::I32(values) => values
+            .iter()
+            .for_each(|sample| output.extend_from_slice(&sample.to_le_bytes())),
+        Samples::F32(values) => values
+            .iter()
+            .for_each(|sample| output.extend_from_slice(&sample.to_le_bytes())),
+        Samples::F64(values) => values
+            .iter()
+            .for_each(|sample| output.extend_from_slice(&sample.to_le_bytes())),
+    }
+}
 
 const FRAMES: u64 = 23_493;
 
@@ -42,6 +64,80 @@ fn decodes_external_12_bit_aiff_and_aifc_against_pcm_oracles() {
             oracle.read(&mut trailing).unwrap(),
             0,
             "FFmpeg PCM oracle has trailing samples"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires McGill AFsp AIFF/AIFC samples in ZEMER_MCGILL_AIFF_CORPUS and FFmpeg in ZEMER_FFMPEG"]
+fn decodes_mcgill_afsp_profiles_against_ffmpeg() {
+    let corpus = std::env::var_os("ZEMER_MCGILL_AIFF_CORPUS")
+        .expect("set ZEMER_MCGILL_AIFF_CORPUS to the downloaded AFsp sample directory");
+    let corpus = std::path::PathBuf::from(corpus);
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to the FFmpeg binary");
+    let cases = [
+        ("M1F1-AlawC-AFsp.aif", true, SampleFormat::PcmI16, "s16le"),
+        ("M1F1-mulawC-AFsp.aif", true, SampleFormat::PcmI16, "s16le"),
+        ("M1F1-int8-AFsp.aif", false, SampleFormat::PcmU8, "u8"),
+        ("M1F1-int8C-AFsp.aif", true, SampleFormat::PcmU8, "u8"),
+        ("M1F1-int12-AFsp.aif", false, SampleFormat::PcmI16, "s16le"),
+        ("M1F1-int12C-AFsp.aif", true, SampleFormat::PcmI16, "s16le"),
+        ("M1F1-int16-AFsp.aif", false, SampleFormat::PcmI16, "s16le"),
+        ("M1F1-int16C-AFsp.aif", true, SampleFormat::PcmI16, "s16le"),
+        ("M1F1-int16s-AFsp.aif", true, SampleFormat::PcmI16, "s16le"),
+        ("M1F1-int24-AFsp.aif", false, SampleFormat::PcmI24, "s24le"),
+        ("M1F1-int24C-AFsp.aif", true, SampleFormat::PcmI24, "s24le"),
+        ("M1F1-int32-AFsp.aif", false, SampleFormat::PcmI32, "s32le"),
+        ("M1F1-int32C-AFsp.aif", true, SampleFormat::PcmI32, "s32le"),
+        (
+            "M1F1-float32C-AFsp.aif",
+            true,
+            SampleFormat::Float32,
+            "f32le",
+        ),
+        (
+            "M1F1-float64C-AFsp.aif",
+            true,
+            SampleFormat::Float64,
+            "f64le",
+        ),
+    ];
+
+    for (name, aifc, sample_format, pcm_muxer) in cases {
+        let path = corpus.join(name);
+        let mut decoder = AiffDecoder::new(File::open(&path).unwrap()).unwrap();
+        assert_eq!(decoder.is_aifc(), aifc, "{name}");
+        assert_eq!(decoder.spec().sample_rate(), 8_000, "{name}");
+        assert_eq!(decoder.spec().channels(), 2, "{name}");
+        assert_eq!(decoder.spec().sample_format(), sample_format, "{name}");
+
+        let oracle = Command::new(&ffmpeg)
+            .args(["-v", "error", "-i"])
+            .arg(&path)
+            .args(["-map", "0:a:0", "-f", pcm_muxer, "pipe:1"])
+            .output()
+            .unwrap();
+        assert!(
+            oracle.status.success(),
+            "FFmpeg failed for {name}: {}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+
+        let mut actual = Vec::new();
+        let mut frames = 0;
+        while let Some(block) = decoder.read_frames(257).unwrap() {
+            frames += block.frames();
+            append_pcm_bytes(block.samples(), &mut actual);
+        }
+        assert_eq!(frames, 23_493, "{name}");
+        assert_eq!(actual.len(), oracle.stdout.len(), "{name} byte count");
+        assert!(
+            actual == oracle.stdout,
+            "{name} differs from FFmpeg at byte {:?}",
+            actual
+                .iter()
+                .zip(&oracle.stdout)
+                .position(|(actual, expected)| actual != expected)
         );
     }
 }
