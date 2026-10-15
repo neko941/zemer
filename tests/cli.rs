@@ -1078,7 +1078,11 @@ fn convert_aiff_valid_bits_through_cli() {
         assert!(String::from_utf8_lossy(&output.stdout).contains("\"output_valid_bits\":12"));
 
         let bytes = fs::read(&output_path).unwrap();
-        assert_eq!(u16::from_be_bytes(bytes[26..28].try_into().unwrap()), 12);
+        let comm = bytes.windows(4).position(|chunk| chunk == b"COMM").unwrap();
+        assert_eq!(
+            u16::from_be_bytes(bytes[comm + 14..comm + 16].try_into().unwrap()),
+            12
+        );
         let mut decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
         assert_eq!(
             decoder.read_frames(2).unwrap().unwrap().samples(),
