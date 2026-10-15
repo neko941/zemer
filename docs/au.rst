@@ -36,9 +36,16 @@ used here. In a comparison of 4,096 external SpanDSP codewords, all 63 Zemer
 versus Sun differences at 24 kbit/s and all 105 at 40 kbit/s occur at
 opposite-sign 16-bit overflow values. Zemer applies the G.726 Annex A 14-bit
 output limiter; the legacy Sun linear-output utility wraps those values
-[ITU-T G.726 Annex A]_. This explains that Sun differential. PCM comparisons
-against FFmpeg and libsndfile still diverge beyond these limiter cases, so
-keep AU Partial pending a conformance-level explanation and broader vectors.
+[ITU-T G.726 Annex A]_. This explains the Sun differential. A temporary
+isolated comparison using the ITU-T G.191 G.726 module captured the
+reconstructed signal before companding, then applied Annex A's 14-bit limiter
+and 16-bit PCM scaling. Zemer matched all
+4,096 tested samples exactly at both 24 and 40 kbit/s; the regression suite
+retains compact golden digests from that comparison. FFmpeg 8.1 and libsndfile
+produce different PCM on these vectors, while FFmpeg's raw G.726 path matches
+its AU-demux output byte-for-byte. Keep AU Partial because other AU encoding
+codes and broader native-file coverage remain open. No external decoder code
+or corpus files are bundled.
 ITU-T G.726 replaces the 1988 G.721/G.723 recommendations and defines the
 shared ADPCM rates [ITU-T G.726]_.
 
@@ -63,3 +70,4 @@ this implementation follows Oracle's documented big-endian layout.
 .. [SunOS G.721 packing] https://www.typewritten.org/Manual/Sun/SunOS/4.1.4/man1/adpcm_enc.html
 .. [IETF RTP G.726 packing] https://www.rfc-editor.org/rfc/rfc3551.html#section-4.5.4
 .. [ITU-T G.726] https://www.itu.int/rec/T-REC-G.726-199012-I%21%21PDF-E
+.. [ITU-T G.191 reference implementation] https://github.com/openitu/STL
