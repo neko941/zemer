@@ -6,7 +6,8 @@ files. Its design keeps shared audio types independent from format-specific
 crates, so applications can use only the pieces they need.
 
 The project implements RIFF/WAVE PCM, IEEE float, and G.711 reading and
-writing, plus CUE sheets for WAVE tracks. Its FLAC crate streams integer PCM
+writing, RIFF INFO metadata, Broadcast Wave ``bext`` chunks, and CUE sheets
+for WAVE tracks. Its FLAC crate streams integer PCM
 to and from native FLAC files and decodes, encodes, and edits metadata in
 Ogg-FLAC.
 The ``zemer-wavpack`` crate decodes lossless PCM, float32, hybrid PCM/float with

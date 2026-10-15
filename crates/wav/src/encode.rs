@@ -1,5 +1,6 @@
 use std::io::{Seek, SeekFrom, Write};
 
+use crate::BextChunk;
 use g711::{encode_alaw, encode_mulaw};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
@@ -46,7 +47,36 @@ impl<W: Write + Seek> WavWriter<W> {
         spec: AudioSpec,
         metadata: &Metadata,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(writer, spec, metadata, None, WavContainer::Riff)
+        Self::new_configured(writer, spec, metadata, None, WavContainer::Riff, None)
+    }
+
+    pub fn new_with_bext(writer: W, spec: AudioSpec, bext: &BextChunk) -> Result<Self, AudioError> {
+        Self::new_with_metadata_and_bext(writer, spec, &Metadata::default(), bext)
+    }
+
+    pub fn new_with_metadata_and_bext(
+        writer: W,
+        spec: AudioSpec,
+        metadata: &Metadata,
+        bext: &BextChunk,
+    ) -> Result<Self, AudioError> {
+        Self::new_with_metadata_and_bext_and_container(
+            writer,
+            spec,
+            metadata,
+            bext,
+            WavContainer::Riff,
+        )
+    }
+
+    pub fn new_with_metadata_and_bext_and_container(
+        writer: W,
+        spec: AudioSpec,
+        metadata: &Metadata,
+        bext: &BextChunk,
+        container: WavContainer,
+    ) -> Result<Self, AudioError> {
+        Self::new_configured(writer, spec, metadata, None, container, Some(bext))
     }
 
     pub fn new_with_container(
@@ -63,7 +93,7 @@ impl<W: Write + Seek> WavWriter<W> {
         metadata: &Metadata,
         container: WavContainer,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(writer, spec, metadata, None, container)
+        Self::new_configured(writer, spec, metadata, None, container, None)
     }
 
     pub fn new_g711(
@@ -85,7 +115,14 @@ impl<W: Write + Seek> WavWriter<W> {
                 "G.711 WAVE encoding requires signed 16-bit PCM input",
             ));
         }
-        Self::new_configured(writer, spec, metadata, Some(encoding), WavContainer::Riff)
+        Self::new_configured(
+            writer,
+            spec,
+            metadata,
+            Some(encoding),
+            WavContainer::Riff,
+            None,
+        )
     }
 
     pub fn new_g711_with_container(
@@ -115,7 +152,7 @@ impl<W: Write + Seek> WavWriter<W> {
                 "G.711 WAVE encoding requires signed 16-bit PCM input",
             ));
         }
-        Self::new_configured(writer, spec, metadata, Some(encoding), container)
+        Self::new_configured(writer, spec, metadata, Some(encoding), container, None)
     }
 
     fn new_configured(
@@ -124,8 +161,15 @@ impl<W: Write + Seek> WavWriter<W> {
         metadata: &Metadata,
         g711: Option<G711Encoding>,
         container: WavContainer,
+        bext: Option<&BextChunk>,
     ) -> Result<Self, AudioError> {
         let metadata_chunk_bytes = metadata_chunk_size(metadata)?;
+        let bext_chunk_bytes = if let Some(chunk) = bext {
+            let size = chunk.chunk_size()?;
+            u64::from(size) + 8 + u64::from(size & 1)
+        } else {
+            0
+        };
         let start = writer.stream_position()?;
         let (legacy_tag, bits_per_sample) = match (g711, spec.sample_format()) {
             (Some(G711Encoding::ALaw), SampleFormat::PcmI16) => (6_u16, 8_u16),
@@ -149,7 +193,7 @@ impl<W: Write + Seek> WavWriter<W> {
             } else {
                 0
             };
-        if riff_overhead + metadata_chunk_bytes > u64::from(u32::MAX) {
+        if riff_overhead + metadata_chunk_bytes + bext_chunk_bytes > u64::from(u32::MAX) {
             return Err(AudioError::Unsupported(
                 "WAVE metadata exceeds the RIFF/WAVE size limit",
             ));
@@ -180,6 +224,15 @@ impl<W: Write + Seek> WavWriter<W> {
         } else {
             None
         };
+        if let Some(bext) = bext {
+            let chunk_size = bext.chunk_size()?;
+            writer.write_all(b"bext")?;
+            writer.write_all(&chunk_size.to_le_bytes())?;
+            bext.write(&mut writer)?;
+            if chunk_size & 1 != 0 {
+                writer.write_all(&[0])?;
+            }
+        }
         writer.write_all(b"fmt ")?;
         writer.write_all(&(if extensible { 40_u32 } else { 16_u32 }).to_le_bytes())?;
         writer.write_all(&(if extensible { 0xfffe_u16 } else { legacy_tag }).to_le_bytes())?;
@@ -210,7 +263,7 @@ impl<W: Write + Seek> WavWriter<W> {
             start,
             data_size_offset,
             ds64_body_offset,
-            riff_overhead,
+            riff_overhead: riff_overhead + bext_chunk_bytes,
             metadata: metadata.clone(),
             metadata_chunk_bytes,
             g711,

@@ -42,6 +42,8 @@ identified from file contents.
   in RIFF and RF64, including held-sample silence and bounded streaming reads.
 - Expand metadata beyond RIFF INFO where specifications and tests justify it,
   including broadcast, cue, sampler, and embedded metadata chunks.
+- [x] Read and write the fixed BWF `bext` fields and coding history, preserving
+  opaque versioned bytes and enforcing a 16 MiB chunk bound.
 - Improve malformed-file, boundary-size, unusual-header, and G.711 vector
   regression coverage.
 
