@@ -82,6 +82,7 @@ enum OutputFormat {
     WavPack,
     Aiff,
     Aifc,
+    AifcSowt,
     Au,
     AuG721,
     AuG7233,
@@ -120,6 +121,10 @@ impl OutputFormat {
             Self::WavPack => None,
             Self::Aiff => None,
             Self::Aifc => None,
+            Self::AifcSowt if matches!(source, SampleFormat::Float32 | SampleFormat::Float64) => {
+                Some(SampleFormat::PcmI24)
+            }
+            Self::AifcSowt => None,
             Self::Au => None,
             Self::Dsf | Self::Dsdiff | Self::DsdiffDst => None,
         }
@@ -137,6 +142,7 @@ impl OutputFormat {
             Self::WavPack => "wavpack",
             Self::Aiff => "aiff",
             Self::Aifc => "aifc",
+            Self::AifcSowt => "aifc_sowt",
             Self::Au => "au",
             Self::AuG711(G711Encoding::ALaw) => "au_alaw",
             Self::AuG711(G711Encoding::MuLaw) => "au_mulaw",
@@ -659,6 +665,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
             && !matches!(
                 format,
                 OutputFormat::Aiff | OutputFormat::Aifc | OutputFormat::AifcDwvw
+                    | OutputFormat::AifcSowt
             ))
     {
         return Err(usage_error());
@@ -730,6 +737,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "wavpack" => Some(OutputFormat::WavPack),
         "aiff" => Some(OutputFormat::Aiff),
         "aifc" => Some(OutputFormat::Aifc),
+        "aifc_sowt" => Some(OutputFormat::AifcSowt),
         "au" => Some(OutputFormat::Au),
         "dsf" => Some(OutputFormat::Dsf),
         "dsdiff" => Some(OutputFormat::Dsdiff),
@@ -921,9 +929,19 @@ fn convert_audio(
                 }
                 Box::new(encoder)
             }
-            OutputFormat::Aifc => {
+            OutputFormat::Aifc | OutputFormat::AifcSowt => {
                 let mut encoder = if let Some(valid_bits) = valid_bits {
-                    AiffEncoder::new_aifc_with_bits_per_sample(output_file, spec, valid_bits)
+                    if matches!(format, OutputFormat::AifcSowt) {
+                        AiffEncoder::new_aifc_sowt_with_bits_per_sample(
+                            output_file,
+                            spec,
+                            valid_bits,
+                        )
+                    } else {
+                        AiffEncoder::new_aifc_with_bits_per_sample(output_file, spec, valid_bits)
+                    }
+                } else if matches!(format, OutputFormat::AifcSowt) {
+                    AiffEncoder::new_aifc_sowt(output_file, spec)
                 } else {
                     AiffEncoder::new_aifc(output_file, spec)
                 }
@@ -1215,6 +1233,7 @@ fn convert_audio(
                 OutputFormat::WavPack => "wavpack",
                 OutputFormat::Aiff => "aiff",
                 OutputFormat::Aifc => "aifc",
+                OutputFormat::AifcSowt => "aifc",
                 OutputFormat::Au
                 | OutputFormat::AuG721
                 | OutputFormat::AuG7233
@@ -1244,6 +1263,7 @@ fn convert_audio(
                     | OutputFormat::AifcIma4
                     | OutputFormat::AifcG726
                     | OutputFormat::AifcDwvw
+                    | OutputFormat::AifcSowt
             )
             .then(|| format.name()),
             output_valid_bits: valid_bits,
@@ -1769,7 +1789,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|wav_ima_adpcm|aiff|aifc|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>... | zemer iso inspect [--json] <image.iso> | zemer iso extract [--json] <image.iso> <new-output-dir>".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|wav_ima_adpcm|aiff|aifc|aifc_sowt|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>... | zemer iso inspect [--json] <image.iso> | zemer iso extract [--json] <image.iso> <new-output-dir>".to_owned(),
     }
 }
 

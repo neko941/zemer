@@ -1411,6 +1411,41 @@ fn convert_encodes_aifc_dwvw_and_reports_compression() {
 }
 
 #[test]
+fn convert_encodes_aifc_sowt_and_reports_little_endian_pcm() {
+    let input_path = temporary_path();
+    let spec = AudioSpec::new(44_100, 2, SampleFormat::PcmI24).unwrap();
+    let audio = PcmBuffer::new(
+        spec,
+        Samples::I24(vec![-8_388_608, -1, 0, 8_388_607, 0x123456, -0x123456]),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    let output_path = temporary_path().with_extension("aifc");
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "aifc_sowt", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"output_encoding\":\"aifc_sowt\""));
+    let encoded = fs::read(&output_path).unwrap();
+    assert!(encoded.windows(4).any(|chunk| chunk == b"sowt"));
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(decoder.spec(), spec);
+    assert_eq!(decoder.read_frames(3).unwrap().unwrap(), audio);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+
+    let _ = fs::remove_file(output_path);
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
 fn convert_encodes_aifc_ima4_with_packet_frame_count_and_padding() {
     let input_path = temporary_path();
     let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();

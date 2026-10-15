@@ -31,6 +31,7 @@ pub struct AiffEncoder<W> {
     instrument: Option<AiffInstrument>,
     audio_recording: Option<AiffAudioRecording>,
     g711: Option<G711Encoding>,
+    sowt: bool,
     ima4: bool,
     g726: Option<G726Encoder>,
     dwvw: Option<DwvwSpool>,
@@ -49,6 +50,7 @@ pub enum AiffKind {
 #[derive(Clone, Copy)]
 enum AiffCodec {
     Pcm,
+    Sowt,
     G711(G711Encoding),
     Ima4,
     G726(G726Rate),
@@ -113,6 +115,54 @@ impl<W: Write + Seek> AiffEncoder<W> {
             AiffKind::Aifc,
             AiffCodec::Pcm,
             Some(bits_per_sample),
+        )
+    }
+
+    /// Creates an AIFC encoder that writes integer PCM using little-endian `sowt` audio bytes.
+    pub fn new_aifc_sowt(writer: W, spec: AudioSpec) -> Result<Self, AudioError> {
+        Self::new_aifc_sowt_with_bits_per_sample_and_metadata(
+            writer,
+            spec,
+            &Metadata::default(),
+            None,
+        )
+    }
+
+    pub fn new_aifc_sowt_with_metadata(
+        writer: W,
+        spec: AudioSpec,
+        metadata: &Metadata,
+    ) -> Result<Self, AudioError> {
+        Self::new_aifc_sowt_with_bits_per_sample_and_metadata(writer, spec, metadata, None)
+    }
+
+    /// Creates an AIFC `sowt` encoder with an explicit integer PCM valid-bit depth.
+    pub fn new_aifc_sowt_with_bits_per_sample(
+        writer: W,
+        spec: AudioSpec,
+        bits_per_sample: u16,
+    ) -> Result<Self, AudioError> {
+        Self::new_aifc_sowt_with_bits_per_sample_and_metadata(
+            writer,
+            spec,
+            &Metadata::default(),
+            Some(bits_per_sample),
+        )
+    }
+
+    pub fn new_aifc_sowt_with_bits_per_sample_and_metadata(
+        writer: W,
+        spec: AudioSpec,
+        metadata: &Metadata,
+        bits_per_sample: Option<u16>,
+    ) -> Result<Self, AudioError> {
+        Self::new_configured(
+            writer,
+            spec,
+            metadata,
+            AiffKind::Aifc,
+            AiffCodec::Sowt,
+            bits_per_sample,
         )
     }
 
@@ -240,6 +290,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             AiffCodec::G711(encoding) => Some(encoding),
             _ => None,
         };
+        let sowt = matches!(codec, AiffCodec::Sowt);
         let ima4 = matches!(codec, AiffCodec::Ima4);
         let dwvw_enabled = matches!(codec, AiffCodec::Dwvw);
         let g726_rate = match codec {
@@ -273,6 +324,20 @@ impl<W: Write + Seek> AiffEncoder<W> {
         if g711.is_some() && spec.sample_format() != SampleFormat::PcmI16 {
             return Err(AudioError::InvalidData(
                 "AIFC G.711 encoding requires signed 16-bit PCM input",
+            ));
+        }
+        if sowt
+            && (kind != AiffKind::Aifc
+                || !matches!(
+                    spec.sample_format(),
+                    SampleFormat::PcmU8
+                        | SampleFormat::PcmI16
+                        | SampleFormat::PcmI24
+                        | SampleFormat::PcmI32
+                ))
+        {
+            return Err(AudioError::InvalidData(
+                "AIFC sowt encoding requires integer PCM input",
             ));
         }
         if g726_rate.is_some()
@@ -358,6 +423,8 @@ impl<W: Write + Seek> AiffEncoder<W> {
         }
         let (bits, compression, compression_name) = if dwvw.is_some() {
             (bits_per_sample, *b"DWVW", b"DWVW".as_slice())
+        } else if sowt {
+            (bits_per_sample, *b"sowt", b"".as_slice())
         } else if g726_rate.is_some() {
             (16_u16, *b"G726", b"G.726".as_slice())
         } else {
@@ -430,6 +497,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             instrument: None,
             audio_recording: None,
             g711,
+            sowt,
             ima4,
             g726,
             ima4_buffer: Vec::new(),
@@ -620,7 +688,12 @@ impl<W: Write + Seek> AiffEncoder<W> {
                     .map_err(|_| AudioError::InvalidData("AIFF block is too large"))?;
                 let mask = !((1_u16 << (16 - self.bits_per_sample)) - 1);
                 for value in values {
-                    bytes.extend_from_slice(&((*value as u16 & mask).to_be_bytes()));
+                    let sample = *value as u16 & mask;
+                    bytes.extend_from_slice(if self.sowt {
+                        &sample.to_le_bytes()
+                    } else {
+                        &sample.to_be_bytes()
+                    });
                 }
             }
             Samples::I24(values) => {
@@ -639,7 +712,13 @@ impl<W: Write + Seek> AiffEncoder<W> {
                             "AIFF 24-bit sample is out of range",
                         ));
                     }
-                    bytes.extend_from_slice(&((value as u32 & mask).to_be_bytes()[1..]));
+                    let sample = value as u32 & mask;
+                    let bytes24 = if self.sowt {
+                        sample.to_le_bytes()
+                    } else {
+                        sample.to_be_bytes()
+                    };
+                    bytes.extend_from_slice(if self.sowt { &bytes24[..3] } else { &bytes24[1..] });
                 }
             }
             Samples::I32(values) => {
@@ -653,7 +732,12 @@ impl<W: Write + Seek> AiffEncoder<W> {
                     .map_err(|_| AudioError::InvalidData("AIFF block is too large"))?;
                 let mask = !((1_u32 << (32 - self.bits_per_sample)) - 1);
                 for value in values {
-                    bytes.extend_from_slice(&((*value as u32 & mask).to_be_bytes()));
+                    let sample = *value as u32 & mask;
+                    bytes.extend_from_slice(if self.sowt {
+                        &sample.to_le_bytes()
+                    } else {
+                        &sample.to_be_bytes()
+                    });
                 }
             }
             Samples::F32(values) => {

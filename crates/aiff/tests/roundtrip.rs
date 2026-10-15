@@ -22,6 +22,54 @@ fn audio(format: SampleFormat) -> PcmBuffer {
     PcmBuffer::new(spec, samples).unwrap()
 }
 
+#[test]
+fn aifc_sowt_writer_round_trips_integer_depths_and_emits_little_endian_pcm() {
+    let cases = [
+        (
+            SampleFormat::PcmU8,
+            Samples::U8(vec![0, 128, 255, 64]),
+            8,
+            vec![0x80, 0x00, 0x7f, 0xc0],
+        ),
+        (
+            SampleFormat::PcmI16,
+            Samples::I16(vec![i16::MIN, -1, 0, i16::MAX]),
+            16,
+            vec![0x00, 0x80, 0xff, 0xff, 0x00, 0x00, 0xff, 0x7f],
+        ),
+        (
+            SampleFormat::PcmI24,
+            Samples::I24(vec![-8_388_608, -1, 0, 8_388_607]),
+            24,
+            vec![0x00, 0x00, 0x80, 0xff, 0xff, 0xff, 0, 0, 0, 0xff, 0xff, 0x7f],
+        ),
+        (
+            SampleFormat::PcmI32,
+            Samples::I32(vec![i32::MIN, -1, 0, i32::MAX]),
+            32,
+            vec![0, 0, 0, 0x80, 0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x7f],
+        ),
+    ];
+
+    for (format, samples, bits, expected_payload) in cases {
+        let spec = AudioSpec::new(44_100, 2, format).unwrap();
+        let input = PcmBuffer::new(spec, samples).unwrap();
+        let mut encoder = AiffEncoder::new_aifc_sowt(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_block(&input).unwrap();
+        let encoded = encoder.finish().unwrap().get_ref().clone();
+        let comm = chunk_body(&encoded, b"COMM");
+        assert_eq!(u16::from_be_bytes(comm[6..8].try_into().unwrap()), bits);
+        assert_eq!(&comm[18..22], b"sowt");
+        assert_eq!(comm[22], 0, "sowt compression name is empty");
+        assert_eq!(&chunk_body(&encoded, b"SSND")[8..], expected_payload);
+
+        let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+        assert_eq!(decoder.spec(), spec);
+        assert_eq!(decoder.read_frames(2).unwrap().unwrap(), input);
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+}
+
 fn append_chunk(form: &mut Vec<u8>, id: &[u8; 4], body: &[u8]) {
     form.extend_from_slice(id);
     form.extend_from_slice(&(body.len() as u32).to_be_bytes());

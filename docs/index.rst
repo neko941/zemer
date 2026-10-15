@@ -17,9 +17,10 @@ uncompressed WVX, writes raw native DSD for up to 32 channels, and emits
 standard-bitrate integer PCM hybrid pairs. APEv2 UTF-8 text tags can be edited
 while retaining non-text items. The official suite decoded all 35 supported
 files, skipped 9 legacy files, and rejected all 4 malformed files.
-The ``zemer-aiff`` crate reads AIFF/AIFC integer PCM, AIFC IEEE float32/64,
+The ``zemer-aiff`` crate reads AIFF/AIFC integer PCM, including AIFC
+little-endian ``sowt`` output, AIFC IEEE float32/64,
 G.711 A-law/μ-law, Apple IMA4, DWVW, and G.726; it writes AIFF integer PCM and
-AIFC integer/float/G.711/IMA4/DWVW/G.726 profiles. The reusable
+AIFC big-endian/little-endian PCM, float/G.711/IMA4/DWVW/G.726 profiles. The reusable
 ``zemer-dwvw`` crate provides the channel codec. AIFF text chunks map to shared
 title, artist, and comment metadata;
 typed comments and sample-frame markers are also exposed and writable.
