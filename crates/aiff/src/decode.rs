@@ -69,7 +69,8 @@ impl<R: Read + Seek> AiffDecoder<R> {
             )))
             .ok_or(AudioError::InvalidFormat("AIFF FORM size overflow"))?;
         let physical_end = reader.seek(SeekFrom::End(0))?;
-        if file_end > physical_end || file_end < 12 {
+        let missing_final_pad = file_end.checked_sub(physical_end) == Some(1);
+        if (file_end > physical_end && !missing_final_pad) || file_end < 12 {
             return Err(AudioError::InvalidFormat("AIFF FORM extends past the file"));
         }
         reader.seek(SeekFrom::Start(12))?;
@@ -95,7 +96,11 @@ impl<R: Read + Seek> AiffDecoder<R> {
                 .checked_add(size)
                 .and_then(|value| value.checked_add(size & 1))
                 .ok_or(AudioError::InvalidFormat("AIFF chunk size overflow"))?;
-            if end > file_end {
+            let omitted_pad = missing_final_pad
+                && end == file_end
+                && size & 1 == 1
+                && body.checked_add(size) == Some(physical_end);
+            if end > file_end || (end > physical_end && !omitted_pad) {
                 return Err(AudioError::InvalidFormat("AIFF chunk extends past FORM"));
             }
             match &header[..4] {

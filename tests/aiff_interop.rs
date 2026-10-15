@@ -143,6 +143,63 @@ fn decodes_mcgill_afsp_profiles_against_ffmpeg() {
 }
 
 #[test]
+#[ignore = "requires McGill AIFF/AIFC perverse samples in ZEMER_MCGILL_AIFF_PERVERSE_CORPUS and FFmpeg in ZEMER_FFMPEG"]
+fn decodes_mcgill_aifc_perverse_files_against_ffmpeg() {
+    let corpus = std::env::var_os("ZEMER_MCGILL_AIFF_PERVERSE_CORPUS")
+        .expect("set ZEMER_MCGILL_AIFF_PERVERSE_CORPUS to the downloaded sample directory");
+    let corpus = std::path::PathBuf::from(corpus);
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to the FFmpeg binary");
+    let cases = [
+        ("Pmiscck.aif", 9),
+        ("Pnossnd.aif", 0),
+        ("Poffset.aif", 9),
+        ("Porder.aif", 9),
+        ("Ptjunk.aif", 9),
+        ("Fnonull.aif", 9),
+    ];
+
+    for (name, expected_frames) in cases {
+        let path = corpus.join(name);
+        let mut decoder = AiffDecoder::new(File::open(&path).unwrap()).unwrap();
+        assert!(decoder.is_aifc(), "{name}");
+        assert_eq!(decoder.spec().sample_rate(), 8_000, "{name}");
+        assert_eq!(decoder.spec().channels(), 1, "{name}");
+        assert_eq!(
+            decoder.spec().sample_format(),
+            SampleFormat::PcmI16,
+            "{name}"
+        );
+
+        let oracle = Command::new(&ffmpeg)
+            .args(["-v", "error", "-i"])
+            .arg(&path)
+            .args(["-map", "0:a:0", "-f", "s16le", "pipe:1"])
+            .output()
+            .unwrap();
+        assert!(
+            oracle.status.success(),
+            "FFmpeg failed for {name}: {}",
+            String::from_utf8_lossy(&oracle.stderr)
+        );
+
+        let mut actual = Vec::new();
+        let mut frames = 0;
+        while let Some(block) = decoder.read_frames(4).unwrap() {
+            frames += block.frames();
+            append_pcm_bytes(block.samples(), &mut actual);
+        }
+        assert_eq!(frames, expected_frames, "{name}");
+        let expected_bytes = expected_frames * 2;
+        assert!(
+            oracle.stdout.len() >= expected_bytes,
+            "{name} oracle byte count"
+        );
+        // These files deliberately include SSND padding/trailing data beyond the COMM frame count.
+        assert_eq!(&actual, &oracle.stdout[..expected_bytes], "{name} PCM");
+    }
+}
+
+#[test]
 #[ignore = "requires McGill o2_726.aiff and external SpanDSP PCM oracle paths in ZEMER_AIFC_G726_*"]
 fn decodes_mcgill_aifc_g726_against_spandsp_pcm_oracle() {
     let sample = std::env::var_os("ZEMER_AIFC_G726_SAMPLE").expect("G.726 sample path is required");

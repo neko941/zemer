@@ -537,6 +537,24 @@ ZEMER_MCGILL_AIFF_CORPUS="$dir" ZEMER_FFMPEG=ffmpeg \
   decodes_mcgill_afsp_profiles_against_ffmpeg -- --ignored --exact
 ```
 
+The ignored `tests/aiff_interop.rs::decodes_mcgill_aifc_perverse_files_against_ffmpeg`
+test checks the five legitimate McGill AIFC edge cases plus `Fnonull.aif`,
+which omits the final odd-chunk fill byte. PCM is compared with FFmpeg through
+the frame count declared by each `COMM` chunk; these samples intentionally have
+padding or trailing bytes beyond that count. Download and run them with:
+
+```sh
+base=https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/AIFF/Samples/Perverse
+dir=/tmp/zemer-mcgill-aiff-perverse
+mkdir -p "$dir"
+for sample in Pmiscck Pnossnd Poffset Porder Ptjunk Fnonull; do
+  curl -fsSL "$base/$sample.aif" -o "$dir/$sample.aif"
+done
+ZEMER_MCGILL_AIFF_PERVERSE_CORPUS="$dir" ZEMER_FFMPEG=ffmpeg \
+  cargo test -p zemer-tests --test aiff_interop \
+  decodes_mcgill_aifc_perverse_files_against_ffmpeg -- --ignored --exact
+```
+
 The ignored `tests/dst_iso_conformance.rs` tests use official ISO DST bitstreams
 and paired raw DSD reference MP4s kept outside the repository. Set
 `ZEMER_DST_COMPRESSED_DIR` and `ZEMER_DST_REFERENCE_DIR` to the corresponding
