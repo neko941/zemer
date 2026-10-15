@@ -1058,7 +1058,14 @@ fn convert_aiff_valid_bits_through_cli() {
     for (format, extension) in [("aiff", "aiff"), ("aifc", "aifc")] {
         let output_path = temporary_path().with_extension(extension);
         let output = Command::new(cli_path())
-            .args(["convert", "--format", format, "--valid-bits", "12", "--json"])
+            .args([
+                "convert",
+                "--format",
+                format,
+                "--valid-bits",
+                "12",
+                "--json",
+            ])
             .arg(&input_path)
             .arg(&output_path)
             .output()
