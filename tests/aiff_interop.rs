@@ -261,6 +261,41 @@ fn encodes_aiff_multichannel_pcm_compatible_with_ffmpeg() {
 
 #[test]
 #[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
+fn encodes_aifc_sowt_16_bit_compatible_with_ffmpeg() {
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
+    let spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap();
+    let block = PcmBuffer::new(
+        spec,
+        Samples::I16(vec![
+            i16::MIN,
+            i16::MAX,
+            -3_001,
+            3_001,
+            -1,
+            1,
+            0,
+            -16,
+            -123,
+            123,
+        ]),
+    )
+    .unwrap();
+    let mut encoder = AiffEncoder::new_aifc_sowt(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.write_block(&block).unwrap();
+    let encoded = encoder.finish().unwrap().get_ref().clone();
+    let oracle = decode_ffmpeg(&ffmpeg, &encoded, "s16le");
+
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(decoder.spec(), spec);
+    let mut actual = Vec::new();
+    while let Some(block) = decoder.read_frames(3).unwrap() {
+        append_pcm_bytes(block.samples(), &mut actual);
+    }
+    assert_eq!(actual, oracle, "FFmpeg and Zemer sowt PCM differ");
+}
+
+#[test]
+#[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
 fn encodes_aifc_float_compatible_with_ffmpeg() {
     let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
     let cases = [

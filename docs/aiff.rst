@@ -16,8 +16,12 @@ which truncates precision. Existing constructors write the full container
 width. The decoder also reads big-endian AIFF PCM, AIFC ``NONE``/``twos``
 big-endian PCM, AIFC ``sowt`` little-endian PCM, and AIFC ``fl32``/``fl64``
 IEEE floating-point audio (including uppercase ``FL32``/``FL64`` aliases).
-The writer emits AIFF integer PCM and AIFC integer
-PCM at the selected valid depth, or float32/64 at full precision.
+The writer emits AIFF integer PCM and AIFC integer PCM at the selected valid
+depth, or float32/64 at full precision. AIFC ``sowt`` writes byte-swapped
+little-endian PCM through ``AiffEncoder::new_aifc_sowt`` (and its
+valid-bit-depth variant); choose it explicitly when producing that AIFC profile.
+Byte layouts and round trips are checked at 8/16/24/32 bits; generated 16-bit
+stereo output matches FFmpeg's decoded PCM exactly.
 Apple IMA4 AIFC packets decode to signed 16-bit PCM; ``new_aifc_ima4`` writes
 IMA4 only when explicitly selected for mono or stereo. Generated mono and
 stereo output has been compared sample-for-sample with FFmpeg 4.2.2; wider
@@ -145,3 +149,5 @@ accepts float32/64 and preserves those sample bits. ``aifc_ima4`` encodes lossy
 and encodes signed 16-bit PCM.
 Use ``aifc_dwvw`` for AIFC DWVW output; it accepts integer PCM and optional
 ``--valid-bits`` from 2 through 32, subject to the input container width.
+Use ``aifc_sowt`` to write little-endian AIFC PCM; ``--valid-bits`` can select
+the stored precision from 1 through 32 bits.

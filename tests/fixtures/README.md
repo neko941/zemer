@@ -708,6 +708,17 @@ ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
   encodes_aiff_multichannel_pcm_compatible_with_ffmpeg -- --ignored --exact
 ```
 
+The ignored `encodes_aifc_sowt_16_bit_compatible_with_ffmpeg` test compares
+generated stereo 16-bit AIFC ``sowt`` output against FFmpeg and Zemer PCM
+across uneven streaming reads. FFmpeg 4.2.2 misreports 24-bit ``sowt`` as
+16-bit PCM, so the external gate stays at 16 bits; library tests check exact
+8/16/24/32-bit byte layouts and round trips. The oracle test needs only FFmpeg:
+
+```sh
+ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
+  encodes_aifc_sowt_16_bit_compatible_with_ffmpeg -- --ignored --exact
+```
+
 The ignored `encodes_aifc_float_compatible_with_ffmpeg` test checks both AIFC
 IEEE float widths (`fl32` and `fl64`). It encodes stereo samples including
 signed zero, minimum positive normal, and maximum finite values, then requires

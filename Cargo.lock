@@ -29,6 +29,7 @@ dependencies = [
  "zemer-dsf",
  "zemer-flac",
  "zemer-g711",
+ "zemer-ima-adpcm",
  "zemer-iso9660",
  "zemer-ogg",
  "zemer-vorbis",
@@ -45,6 +46,7 @@ dependencies = [
  "zemer-g711",
  "zemer-g726",
  "zemer-id3",
+ "zemer-ima-adpcm",
 ]
 
 [[package]]
@@ -130,6 +132,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zemer-ima-adpcm"
+version = "0.7.0"
+
+[[package]]
 name = "zemer-iso9660"
 version = "0.7.0"
 
@@ -159,6 +165,7 @@ dependencies = [
  "zemer-dwvw",
  "zemer-flac",
  "zemer-g711",
+ "zemer-ima-adpcm",
  "zemer-iso9660",
  "zemer-ogg",
  "zemer-vorbis",
@@ -180,6 +187,7 @@ version = "0.7.0"
 dependencies = [
  "zemer-core",
  "zemer-g711",
+ "zemer-ima-adpcm",
 ]
 
 [[package]]
