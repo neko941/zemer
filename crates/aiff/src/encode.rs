@@ -6,7 +6,9 @@ use id3::{encode_metadata, parse_id3_tag, rewrite_metadata_tag};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 use crate::G726Rate;
+use crate::audio_recording::{AiffAudioRecording, write_audio_recording_chunk};
 use crate::comment::{AiffComment, validate_comments, write_comments_chunk};
+use crate::dwvw_spool::DwvwSpool;
 use crate::instrument::{
     AiffInstrument, validate_instrument, validate_instrument_markers, write_instrument_chunk,
 };
@@ -27,9 +29,11 @@ pub struct AiffEncoder<W> {
     comments: Vec<AiffComment>,
     markers: Vec<AiffMarker>,
     instrument: Option<AiffInstrument>,
+    audio_recording: Option<AiffAudioRecording>,
     g711: Option<G711Encoding>,
     ima4: bool,
     g726: Option<G726Encoder>,
+    dwvw: Option<DwvwSpool>,
     ima4_buffer: Vec<i16>,
     ima4_states: Vec<Option<crate::ima4::State>>,
     poisoned: bool,
@@ -48,6 +52,7 @@ enum AiffCodec {
     G711(G711Encoding),
     Ima4,
     G726(G726Rate),
+    Dwvw,
 }
 
 impl<W: Write + Seek> AiffEncoder<W> {
@@ -185,6 +190,44 @@ impl<W: Write + Seek> AiffEncoder<W> {
         )
     }
 
+    pub fn new_aifc_dwvw(writer: W, spec: AudioSpec) -> Result<Self, AudioError> {
+        Self::new_aifc_dwvw_with_bits_per_sample_and_metadata(
+            writer,
+            spec,
+            &Metadata::default(),
+            None,
+        )
+    }
+
+    pub fn new_aifc_dwvw_with_bits_per_sample(
+        writer: W,
+        spec: AudioSpec,
+        bits_per_sample: u16,
+    ) -> Result<Self, AudioError> {
+        Self::new_aifc_dwvw_with_bits_per_sample_and_metadata(
+            writer,
+            spec,
+            &Metadata::default(),
+            Some(bits_per_sample),
+        )
+    }
+
+    pub fn new_aifc_dwvw_with_bits_per_sample_and_metadata(
+        writer: W,
+        spec: AudioSpec,
+        metadata: &Metadata,
+        bits_per_sample: Option<u16>,
+    ) -> Result<Self, AudioError> {
+        Self::new_configured(
+            writer,
+            spec,
+            metadata,
+            AiffKind::Aifc,
+            AiffCodec::Dwvw,
+            bits_per_sample,
+        )
+    }
+
     fn new_configured(
         mut writer: W,
         spec: AudioSpec,
@@ -198,6 +241,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             _ => None,
         };
         let ima4 = matches!(codec, AiffCodec::Ima4);
+        let dwvw_enabled = matches!(codec, AiffCodec::Dwvw);
         let g726_rate = match codec {
             AiffCodec::G726(rate) => Some(rate),
             _ => None,
@@ -206,6 +250,20 @@ impl<W: Write + Seek> AiffEncoder<W> {
         if ima4 && (kind != AiffKind::Aifc || spec.sample_format() != SampleFormat::PcmI16) {
             return Err(AudioError::InvalidData(
                 "AIFC IMA4 encoding requires signed 16-bit PCM input",
+            ));
+        }
+        if dwvw_enabled
+            && (kind != AiffKind::Aifc
+                || !matches!(
+                    spec.sample_format(),
+                    SampleFormat::PcmU8
+                        | SampleFormat::PcmI16
+                        | SampleFormat::PcmI24
+                        | SampleFormat::PcmI32
+                ))
+        {
+            return Err(AudioError::InvalidData(
+                "AIFC DWVW encoding requires integer PCM input",
             ));
         }
         if g711.is_some() && spec.sample_format() != SampleFormat::PcmI16 {
@@ -268,7 +326,9 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 | SampleFormat::PcmI32
         );
         let valid_bit_depth = match spec.sample_format() {
-            SampleFormat::PcmU8 => (1..=8).contains(&bits_per_sample),
+            SampleFormat::PcmU8 => {
+                (if dwvw_enabled { 2 } else { 1 }..=8).contains(&bits_per_sample)
+            }
             SampleFormat::PcmI16 => (9..=16).contains(&bits_per_sample),
             SampleFormat::PcmI24 => (17..=24).contains(&bits_per_sample),
             SampleFormat::PcmI32 => (25..=32).contains(&bits_per_sample),
@@ -281,6 +341,9 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 "AIFF bit depth does not match the sample format",
             ));
         }
+        let dwvw = dwvw_enabled
+            .then(|| DwvwSpool::new(usize::from(spec.channels()), bits_per_sample as u8))
+            .transpose()?;
         writer.write_all(b"FORM\0\0\0\0")?;
         writer.write_all(match kind {
             AiffKind::Aiff => b"AIFF",
@@ -289,7 +352,9 @@ impl<W: Write + Seek> AiffEncoder<W> {
         if kind == AiffKind::Aifc {
             writer.write_all(b"FVER\0\0\0\x04\xa2\x80\x51\x40")?;
         }
-        let (bits, compression, compression_name) = if g726_rate.is_some() {
+        let (bits, compression, compression_name) = if dwvw.is_some() {
+            (bits_per_sample, *b"DWVW", b"DWVW".as_slice())
+        } else if g726_rate.is_some() {
             (16_u16, *b"G726", b"G.726".as_slice())
         } else {
             match (g711, ima4, spec.sample_format()) {
@@ -359,12 +424,14 @@ impl<W: Write + Seek> AiffEncoder<W> {
             comments: Vec::new(),
             markers: Vec::new(),
             instrument: None,
+            audio_recording: None,
             g711,
             ima4,
             g726,
             ima4_buffer: Vec::new(),
             ima4_states: vec![None; usize::from(spec.channels())],
             poisoned: false,
+            dwvw,
             finished: false,
         };
         encoder.set_metadata(metadata)?;
@@ -413,6 +480,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             comments,
             &self.markers,
             self.instrument.as_ref(),
+            self.audio_recording.as_ref(),
         )?;
         let mut copied = Vec::new();
         copied
@@ -435,6 +503,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             &self.comments,
             markers,
             self.instrument.as_ref(),
+            self.audio_recording.as_ref(),
         )?;
         let mut copied = Vec::new();
         copied
@@ -457,12 +526,41 @@ impl<W: Write + Seek> AiffEncoder<W> {
             &self.comments,
             &self.markers,
             Some(instrument),
+            self.audio_recording.as_ref(),
         )?;
         self.instrument = Some(instrument.clone());
         Ok(())
     }
 
+    pub fn set_audio_recording(
+        &mut self,
+        recording: &AiffAudioRecording,
+    ) -> Result<(), AudioError> {
+        if self.kind != AiffKind::Aifc {
+            return Err(AudioError::Unsupported(
+                "AIFF AESD audio-recording metadata requires AIFC",
+            ));
+        }
+        if self.frames != 0 || self.finished {
+            return Err(AudioError::InvalidData(
+                "AIFF AESD metadata must be set before audio samples",
+            ));
+        }
+        validate_combined_metadata(
+            &self.metadata,
+            &self.comments,
+            &self.markers,
+            self.instrument.as_ref(),
+            Some(recording),
+        )?;
+        self.audio_recording = Some(*recording);
+        Ok(())
+    }
+
     fn write_samples(&mut self, samples: &Samples) -> Result<(), AudioError> {
+        if let Some(encoder) = &mut self.dwvw {
+            return encoder.write_interleaved(&signed_dwvw_samples(samples, self.bits_per_sample)?);
+        }
         if let Some(encoder) = &mut self.g726 {
             let Samples::I16(values) = samples else {
                 return Err(AudioError::InvalidData(
@@ -697,6 +795,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             &self.comments,
             &self.markers,
             self.instrument.as_ref(),
+            self.audio_recording.as_ref(),
         )?;
         self.metadata = metadata;
         self.id3_tag = Some(tag.to_vec());
@@ -704,6 +803,15 @@ impl<W: Write + Seek> AiffEncoder<W> {
     }
 
     fn finish_inner(&mut self) -> Result<(), AudioError> {
+        if let Some(encoder) = self.dwvw.take() {
+            let start = self.writer.stream_position()?;
+            encoder.finish_to(&mut self.writer)?;
+            let end = self.writer.stream_position()?;
+            self.data_bytes = self
+                .data_bytes
+                .checked_add(end - start)
+                .ok_or(AudioError::InvalidData("AIFF data size overflow"))?;
+        }
         if let Some(encoder) = &mut self.g726 {
             let bytes = encoder.finish();
             self.write_encoded_block(bytes)?;
@@ -749,6 +857,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 &self.comments,
                 &self.markers,
                 self.instrument.as_ref(),
+                self.audio_recording.as_ref(),
             )?,
             id3_tag.len() as u64,
         )?;
@@ -775,6 +884,9 @@ impl<W: Write + Seek> AiffEncoder<W> {
         write_markers_chunk(&mut self.writer, &self.markers)?;
         if let Some(instrument) = &self.instrument {
             write_instrument_chunk(&mut self.writer, instrument)?;
+        }
+        if let Some(recording) = &self.audio_recording {
+            write_audio_recording_chunk(&mut self.writer, recording)?;
         }
         let end = self.writer.stream_position()?;
         let form_size = end
@@ -816,6 +928,27 @@ pub(super) fn write_text_chunk(
         writer.write_all(&[0])?;
     }
     Ok(())
+}
+
+fn signed_dwvw_samples(samples: &Samples, bits: u16) -> Result<Vec<i32>, AudioError> {
+    let values = match samples {
+        Samples::U8(values) => values
+            .iter()
+            .map(|&value| ((i16::from(value) - 128) >> (8 - bits)) as i32)
+            .collect(),
+        Samples::I16(values) => values
+            .iter()
+            .map(|&value| i32::from(value >> (16 - bits)))
+            .collect(),
+        Samples::I24(values) => values.iter().map(|&value| value >> (24 - bits)).collect(),
+        Samples::I32(values) => values.iter().map(|&value| value >> (32 - bits)).collect(),
+        Samples::F32(_) | Samples::F64(_) => {
+            return Err(AudioError::InvalidData(
+                "AIFC DWVW encoding requires integer PCM input",
+            ));
+        }
+    };
+    Ok(values)
 }
 
 fn write_id3_chunk(writer: &mut impl Write, tag: &[u8]) -> Result<(), AudioError> {
@@ -869,6 +1002,7 @@ impl<W: Write + Seek> AudioEncoder for AiffEncoder<W> {
             &self.comments,
             &self.markers,
             self.instrument.as_ref(),
+            self.audio_recording.as_ref(),
         )?;
         self.metadata = metadata.clone();
         Ok(())
@@ -931,6 +1065,7 @@ fn validate_combined_metadata(
     comments: &[AiffComment],
     markers: &[AiffMarker],
     instrument: Option<&AiffInstrument>,
+    audio_recording: Option<&AiffAudioRecording>,
 ) -> Result<u64, AudioError> {
     let text_size = ["title", "artist", "copyright", "comment"]
         .iter()
@@ -964,6 +1099,7 @@ fn validate_combined_metadata(
             })
         })
         .and_then(|size| size.checked_add(if instrument.is_some() { 28 } else { 0 }))
+        .and_then(|size| size.checked_add(if audio_recording.is_some() { 32 } else { 0 }))
         .ok_or(AudioError::InvalidData("AIFF metadata size overflow"))?;
     if total_size > 16 * 1024 * 1024 {
         return Err(AudioError::Unsupported("AIFF metadata exceeds 16 MiB"));
@@ -973,7 +1109,18 @@ fn validate_combined_metadata(
 
 #[cfg(test)]
 mod tests {
-    use super::add_metadata_bytes;
+    use std::io::Cursor;
+
+    use zemer_core::{AudioDecoder, AudioSpec, PcmBuffer, SampleFormat, Samples};
+
+    use crate::{AiffDecoder, AiffEncoder};
+
+    use super::{add_metadata_bytes, extended_rate};
+
+    const INDEPENDENT_DWVW_16: [u8; 20] = [
+        0x01, 0x8f, 0x85, 0xe0, 0x08, 0x31, 0x8f, 0x68, 0x36, 0xc1, 0x5f, 0xe8, 0xdf, 0x36, 0x28,
+        0xdb, 0x40, 0x4d, 0x13, 0xd7,
+    ];
 
     #[test]
     fn aggregate_metadata_limit_includes_id3_and_native_chunks() {
@@ -981,5 +1128,91 @@ mod tests {
         assert_eq!(add_metadata_bytes(limit - 1, 1).unwrap(), limit);
         assert!(add_metadata_bytes(limit, 1).is_err());
         assert!(add_metadata_bytes(u64::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn aifc_dwvw_decodes_independent_16_bit_payload() {
+        let file = aifc_dwvw_file(1, 9, &INDEPENDENT_DWVW_16);
+
+        let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
+        assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
+        assert_eq!(
+            decoder.read_frames(9).unwrap().unwrap().samples(),
+            &Samples::I16([287, 4255, 8549, 12341, 15845, 18660, 20931, 22349, 23079].to_vec())
+        );
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn aifc_dwvw_decodes_independent_payloads_across_channel_counts() {
+        let channel_payload = &INDEPENDENT_DWVW_16[..18];
+        let expected_channel = [287, 4255, 8549, 12341, 15845, 18660, 20931, 22349, 23079];
+        for channels in 1..=8 {
+            let mut payload = Vec::with_capacity(channel_payload.len() * usize::from(channels));
+            for _ in 0..channels {
+                payload.extend_from_slice(channel_payload);
+            }
+            let file = aifc_dwvw_file(channels, 9, &payload);
+            let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
+            let expected: Vec<_> = expected_channel
+                .into_iter()
+                .flat_map(|sample| std::iter::repeat_n(sample, usize::from(channels)))
+                .collect();
+            assert_eq!(
+                decoder.read_frames(9).unwrap().unwrap().samples(),
+                &Samples::I16(expected),
+                "failed with {channels} DWVW channels"
+            );
+            assert!(decoder.read_frames(1).unwrap().is_none());
+        }
+    }
+
+    fn aifc_dwvw_file(channels: u16, frame_count: u32, payload: &[u8]) -> Vec<u8> {
+        let mut file = b"FORM\0\0\0\0AIFC".to_vec();
+        file.extend_from_slice(b"FVER\0\0\0\x04\xa2\x80\x51\x40");
+        file.extend_from_slice(b"COMM\0\0\0\x1c");
+        file.extend_from_slice(&channels.to_be_bytes());
+        file.extend_from_slice(&frame_count.to_be_bytes());
+        file.extend_from_slice(&16_u16.to_be_bytes());
+        file.extend_from_slice(&extended_rate(44_100).unwrap());
+        file.extend_from_slice(b"DWVW\x04DWVW");
+        file.push(0);
+        let sound_chunk_size = 8 + payload.len() as u32;
+        file.extend_from_slice(b"SSND");
+        file.extend_from_slice(&sound_chunk_size.to_be_bytes());
+        file.extend_from_slice(&[0; 8]);
+        file.extend_from_slice(payload);
+        let form_size = (file.len() - 8) as u32;
+        file[4..8].copy_from_slice(&form_size.to_be_bytes());
+        file
+    }
+
+    #[test]
+    fn aifc_dwvw_round_trips_interleaved_channels_across_blocks() {
+        let spec = AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap();
+        let samples = [
+            -30_000, 28_000, -25_000, -28_000, -16_000, 19_000, -8_000, -19_000, -1_000, 9_000, 0,
+            -9_000, 1_000, 3_000, 8_000, -3_000, 16_000, 15_000, 25_000, -15_000, 30_000, 27_000,
+            1_234, -27_000, -2_345, 5_555, 6_789, -5_555, -9_876, 11_111, 22_222, -11_111, -11_111,
+            2_222,
+        ];
+        let mut encoder = AiffEncoder::new_aifc_dwvw(Cursor::new(Vec::new()), spec).unwrap();
+        for block in [&samples[..10], &samples[10..24], &samples[24..]] {
+            encoder
+                .write_block(&PcmBuffer::new(spec, Samples::I16(block.to_vec())).unwrap())
+                .unwrap();
+        }
+        let file = encoder.finish().unwrap().get_ref().clone();
+        assert!(file.windows(4).any(|window| window == b"DWVW"));
+
+        let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_frames(5).unwrap() {
+            let Samples::I16(block) = block.samples() else {
+                panic!("AIFC DWVW sample format changed during decode");
+            };
+            decoded.extend_from_slice(block);
+        }
+        assert_eq!(decoded, samples);
     }
 }

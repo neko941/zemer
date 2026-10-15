@@ -1,11 +1,14 @@
+mod audio_recording;
 mod comment;
 mod decode;
+mod dwvw_spool;
 mod encode;
 mod ima4;
 mod instrument;
 mod marker;
 mod rewrite;
 
+pub use audio_recording::AiffAudioRecording;
 pub use comment::AiffComment;
 pub use decode::AiffDecoder;
 pub use encode::{AiffEncoder, AiffKind};

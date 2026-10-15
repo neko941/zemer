@@ -74,6 +74,9 @@ Rust library crate ``aiff`` (Cargo package ``zemer-aiff``)
   1–32 valid bits for integer PCM and clear unused low bits in the existing
   sample container.
 * ``AiffKind`` — names the AIFF or AIFC output profile.
+* ``AiffAudioRecording`` — fixed 24-byte AES channel-status payload for the
+  optional AIFC ``AESD`` chunk; ``AiffDecoder::audio_recording()`` reads it and
+  ``AiffEncoder::set_audio_recording()`` writes it.
 * ``AiffComment`` — typed ``COMT`` record with timestamp, marker ID, and raw
   text bytes; ``AiffDecoder::comments()`` reads records and
   ``AiffEncoder::set_comments()`` writes them.
