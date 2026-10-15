@@ -689,11 +689,12 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 let mask = !((1_u16 << (16 - self.bits_per_sample)) - 1);
                 for value in values {
                     let sample = *value as u16 & mask;
-                    bytes.extend_from_slice(if self.sowt {
-                        &sample.to_le_bytes()
+                    let sample_bytes = if self.sowt {
+                        sample.to_le_bytes()
                     } else {
-                        &sample.to_be_bytes()
-                    });
+                        sample.to_be_bytes()
+                    };
+                    bytes.extend_from_slice(&sample_bytes);
                 }
             }
             Samples::I24(values) => {
@@ -733,11 +734,12 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 let mask = !((1_u32 << (32 - self.bits_per_sample)) - 1);
                 for value in values {
                     let sample = *value as u32 & mask;
-                    bytes.extend_from_slice(if self.sowt {
-                        &sample.to_le_bytes()
+                    let sample_bytes = if self.sowt {
+                        sample.to_le_bytes()
                     } else {
-                        &sample.to_be_bytes()
-                    });
+                        sample.to_be_bytes()
+                    };
+                    bytes.extend_from_slice(&sample_bytes);
                 }
             }
             Samples::F32(values) => {
