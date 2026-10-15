@@ -716,7 +716,10 @@ mod tests {
         }
         let frame = crate::encode::encode_frame(&dsd, 1, frame_len).unwrap();
         assert_eq!(frame[0] >> 7, 1, "test input must use compressed mode");
-        assert!(frame.len() >= 128, "test frame must exercise deep mutations");
+        assert!(
+            frame.len() >= 128,
+            "test frame must exercise deep mutations"
+        );
 
         for sample in 0..128 {
             let byte_index = sample * frame.len() / 128;
