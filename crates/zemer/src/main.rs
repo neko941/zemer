@@ -9,6 +9,7 @@ use std::{
 };
 
 use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker, G726Rate};
+use au::{AuDecoder, AuEncoder};
 use dsdiff::{DsdiffDecoder, DsdiffEncoder};
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
@@ -44,6 +45,7 @@ struct AudioInput {
     aiff_comments: Option<Vec<AiffComment>>,
     aiff_markers: Option<Vec<AiffMarker>>,
     aiff_id3_tag: Option<Vec<u8>>,
+    au_annotation: Option<Vec<u8>>,
 }
 
 type DsdInput = (
@@ -72,6 +74,8 @@ enum OutputFormat {
     WavPack,
     Aiff,
     Aifc,
+    Au,
+    AuG711(G711Encoding),
     AifcG711(G711Encoding),
     AifcIma4,
     AifcG726,
@@ -86,6 +90,7 @@ impl OutputFormat {
             Self::Samples(format) => Some(format),
             Self::G711(_) => Some(SampleFormat::PcmI16),
             Self::AifcG711(_) => Some(SampleFormat::PcmI16),
+            Self::AuG711(_) => Some(SampleFormat::PcmI16),
             Self::AifcIma4 => Some(SampleFormat::PcmI16),
             Self::AifcG726 => Some(SampleFormat::PcmI16),
             Self::Flac | Self::OggFlac | Self::Aiff
@@ -99,6 +104,7 @@ impl OutputFormat {
             Self::WavPack => None,
             Self::Aiff => None,
             Self::Aifc => None,
+            Self::Au => None,
             Self::Dsf | Self::Dsdiff | Self::DsdiffDst => None,
         }
     }
@@ -114,6 +120,9 @@ impl OutputFormat {
             Self::WavPack => "wavpack",
             Self::Aiff => "aiff",
             Self::Aifc => "aifc",
+            Self::Au => "au",
+            Self::AuG711(G711Encoding::ALaw) => "au_alaw",
+            Self::AuG711(G711Encoding::MuLaw) => "au_mulaw",
             Self::AifcG711(G711Encoding::ALaw) => "aifc_alaw",
             Self::AifcG711(G711Encoding::MuLaw) => "aifc_mulaw",
             Self::AifcIma4 => "aifc_ima4",
@@ -381,10 +390,11 @@ fn edit_audio_metadata(
         && format != "wavpack"
         && format != "aiff"
         && format != "aifc"
+        && format != "au"
     {
         return Err(CliError {
             kind: "unsupported",
-            message: "metadata editing supports WAVE, AIFF/AIFC, DSF, DSDIFF, native FLAC, Ogg-FLAC, Ogg Vorbis, and WavPack files"
+            message: "metadata editing supports WAVE, AIFF/AIFC, AU, DSF, DSDIFF, native FLAC, Ogg-FLAC, Ogg Vorbis, and WavPack files"
                 .to_owned(),
         });
     }
@@ -409,6 +419,7 @@ fn edit_audio_metadata(
             "ogg-vorbis" => vorbis::rewrite_metadata(input_file, &mut output_file, &metadata),
             "wav" => wav::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
             "aiff" | "aifc" => aiff::rewrite_metadata(input_file, &mut output_file, &metadata),
+            "au" => au::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
             "wavpack" => wavpack::rewrite_metadata(input_file, &mut output_file, &metadata),
             _ => unreachable!("format was checked above"),
         }
@@ -587,6 +598,8 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
             | OutputFormat::WavPack
             | OutputFormat::Aiff
             | OutputFormat::Aifc
+            | OutputFormat::Au
+            | OutputFormat::AuG711(_)
             | OutputFormat::AifcG711(_)
             | OutputFormat::AifcIma4
             | OutputFormat::AifcG726
@@ -624,6 +637,8 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "g711_mulaw" => Some(OutputFormat::G711(G711Encoding::MuLaw)),
         "aifc_alaw" => Some(OutputFormat::AifcG711(G711Encoding::ALaw)),
         "aifc_mulaw" => Some(OutputFormat::AifcG711(G711Encoding::MuLaw)),
+        "au_alaw" => Some(OutputFormat::AuG711(G711Encoding::ALaw)),
+        "au_mulaw" => Some(OutputFormat::AuG711(G711Encoding::MuLaw)),
         "aifc_ima4" => Some(OutputFormat::AifcIma4),
         "aifc_g726" => Some(OutputFormat::AifcG726),
         "flac" => Some(OutputFormat::Flac),
@@ -632,6 +647,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "wavpack" => Some(OutputFormat::WavPack),
         "aiff" => Some(OutputFormat::Aiff),
         "aifc" => Some(OutputFormat::Aifc),
+        "au" => Some(OutputFormat::Au),
         "dsf" => Some(OutputFormat::Dsf),
         "dsdiff" => Some(OutputFormat::Dsdiff),
         "dsdiff_dst" => Some(OutputFormat::DsdiffDst),
@@ -651,6 +667,7 @@ fn convert_audio(
         aiff_comments,
         aiff_markers,
         aiff_id3_tag,
+        au_annotation,
         ..
     } = open_decoder(&input)?;
     let input_spec = decoder.spec();
@@ -823,6 +840,35 @@ fn convert_audio(
                 }
                 Box::new(encoder)
             }
+            OutputFormat::Au => {
+                let mut encoder = AuEncoder::new_with_metadata(
+                    output_file,
+                    spec,
+                    &au_metadata(decoder.metadata()),
+                )
+                .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(annotation) = &au_annotation {
+                    encoder
+                        .set_annotation(annotation)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                Box::new(encoder)
+            }
+            OutputFormat::AuG711(encoding) => {
+                let mut encoder = AuEncoder::new_g711_with_metadata(
+                    output_file,
+                    spec,
+                    encoding,
+                    &au_metadata(decoder.metadata()),
+                )
+                .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(annotation) = &au_annotation {
+                    encoder
+                        .set_annotation(annotation)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                Box::new(encoder)
+            }
             OutputFormat::AifcG711(encoding) => {
                 let mut encoder = AiffEncoder::new_aifc_g711_with_metadata(
                     output_file,
@@ -954,6 +1000,7 @@ fn convert_audio(
                 OutputFormat::WavPack => "wavpack",
                 OutputFormat::Aiff => "aiff",
                 OutputFormat::Aifc => "aifc",
+                OutputFormat::Au | OutputFormat::AuG711(_) => "au",
                 OutputFormat::AifcG711(_) => "aifc",
                 OutputFormat::AifcIma4 => "aifc",
                 OutputFormat::AifcG726 => "aifc",
@@ -968,6 +1015,7 @@ fn convert_audio(
             output_encoding: matches!(
                 format,
                 OutputFormat::G711(_)
+                    | OutputFormat::AuG711(_)
                     | OutputFormat::AifcG711(_)
                     | OutputFormat::AifcIma4
                     | OutputFormat::AifcG726
@@ -984,6 +1032,8 @@ fn convert_audio(
                     | OutputFormat::AifcG711(_)
                     | OutputFormat::AifcIma4
                     | OutputFormat::AifcG726
+                    | OutputFormat::Au
+                    | OutputFormat::AuG711(_)
                     | OutputFormat::Dsf
             ))
             .then_some(container),
@@ -1060,6 +1110,14 @@ fn wave_metadata(metadata: &Metadata) -> Metadata {
                 compatible.insert(key, value.clone());
             }
         }
+    }
+    compatible
+}
+
+fn au_metadata(metadata: &Metadata) -> Metadata {
+    let mut compatible = Metadata::default();
+    for value in metadata.values("COMMENT") {
+        compatible.insert("COMMENT", value.clone());
     }
     compatible
 }
@@ -1281,11 +1339,27 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
         has_signature(&mut file, b"wvpk").map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| cli_audio_error(error.into(), path))?;
+    let is_au =
+        has_signature(&mut file, b".snd").map_err(|error| cli_audio_error(error.into(), path))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| cli_audio_error(error.into(), path))?;
     let is_form =
         has_signature(&mut file, b"FORM").map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| cli_audio_error(error.into(), path))?;
-    if is_flac {
+    if is_au {
+        let decoder = AuDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
+        let annotation = decoder.annotation().to_vec();
+        Ok(AudioInput {
+            decoder: Box::new(decoder),
+            format: "au",
+            container: None,
+            aiff_comments: None,
+            aiff_markers: None,
+            aiff_id3_tag: None,
+            au_annotation: Some(annotation),
+        })
+    } else if is_flac {
         let decoder = FlacDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
         Ok(AudioInput {
             decoder: Box::new(decoder),
@@ -1294,6 +1368,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_comments: None,
             aiff_markers: None,
             aiff_id3_tag: None,
+            au_annotation: None,
         })
     } else if is_ogg {
         let is_vorbis = {
@@ -1317,6 +1392,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
                 aiff_comments: None,
                 aiff_markers: None,
                 aiff_id3_tag: None,
+                au_annotation: None,
             })
         } else {
             let decoder =
@@ -1328,6 +1404,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
                 aiff_comments: None,
                 aiff_markers: None,
                 aiff_id3_tag: None,
+                au_annotation: None,
             })
         }
     } else if is_wavpack {
@@ -1340,6 +1417,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_comments: None,
             aiff_markers: None,
             aiff_id3_tag: None,
+            au_annotation: None,
         })
     } else if is_form {
         let decoder = AiffDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
@@ -1366,6 +1444,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_comments: (!comments.is_empty()).then_some(comments),
             aiff_markers: (!markers.is_empty()).then_some(markers),
             aiff_id3_tag: id3_tag,
+            au_annotation: None,
         })
     } else {
         let decoder = WavDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
@@ -1377,6 +1456,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             aiff_comments: None,
             aiff_markers: None,
             aiff_id3_tag: None,
+            au_annotation: None,
         })
     }
 }
@@ -1445,7 +1525,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|au|au_alaw|au_mulaw|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 

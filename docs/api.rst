@@ -83,6 +83,18 @@ Rust library crate ``aiff`` (Cargo package ``zemer-aiff``)
 * ``rewrite_metadata`` — replaces TITLE/ARTIST/COMMENT chunks while preserving
   encoded audio, unknown chunks, ID3 opaque frames, and trailing bytes.
 
+Sun/NeXT AU library crate
+-------------------------
+
+* ``AuDecoder<R>`` — streams signed PCM 8/16/24/32-bit, IEEE float32/64, and
+  G.711 A-law/μ-law from big-endian AU files. It implements ``AudioDecoder``.
+* ``AuEncoder<W>`` — writes those encodings and implements ``AudioEncoder``.
+  G.711 output is selected explicitly with ``AuEncoder::new_g711``.
+* ``annotation()`` and ``set_annotation()`` — inspect or preserve bounded raw
+  annotation bytes, including non-UTF-8 data.
+* ``rewrite_metadata`` — changes the COMMENT annotation without decoding or
+  re-encoding audio; an unchanged annotation is copied byte-for-byte.
+
 Crate ``zemer-dsd``
 -------------------
 

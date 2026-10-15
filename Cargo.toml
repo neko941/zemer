@@ -14,6 +14,7 @@ members = [
     "crates/ogg",
     "crates/wavpack",
     "crates/aiff",
+    "crates/au",
     "crates/g711",
     "crates/g726",
     "crates/vorbis",
@@ -43,6 +44,7 @@ cue.workspace = true
 flac.workspace = true
 wavpack.workspace = true
 aiff.workspace = true
+au.workspace = true
 g711.workspace = true
 dsdiff.workspace = true
 dst.workspace = true
@@ -68,6 +70,7 @@ flac = { package = "zemer-flac", path = "crates/flac", version = "0.7.0" }
 ogg = { package = "zemer-ogg", path = "crates/ogg", version = "0.7.0" }
 wavpack = { package = "zemer-wavpack", path = "crates/wavpack", version = "0.7.0" }
 aiff = { package = "zemer-aiff", path = "crates/aiff", version = "0.7.0" }
+au = { package = "zemer-au", path = "crates/au", version = "0.7.0" }
 g711 = { package = "zemer-g711", path = "crates/g711", version = "0.7.0" }
 g726 = { package = "zemer-g726", path = "crates/g726", version = "0.7.0" }
 vorbis = { package = "zemer-vorbis", path = "crates/vorbis", version = "0.7.0" }

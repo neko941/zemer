@@ -20,5 +20,6 @@ ogg.workspace = true
 vorbis.workspace = true
 wavpack.workspace = true
 aiff.workspace = true
+au.workspace = true
 g711.workspace = true
 dsdiff.workspace = true
