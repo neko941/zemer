@@ -10,13 +10,15 @@ The format's data offset locates the annotation and audio; a data size of
 
 Supported encodings are signed linear PCM 8/16/24/32-bit, IEEE float32/64,
 G.711 μ-law and A-law, and G.721/G.723 ADPCM. These ADPCM profiles are
-restricted to mono 8 kHz audio and use the shared G.726 codec with low-bit-first
-codeword packing. G.721 writes complete two-sample groups; G.723 3-bit and
-5-bit writes require complete eight-sample groups because the AU header does
-not store a decoded sample count. Other AU encoding codes return an unsupported
-error. Audio is decoded and encoded in bounded blocks. The decoder rejects
-invalid offsets, truncated declared audio, partial sample frames, and ADPCM
-payloads that do not end on a complete packed group.
+restricted to mono 8 kHz audio and use the shared G.726 codec. G.721 packing is
+low-bit-first. G.723 currently inherits low-bit-first packing from G.726, but
+the Sun AU references checked so far identify codes 25/26 without defining
+their payload bit order. G.721 writes complete two-sample groups; G.723 3-bit
+and 5-bit writes require complete eight-sample groups because the AU header
+does not store a decoded sample count. Other AU encoding codes return an
+unsupported error. Audio is decoded and encoded in bounded blocks. The decoder
+rejects invalid offsets, truncated declared audio, partial sample frames, and
+ADPCM payloads that do not end on a complete packed group.
 
 The raw annotation is available through ``AuDecoder::annotation()`` and can be
 set before writing samples with ``AuEncoder::set_annotation()``. Valid UTF-8
@@ -28,10 +30,14 @@ COMMENT is written as UTF-8 followed by a NUL terminator and alignment padding.
 AU encoding 23 uses the shared G.726 codec at 32 kbit/s; encodings 25 and 26
 use its 24 kbit/s (3-bit) and 40 kbit/s (5-bit) rates
 [Oracle G.723 AU encoding identifiers]_. Sun's G.721 utility
-packs the first codeword into the low nibble [SunOS G.721 packing]_; the AU
-reader and writer use low-bit-first packing for these profiles. ITU-T G.726
-specifies the four rates and states compatibility with systems based on the
-1988 G.721 edition [ITU-T G.726]_.
+packs the first codeword into the low nibble [SunOS G.721 packing]_. RFC 3551
+defines low-bit-first packing for G.726 RTP payloads, but that does not
+establish the Sun AU G.723 byte layout [IETF RTP G.726 packing]_. In a
+4,096-sample comparison using external SpanDSP codeword payloads, Zemer,
+FFmpeg 4.2.2, and libsndfile 1.0.37 returned different PCM after initially
+close output. Treat this as unresolved interoperability, not proof that one
+decoder is correct. ITU-T G.726 replaces the 1988 G.721/G.723 recommendations
+and defines the shared ADPCM rates [ITU-T G.726]_.
 
 The CLI detects AU by its ``.snd`` signature, regardless of the filename
 extension. Use ``--format au`` for sample-format-selected AU output,
