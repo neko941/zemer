@@ -747,3 +747,15 @@ Set `ZEMER_AIFC_DWVW_SAMPLE` and `ZEMER_AIFC_DWVW_PCM_ORACLE`, then run:
 cargo test -p zemer-tests --test aiff_interop \
   decodes_audacity_24_bit_dwvw_against_libsndfile_oracle -- --ignored --exact
 ```
+
+The ignored `encodes_mono_24_bit_aifc_dwvw_compatible_with_libsndfile` test
+generates a deterministic mono 24-bit AIFC DWVW stream and compares all samples
+against libsndfile 1.2.2's signed 32-bit PCM output. It needs Python 3 and the
+libsndfile shared library; set `ZEMER_SNDFILE_PYTHON` if Python is not on PATH
+or `ZEMER_SNDFILE_LIBRARY` if ctypes cannot find the library automatically.
+Run it with:
+
+```sh
+ZEMER_SNDFILE_PYTHON=python3 cargo test -p zemer-tests --test aiff_interop \
+  encodes_mono_24_bit_aifc_dwvw_compatible_with_libsndfile -- --ignored --exact
+```
