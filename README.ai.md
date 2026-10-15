@@ -53,8 +53,9 @@ broad corpus conformance.
 
 AIFF and AIFC PCM/float/G.711/IMA4/G.726 support is in `crates/aiff/`. G.726
 decode accepts the recognized bitrate hint or an explicit rate; the library
-encoder takes an explicit rate and writes that hint. Legacy
-G.722/G.728/GSM/ACE/MACE codes remain unsupported. The optional
+encoder takes an explicit rate and writes that hint. G.722, G.728, and GSM
+remain unintegrated pending IPR review; ACE/MACE lack complete clean-room
+algorithm descriptions and independent test vectors. The optional
 ignored `tests/aiff_interop.rs` test compares the McGill/AFsp 12-bit AIFF and
 AIFC samples with independent FFmpeg PCM oracles; the sample files and oracles
 are temporary inputs, not bundled fixtures. A second optional corpus test
