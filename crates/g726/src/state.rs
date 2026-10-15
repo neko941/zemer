@@ -764,12 +764,10 @@ mod sync_tests {
         } else {
             code & ((1 << (width - 1)) - 1)
         };
-        let target = if decision < input_index {
-            1
-        } else if decision > input_index {
-            -1
-        } else {
-            return sp;
+        let target = match decision.cmp(&input_index) {
+            std::cmp::Ordering::Less => 1,
+            std::cmp::Ordering::Greater => -1,
+            std::cmp::Ordering::Equal => return sp,
         };
         let zero_code = if target > 0 { 0x7f } else { 0xff };
         (0..=u8::MAX)
