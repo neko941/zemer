@@ -862,8 +862,14 @@ mod tests {
     #[test]
     fn float_writer_emits_fact_with_per_channel_frame_count() {
         for (format, samples) in [
-            (SampleFormat::Float32, Samples::F32(vec![0.25, -0.5, 1.0, 0.0])),
-            (SampleFormat::Float64, Samples::F64(vec![0.25, -0.5, 1.0, 0.0])),
+            (
+                SampleFormat::Float32,
+                Samples::F32(vec![0.25, -0.5, 1.0, 0.0]),
+            ),
+            (
+                SampleFormat::Float64,
+                Samples::F64(vec![0.25, -0.5, 1.0, 0.0]),
+            ),
         ] {
             let spec = AudioSpec::new(48_000, 2, format).unwrap();
             let audio = PcmBuffer::new(spec, samples).unwrap();
@@ -1021,12 +1027,9 @@ mod tests {
     #[test]
     fn rf64_float_fact_uses_sentinel_when_frame_count_exceeds_u32() {
         let spec = AudioSpec::new(48_000, 1, SampleFormat::Float32).unwrap();
-        let mut writer = WavWriter::new_with_container(
-            SparseWriter::default(),
-            spec,
-            WavContainer::Rf64,
-        )
-        .unwrap();
+        let mut writer =
+            WavWriter::new_with_container(SparseWriter::default(), spec, WavContainer::Rf64)
+                .unwrap();
         let data_bytes = (u64::from(u32::MAX) + 1) * 4;
         let data_start = writer.data_size_offset + 4;
         writer.data_bytes = data_bytes;
