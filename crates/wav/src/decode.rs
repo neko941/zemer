@@ -3,6 +3,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
 };
 
+use crate::BextChunk;
 use crate::encode::WavContainer;
 use g711::{decode_alaw, decode_mulaw};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
@@ -222,6 +223,7 @@ pub struct WavDecoder<R> {
     spec: AudioSpec,
     container: WavContainer,
     metadata: Metadata,
+    bext: Option<BextChunk>,
     frame_bytes: u16,
     segments: VecDeque<AudioSegment>,
     remaining_frames: u64,
@@ -296,6 +298,7 @@ impl<R: Read + Seek> WavDecoder<R> {
         let mut audio = AudioLayout::default();
         let mut has_audio = false;
         let mut metadata = Metadata::default();
+        let mut bext = None;
         let mut info_metadata_bytes = 0;
         let mut info_metadata_values = 0;
         loop {
@@ -345,6 +348,11 @@ impl<R: Read + Seek> WavDecoder<R> {
             }
 
             match &chunk_header[..4] {
+                b"bext" if bext.is_none() => {
+                    let size = u32::try_from(chunk_size)
+                        .map_err(|_| AudioError::InvalidFormat("BWF bext chunk is too large"))?;
+                    bext = Some(BextChunk::read(&mut reader, size)?);
+                }
                 b"fmt " if parsed_spec.is_none() => {
                     if chunk_size > u64::from(MAX_FORMAT_CHUNK) {
                         return Err(AudioError::InvalidFormat(
@@ -426,6 +434,7 @@ impl<R: Read + Seek> WavDecoder<R> {
             spec,
             container,
             metadata,
+            bext,
             frame_bytes,
             segments: audio.segments,
             remaining_frames: audio.remaining_frames,
@@ -436,6 +445,10 @@ impl<R: Read + Seek> WavDecoder<R> {
 
     pub fn container(&self) -> WavContainer {
         self.container
+    }
+
+    pub fn bext(&self) -> Option<&BextChunk> {
+        self.bext.as_ref()
     }
 }
 

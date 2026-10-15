@@ -6,6 +6,8 @@ Reading
 
 ``WavDecoder`` accepts any ``Read + Seek`` input. It reads container chunks,
 then returns decoded audio in frame blocks through ``AudioDecoder``.
+The typed ``bext`` accessor exposes the fixed Broadcast Wave fields as their
+original bytes, preserving non-UTF-8 values and versioned reserved data.
 
 .. code-block:: rust
 
@@ -17,6 +19,10 @@ then returns decoded audio in frame blocks through ``AudioDecoder``.
    let mut decoder = WavDecoder::new(input)?;
    while let Some(block) = decoder.read_frames(8192)? {
        // Process `block.samples()` here.
+   }
+   if let Some(bext) = decoder.bext() {
+       let time_reference = bext.time_reference;
+       let coding_history = &bext.coding_history;
    }
 
 Writing
@@ -36,6 +42,28 @@ caller.
 
    let spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16)?;
    let mut writer = WavWriter::new(BufWriter::new(File::create("output.wav")?), spec)?;
+   // Supply matching PcmBuffer blocks with writer.write_block(&block)?;
+   writer.finish()?;
+
+To create a Broadcast Wave file, provide a ``BextChunk`` when constructing the
+writer. Its 602-byte fixed record, versioned reserved bytes, and variable coding
+history are written before ``fmt`` (after ``ds64`` for RF64):
+
+.. code-block:: rust
+
+   use std::{fs::File, io::BufWriter};
+   use zemer_core::{AudioEncoder, AudioSpec, SampleFormat};
+   use wav::{BextChunk, WavWriter};
+
+   let spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16)?;
+   let mut bext = BextChunk::default();
+   bext.description[..11].copy_from_slice(b"Live master");
+   bext.version = 2;
+   let mut writer = WavWriter::new_with_bext(
+       BufWriter::new(File::create("broadcast.wav")?),
+       spec,
+       &bext,
+   )?;
    // Supply matching PcmBuffer blocks with writer.write_block(&block)?;
    writer.finish()?;
 
@@ -91,8 +119,9 @@ Metadata rewriting
 
 ``wav::rewrite_metadata`` edits supported ``LIST/INFO`` text tags while
 copying audio bytes, unknown RIFF/RF64 chunks, and unrecognized INFO subchunks
-unchanged. It updates RIFF sizes and RF64 ``ds64`` size fields, including a
-size-table entry for a rewritten sentinel-sized INFO chunk. It accepts a
+unchanged. It preserves ``bext`` chunks unchanged. It updates RIFF sizes and
+RF64 ``ds64`` size fields, including a size-table entry for a rewritten
+sentinel-sized INFO chunk. It accepts a
 seekable input and output; callers should write to a new temporary file and
 replace the original only after success. Supported keys are title, artist,
 album, date, genre, and comment.
@@ -122,4 +151,6 @@ size limit. RIFF and RF64 readers support ``data`` and ``wavl``/``slnt`` audio
 segments. The writer does not create segmented ``wavl`` audio; it writes a
 contiguous ``data`` chunk. Each supported INFO value is limited to 1 MiB; the
 reader retains at most 16 MiB and 65,536 supported INFO values across the file.
-Embedded metadata beyond the listed INFO tags is not interpreted.
+The first ``bext`` chunk is parsed and bounded to 16 MiB; its fixed fields are
+602 bytes followed by coding history. Writers accept one typed ``BextChunk``.
+Other embedded metadata chunks are not interpreted.

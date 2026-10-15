@@ -15,7 +15,7 @@ The workspace separates format-independent audio types from each format implemen
 
 | Format | Status | Capabilities |
 |---|---|---|
-| RIFF/WAVE PCM 8/16/24/32-bit | Supported | Read and write; decodes ordered `data` and `LIST/wavl` `data`/`slnt` segments. RIFF INFO metadata read/write. Extensible PCM accepts 1..=container valid bits, preserves container-width sample values and optional channel masks. |
+| RIFF/WAVE PCM 8/16/24/32-bit | Supported | Read and write; decodes ordered `data` and `LIST/wavl` `data`/`slnt` segments. RIFF INFO metadata read/write; Broadcast Wave `bext` fixed fields and coding history read/write with a 16 MiB bound. Extensible PCM accepts 1..=container valid bits, preserves container-width sample values and optional channel masks. |
 | RIFF/WAVE IEEE float 32/64-bit | Supported | Read and write; RIFF INFO metadata read/write. WAVE_FORMAT_EXTENSIBLE float and optional channel masks are preserved. |
 | RIFF/WAVE G.711 A-law and μ-law | Supported | Read and write; RIFF INFO metadata read/write. Decodes to signed 16-bit PCM; writing requires explicit G.711 selection. |
 | RF64/WAVE | Supported | Read and write; RIFF INFO metadata read/write. Supports 64-bit file and data sizes; select explicitly for output. |
