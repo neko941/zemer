@@ -565,7 +565,7 @@ fn validates_aifc_version_code_and_ssnd_block_size() {
 }
 
 #[test]
-fn decodes_aifc_little_endian_and_float32_compression_codes() {
+fn decodes_aifc_little_endian_and_float_compression_codes() {
     let bytes = aifc(b"twos", 16, &[0x12, 0x34]);
     let mut decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
     assert_eq!(
@@ -581,19 +581,25 @@ fn decodes_aifc_little_endian_and_float32_compression_codes() {
         &Samples::I16(vec![0x1234, -0x1234])
     );
 
-    let bytes = aifc(b"fl32", 32, &[0x3f, 0x80, 0, 0, 0xbf, 0, 0, 0]);
-    let mut decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
-    assert_eq!(
-        decoder.read_frames(2).unwrap().unwrap().samples(),
-        &Samples::F32(vec![1.0, -0.5])
-    );
+    for compression in [b"fl32", b"FL32"] {
+        let bytes = aifc(compression, 32, &[0x3f, 0x80, 0, 0, 0xbf, 0, 0, 0]);
+        let mut decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.read_frames(2).unwrap().unwrap().samples(),
+            &Samples::F32(vec![1.0, -0.5]),
+            "{compression:?}"
+        );
+    }
 
-    let bytes = aifc(b"fl64", 64, &[0x3f, 0xf0, 0, 0, 0, 0, 0, 0]);
-    let mut decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
-    assert_eq!(
-        decoder.read_frames(1).unwrap().unwrap().samples(),
-        &Samples::F64(vec![1.0])
-    );
+    for compression in [b"fl64", b"FL64"] {
+        let bytes = aifc(compression, 64, &[0x3f, 0xf0, 0, 0, 0, 0, 0, 0]);
+        let mut decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.read_frames(1).unwrap().unwrap().samples(),
+            &Samples::F64(vec![1.0]),
+            "{compression:?}"
+        );
+    }
 }
 
 #[test]
