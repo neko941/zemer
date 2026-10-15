@@ -130,6 +130,8 @@ Supported samples
   Other metadata keys are rejected by the WAVE writer rather than silently
   discarded. Use ``wav::supports_info_metadata_key`` to check a key before
   passing it to a WAVE writer.
+* Shared ``Metadata`` strings are UTF-8. ``CSET`` code-page conversion is not
+  implemented; newly written values use UTF-8.
 * Read and write typed ``cue `` cue-point and ``smpl`` sampler-loop chunks,
   preserving their fields and sampler-specific data bytes.
 
@@ -149,8 +151,11 @@ Metadata rewriting
 ------------------
 
 ``wav::rewrite_metadata`` edits supported ``LIST/INFO`` text tags while
-copying audio bytes, unknown RIFF/RF64 chunks, and unrecognized INFO subchunks
-unchanged. It preserves ``bext``, ``cue ``, and ``smpl`` chunks unchanged. It updates RIFF sizes and
+copying audio bytes, unchanged INFO fields, unknown RIFF/RF64 chunks, and
+unrecognized INFO subchunks unchanged. Unchanged text fields are copied
+byte-for-byte, including fields that use a legacy code page. Changed values
+are written as UTF-8 because ``CSET`` conversion is not implemented. It preserves
+``bext``, ``cue ``, and ``smpl`` chunks unchanged. It updates RIFF sizes and
 RF64 ``ds64`` size fields, including a size-table entry for a rewritten
 sentinel-sized INFO chunk. It accepts a seekable input and output; callers
 should write to a new temporary file and replace the original only after
