@@ -386,11 +386,13 @@ fn encodes_mono_24_bit_aifc_dwvw_compatible_with_libsndfile() {
 
 #[test]
 #[ignore = "requires Python 3 and libsndfile"]
-fn decodes_stereo_aifc_dwvw_with_libsndfile_channel_oracles() {
+fn interoperates_stereo_aifc_dwvw_channels_with_libsndfile() {
     let python = std::env::var_os("ZEMER_SNDFILE_PYTHON")
         .unwrap_or_else(|| OsString::from(if cfg!(windows) { "python" } else { "python3" }));
-    let oracle_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let encoder_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/scripts/encode_libsndfile_dwvw.py");
+    let decoder_script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/decode_libsndfile.py");
 
     for bits in [16_u16, 24] {
         let sample_format = match bits {
@@ -440,7 +442,7 @@ fn decodes_stereo_aifc_dwvw_with_libsndfile_channel_oracles() {
                 .write_all(&raw)
                 .unwrap();
             let oracle = Command::new(&python)
-                .arg(&oracle_script)
+                .arg(&encoder_script)
                 .arg(&raw_path)
                 .arg(&aifc_path)
                 .arg(bits.to_string())
@@ -482,6 +484,81 @@ fn decodes_stereo_aifc_dwvw_with_libsndfile_channel_oracles() {
         let common = aiff_chunk_body(&template, b"COMM");
         assert_eq!(u16::from_be_bytes(common[..2].try_into().unwrap()), 2);
         assert_eq!(u32::from_be_bytes(common[2..6].try_into().unwrap()), 257);
+
+        let sound = aiff_chunk_body(&template, b"SSND");
+        assert_eq!(&sound[..8], &[0; 8]);
+        let writer_payload = &sound[8..];
+        let mut channel_start_bit = 0;
+        for channel in 0..2 {
+            let mut state = dwvw::DecoderState::at(channel_start_bit);
+            dwvw::scan_samples(
+                &mut Cursor::new(writer_payload),
+                &mut state,
+                bits as u8,
+                (writer_payload.len() as u64) * 8,
+                257,
+            )
+            .unwrap();
+            state
+                .finish_channel((writer_payload.len() as u64) * 8)
+                .unwrap();
+            let channel_end_bit = state.bit_position();
+            let channel_payload =
+                &writer_payload[(channel_start_bit / 8) as usize..(channel_end_bit / 8) as usize];
+            let mono_spec = AudioSpec::new(44_100, 1, sample_format).unwrap();
+            let channel_samples: Vec<i32> =
+                values.iter().skip(channel).step_by(2).copied().collect();
+            let mono_samples = match bits {
+                16 => Samples::I16(channel_samples.iter().map(|&value| value as i16).collect()),
+                24 => Samples::I24(channel_samples.clone()),
+                _ => unreachable!(),
+            };
+            let mono_input = PcmBuffer::new(mono_spec, mono_samples).unwrap();
+            let mut mono_encoder = AiffEncoder::new_aifc_dwvw_with_bits_per_sample(
+                Cursor::new(Vec::new()),
+                mono_spec,
+                bits,
+            )
+            .unwrap();
+            mono_encoder.write_block(&mono_input).unwrap();
+            let mono_template = mono_encoder.finish().unwrap().get_ref().clone();
+            let mut mono_sound = vec![0; 8];
+            mono_sound.extend_from_slice(channel_payload);
+            let mono_file = replace_aiff_chunk_body(&mono_template, b"SSND", &mono_sound);
+            let mono_path = std::env::temp_dir().join(format!(
+                "zemer-aifc-dwvw-stereo-{bits}-{channel}-{}.aifc",
+                std::process::id()
+            ));
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&mono_path)
+                .unwrap()
+                .write_all(&mono_file)
+                .unwrap();
+            let decoded = Command::new(&python)
+                .arg(&decoder_script)
+                .arg(&mono_path)
+                .output();
+            std::fs::remove_file(&mono_path).unwrap();
+            let decoded = decoded.unwrap();
+            assert!(
+                decoded.status.success(),
+                "libsndfile failed to decode Zemer {bits}-bit channel {channel}: {}",
+                String::from_utf8_lossy(&decoded.stderr)
+            );
+            let expected_s32: Vec<u8> = channel_samples
+                .iter()
+                .flat_map(|&sample| (sample << (32 - bits)).to_le_bytes())
+                .collect();
+            assert_eq!(
+                decoded.stdout, expected_s32,
+                "Zemer writer channel {channel}"
+            );
+            channel_start_bit = channel_end_bit;
+        }
+        assert_eq!(channel_start_bit, (writer_payload.len() as u64) * 8);
+
         let mut sound = vec![0; 8];
         sound.extend_from_slice(&expected_payload);
         let independent = replace_aiff_chunk_body(&template, b"SSND", &sound);
@@ -498,7 +575,7 @@ fn decodes_stereo_aifc_dwvw_with_libsndfile_channel_oracles() {
         assert_eq!(frames, 257);
         assert_eq!(
             actual, expected_pcm,
-            "{bits}-bit stereo DWVW libsndfile oracle"
+            "{bits}-bit stereo DWVW decoder oracle"
         );
     }
 }

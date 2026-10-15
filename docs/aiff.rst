@@ -41,8 +41,10 @@ provides ``new_aifc_dwvw`` and ``new_aifc_dwvw_with_bits_per_sample``; because
 DWVW stores channel planes, it spools samples to temporary files until finish.
 The clean-room decoder matches a published 16-bit example against an
 independently generated payload. A generated mono 24-bit encoder profile also
-matches libsndfile 1.2.2 sample-for-sample; broader DWVW corpus and multichannel
-writer interoperability checks remain open.
+matches libsndfile 1.2.2 sample-for-sample. Generated 257-frame 16- and 24-bit
+stereo channels match libsndfile's mono encoder and decoder paths sample-for-
+sample. Full-container stereo interoperability and broader DWVW corpus checks
+remain open.
 
 AIFF-C output includes the required ``FVER`` chunk. Both readers and writers
 map ``NAME``, ``AUTH``, ``(c) ``, and repeated ``ANNO`` chunks to TITLE,

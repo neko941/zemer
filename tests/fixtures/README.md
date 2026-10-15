@@ -760,16 +760,17 @@ ZEMER_SNDFILE_PYTHON=python3 cargo test -p zemer-tests --test aiff_interop \
   encodes_mono_24_bit_aifc_dwvw_compatible_with_libsndfile -- --ignored --exact
 ```
 
-The ignored `decodes_stereo_aifc_dwvw_with_libsndfile_channel_oracles` test
-checks Zemer's stereo decoder against two independently encoded libsndfile
-mono channel streams. It concatenates the 16- or 24-bit streams in a stereo
-AIFC template, then compares every decoded sample. This avoids relying on
-libsndfile's mono-only DWVW reader for stereo validation. It needs Python 3 and
-the libsndfile shared library; set `ZEMER_SNDFILE_PYTHON` if Python is not on
-PATH or `ZEMER_SNDFILE_LIBRARY` if ctypes cannot find the library
-automatically. Run it with:
+The ignored `interoperates_stereo_aifc_dwvw_channels_with_libsndfile` test
+checks both directions at 16 and 24 bits. It decodes Zemer's stereo-encoded
+channels separately through libsndfile's mono reader, then builds a stereo
+fixture from independently libsndfile-encoded mono channels and checks Zemer's
+decoder sample-for-sample. This avoids libsndfile's unreliable stereo DWVW
+path while checking long channel streams and their 16-bit boundaries. It needs
+Python 3 and the libsndfile shared library; set `ZEMER_SNDFILE_PYTHON` if
+Python is not on PATH or `ZEMER_SNDFILE_LIBRARY` if ctypes cannot find the
+library automatically. Run it with:
 
 ```sh
 ZEMER_SNDFILE_PYTHON=python3 cargo test -p zemer-tests --test aiff_interop \
-  decodes_stereo_aifc_dwvw_with_libsndfile_channel_oracles -- --ignored --exact
+  interoperates_stereo_aifc_dwvw_channels_with_libsndfile -- --ignored --exact
 ```
