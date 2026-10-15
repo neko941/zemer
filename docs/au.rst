@@ -11,9 +11,8 @@ The format's data offset locates the annotation and audio; a data size of
 Supported encodings are signed linear PCM 8/16/24/32-bit, IEEE float32/64,
 G.711 μ-law and A-law, and G.721/G.723 ADPCM. These ADPCM profiles are
 restricted to mono 8 kHz audio and use the shared G.726 codec. G.721 packing is
-low-bit-first. G.723 currently inherits low-bit-first packing from G.726, but
-the Sun AU references checked so far identify codes 25/26 without defining
-their payload bit order. G.721 writes complete two-sample groups; G.723 3-bit
+low-bit-first. Sun's original G.72x decoder unpacks G.723 codewords
+low-bit-first [Sun G.72x decoder]_. G.721 writes complete two-sample groups; G.723 3-bit
 and 5-bit writes require complete eight-sample groups because the AU header
 does not store a decoded sample count. Other AU encoding codes return an
 unsupported error. Audio is decoded and encoded in bounded blocks. The decoder
@@ -29,15 +28,16 @@ COMMENT is written as UTF-8 followed by a NUL terminator and alignment padding.
 
 AU encoding 23 uses the shared G.726 codec at 32 kbit/s; encodings 25 and 26
 use its 24 kbit/s (3-bit) and 40 kbit/s (5-bit) rates
-[Oracle G.723 AU encoding identifiers]_. Sun's G.721 utility
-packs the first codeword into the low nibble [SunOS G.721 packing]_. RFC 3551
-defines low-bit-first packing for G.726 RTP payloads, but that does not
-establish the Sun AU G.723 byte layout [IETF RTP G.726 packing]_. In a
-4,096-sample comparison using external SpanDSP codeword payloads, Zemer,
-FFmpeg 4.2.2, and libsndfile 1.0.37 returned different PCM after initially
-close output. Treat this as unresolved interoperability, not proof that one
-decoder is correct. ITU-T G.726 replaces the 1988 G.721/G.723 recommendations
-and defines the shared ADPCM rates [ITU-T G.726]_.
+[Oracle G.723 AU encoding identifiers]_. Sun's original G.72x decoder extracts
+the next 3-, 4-, or 5-bit codeword from the low-order bits first
+[Sun G.72x decoder]_. Sun's G.721 utility also documents the first codeword in
+the low nibble [SunOS G.721 packing]_. This establishes the codeword packing
+used here, but not full decoder interoperability: when tested with 4,096
+external SpanDSP codewords, Zemer differed from Sun's decoder on 63 samples at
+24 kbit/s and 105 at 40 kbit/s; FFmpeg 4.2.2 and libsndfile 1.0.37 showed
+larger differences. The codec-state/PCM discrepancy remains unresolved, so
+these profiles stay Partial. ITU-T G.726 replaces the 1988 G.721/G.723
+recommendations and defines the shared ADPCM rates [ITU-T G.726]_.
 
 The CLI detects AU by its ``.snd`` signature, regardless of the filename
 extension. Use ``--format au`` for sample-format-selected AU output,
@@ -53,6 +53,7 @@ this implementation follows Oracle's documented big-endian layout.
 
 .. [Oracle AU documentation] https://docs.oracle.com/cd/E19253-01/816-5174/6mbb98ucf/index.html
 .. [Oracle G.723 AU encoding identifiers] https://docs.oracle.com/cd/A97385_01/appdev.920/a96120/annotator_parexample.htm
+.. [Sun G.72x decoder] https://sources.debian.org/src/rplay/3.3.2-16/adpcm/decode.c
 .. [McGill AU overview] https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/AU/AU.html
 .. [McGill AU sample list] https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/AU/Samples.html
 .. [SunOS G.721 packing] https://www.typewritten.org/Manual/Sun/SunOS/4.1.4/man1/adpcm_enc.html
