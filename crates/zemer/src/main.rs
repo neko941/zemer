@@ -78,6 +78,8 @@ enum OutputFormat {
     Aifc,
     Au,
     AuG721,
+    AuG7233,
+    AuG7235,
     AuG711(G711Encoding),
     AifcG711(G711Encoding),
     AifcIma4,
@@ -94,7 +96,7 @@ impl OutputFormat {
             Self::G711(_) => Some(SampleFormat::PcmI16),
             Self::AifcG711(_) => Some(SampleFormat::PcmI16),
             Self::AuG711(_) => Some(SampleFormat::PcmI16),
-            Self::AuG721 => Some(SampleFormat::PcmI16),
+            Self::AuG721 | Self::AuG7233 | Self::AuG7235 => Some(SampleFormat::PcmI16),
             Self::AifcIma4 => Some(SampleFormat::PcmI16),
             Self::AifcG726 => Some(SampleFormat::PcmI16),
             Self::Flac | Self::OggFlac | Self::Aiff
@@ -128,6 +130,8 @@ impl OutputFormat {
             Self::AuG711(G711Encoding::ALaw) => "au_alaw",
             Self::AuG711(G711Encoding::MuLaw) => "au_mulaw",
             Self::AuG721 => "au_g721",
+            Self::AuG7233 => "au_g723_3",
+            Self::AuG7235 => "au_g723_5",
             Self::AifcG711(G711Encoding::ALaw) => "aifc_alaw",
             Self::AifcG711(G711Encoding::MuLaw) => "aifc_mulaw",
             Self::AifcIma4 => "aifc_ima4",
@@ -625,6 +629,8 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
             | OutputFormat::Aifc
             | OutputFormat::Au
             | OutputFormat::AuG721
+            | OutputFormat::AuG7233
+            | OutputFormat::AuG7235
             | OutputFormat::AuG711(_)
             | OutputFormat::AifcG711(_)
             | OutputFormat::AifcIma4
@@ -667,6 +673,8 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "au_alaw" => Some(OutputFormat::AuG711(G711Encoding::ALaw)),
         "au_mulaw" => Some(OutputFormat::AuG711(G711Encoding::MuLaw)),
         "au_g721" => Some(OutputFormat::AuG721),
+        "au_g723_3" => Some(OutputFormat::AuG7233),
+        "au_g723_5" => Some(OutputFormat::AuG7235),
         "aifc_ima4" => Some(OutputFormat::AifcIma4),
         "aifc_g726" => Some(OutputFormat::AifcG726),
         "flac" => Some(OutputFormat::Flac),
@@ -931,6 +939,21 @@ fn convert_audio(
                 }
                 Box::new(encoder)
             }
+            OutputFormat::AuG7233 | OutputFormat::AuG7235 => {
+                let metadata = au_metadata(decoder.metadata());
+                let mut encoder = if matches!(format, OutputFormat::AuG7233) {
+                    AuEncoder::new_g723_3_with_metadata(output_file, spec, &metadata)
+                } else {
+                    AuEncoder::new_g723_5_with_metadata(output_file, spec, &metadata)
+                }
+                .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(annotation) = &au_annotation {
+                    encoder
+                        .set_annotation(annotation)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                Box::new(encoder)
+            }
             OutputFormat::AifcG711(encoding) => {
                 let mut encoder = AiffEncoder::new_aifc_g711_with_metadata(
                     output_file,
@@ -1077,7 +1100,11 @@ fn convert_audio(
                 OutputFormat::WavPack => "wavpack",
                 OutputFormat::Aiff => "aiff",
                 OutputFormat::Aifc => "aifc",
-                OutputFormat::Au | OutputFormat::AuG721 | OutputFormat::AuG711(_) => "au",
+                OutputFormat::Au
+                | OutputFormat::AuG721
+                | OutputFormat::AuG7233
+                | OutputFormat::AuG7235
+                | OutputFormat::AuG711(_) => "au",
                 OutputFormat::AifcG711(_) => "aifc",
                 OutputFormat::AifcIma4 => "aifc",
                 OutputFormat::AifcG726 => "aifc",
@@ -1094,6 +1121,8 @@ fn convert_audio(
                 OutputFormat::G711(_)
                     | OutputFormat::AuG711(_)
                     | OutputFormat::AuG721
+                    | OutputFormat::AuG7233
+                    | OutputFormat::AuG7235
                     | OutputFormat::AifcG711(_)
                     | OutputFormat::AifcIma4
                     | OutputFormat::AifcG726
@@ -1114,6 +1143,8 @@ fn convert_audio(
                     | OutputFormat::Au
                     | OutputFormat::AuG711(_)
                     | OutputFormat::AuG721
+                    | OutputFormat::AuG7233
+                    | OutputFormat::AuG7235
                     | OutputFormat::Dsf
             ))
             .then_some(container),
@@ -1614,7 +1645,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|au|au_alaw|au_mulaw|au_g721|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC integer PCM>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC integer PCM>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 

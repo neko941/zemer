@@ -993,6 +993,47 @@ fn au_cli_inspects_converts_preserves_annotations_and_edits_comments() {
 }
 
 #[test]
+fn au_cli_encodes_g723_three_and_five_bit_profiles() {
+    let input_path = temporary_path();
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let audio = PcmBuffer::new(
+        spec,
+        Samples::I16(vec![0, 1_000, -1_000, 3_000, -3_000, 8_000, -8_000, 16_000]),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    for (format, encoding) in [("au_g723_3", 25_u32), ("au_g723_5", 26_u32)] {
+        let output_path = temporary_path().with_extension("au");
+        let output = Command::new(cli_path())
+            .args(["convert", "--format", format, "--json"])
+            .arg(&input_path)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .contains(&format!("\"output_encoding\":\"{format}\""))
+        );
+        let bytes = fs::read(&output_path).unwrap();
+        assert_eq!(
+            u32::from_be_bytes(bytes[12..16].try_into().unwrap()),
+            encoding
+        );
+        let mut decoder = AuDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.read_frames(8).unwrap().unwrap().frames(), 8);
+        assert!(decoder.read_frames(1).unwrap().is_none());
+        let _ = fs::remove_file(output_path);
+    }
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
 fn convert_inspects_and_converts_aiff_and_aifc() {
     let input_path = temporary_path();
     let audio = PcmBuffer::new(
