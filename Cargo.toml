@@ -49,6 +49,7 @@ au.workspace = true
 g711.workspace = true
 dsdiff.workspace = true
 dst.workspace = true
+dwvw.workspace = true
 
 [workspace.package]
 edition = "2024"

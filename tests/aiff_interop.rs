@@ -45,6 +45,35 @@ fn aiff_chunk_body<'a>(bytes: &'a [u8], wanted: &[u8; 4]) -> &'a [u8] {
     panic!("missing generated AIFF chunk {wanted:?}");
 }
 
+fn replace_aiff_chunk_body(bytes: &[u8], wanted: &[u8; 4], body: &[u8]) -> Vec<u8> {
+    let mut output = bytes[..12].to_vec();
+    let mut offset = 12;
+    let mut replaced = false;
+    while offset + 8 <= bytes.len() {
+        let size = u32::from_be_bytes(bytes[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let end = offset + 8 + size;
+        let padded_end = end + (size & 1);
+        assert!(padded_end <= bytes.len(), "truncated AIFF chunk");
+        if &bytes[offset..offset + 4] == wanted {
+            assert!(!replaced, "duplicate AIFF chunk {wanted:?}");
+            output.extend_from_slice(wanted);
+            output.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            output.extend_from_slice(body);
+            if body.len() & 1 != 0 {
+                output.push(0);
+            }
+            replaced = true;
+        } else {
+            output.extend_from_slice(&bytes[offset..padded_end]);
+        }
+        offset = padded_end;
+    }
+    assert!(replaced, "missing AIFF chunk {wanted:?}");
+    let form_size = (output.len() - 8) as u32;
+    output[4..8].copy_from_slice(&form_size.to_be_bytes());
+    output
+}
+
 const FRAMES: u64 = 23_493;
 
 fn decode_ffmpeg(ffmpeg: &std::ffi::OsStr, encoded: &[u8], pcm_format: &str) -> Vec<u8> {
@@ -353,6 +382,125 @@ fn encodes_mono_24_bit_aifc_dwvw_compatible_with_libsndfile() {
     }
     assert_eq!(decoded_frames, frames);
     assert_eq!(actual, expected_i24, "Zemer DWVW round trip differs");
+}
+
+#[test]
+#[ignore = "requires Python 3 and libsndfile"]
+fn decodes_stereo_aifc_dwvw_with_libsndfile_channel_oracles() {
+    let python = std::env::var_os("ZEMER_SNDFILE_PYTHON")
+        .unwrap_or_else(|| OsString::from(if cfg!(windows) { "python" } else { "python3" }));
+    let oracle_script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/scripts/encode_libsndfile_dwvw.py");
+
+    for bits in [16_u16, 24] {
+        let sample_format = match bits {
+            16 => SampleFormat::PcmI16,
+            24 => SampleFormat::PcmI24,
+            _ => unreachable!(),
+        };
+        let spec = AudioSpec::new(44_100, 2, sample_format).unwrap();
+        let span = if bits == 16 {
+            12_000_i64
+        } else {
+            4_000_000_i64
+        };
+        let values: Vec<i32> = (0..257)
+            .flat_map(|frame| {
+                (0..2).map(move |channel| {
+                    let phase = i64::from(frame) * 977 + i64::from(channel) * 9_973;
+                    (phase % (span * 2 + 1) - span) as i32
+                })
+            })
+            .collect();
+        let samples = match bits {
+            16 => Samples::I16(values.iter().map(|&sample| sample as i16).collect()),
+            24 => Samples::I24(values.clone()),
+            _ => unreachable!(),
+        };
+        let input = PcmBuffer::new(spec, samples).unwrap();
+        let mut expected_payload = Vec::new();
+        for channel in 0..2 {
+            let raw_path = std::env::temp_dir().join(format!(
+                "zemer-aifc-dwvw-ref-{bits}-{channel}-{}.raw",
+                std::process::id()
+            ));
+            let aifc_path = std::env::temp_dir().join(format!(
+                "zemer-aifc-dwvw-ref-{bits}-{channel}-{}.aifc",
+                std::process::id()
+            ));
+            let mut raw = Vec::with_capacity(257 * 4);
+            for sample in values.iter().skip(channel).step_by(2) {
+                raw.extend_from_slice(&(*sample << (32 - bits)).to_le_bytes());
+            }
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&raw_path)
+                .unwrap()
+                .write_all(&raw)
+                .unwrap();
+            let oracle = Command::new(&python)
+                .arg(&oracle_script)
+                .arg(&raw_path)
+                .arg(&aifc_path)
+                .arg(bits.to_string())
+                .output();
+            std::fs::remove_file(&raw_path).unwrap();
+            let oracle = oracle.unwrap();
+            assert!(
+                oracle.status.success(),
+                "libsndfile failed to encode {bits}-bit channel {channel}: {}",
+                String::from_utf8_lossy(&oracle.stderr)
+            );
+            let oracle_file = std::fs::read(&aifc_path).unwrap();
+            std::fs::remove_file(&aifc_path).unwrap();
+            let sound = aiff_chunk_body(&oracle_file, b"SSND");
+            assert_eq!(&sound[..8], &[0; 8]);
+            let channel_payload = &sound[8..];
+            let mut state = dwvw::DecoderState::at(0);
+            dwvw::scan_samples(
+                &mut Cursor::new(channel_payload),
+                &mut state,
+                bits as u8,
+                (channel_payload.len() as u64) * 8,
+                257,
+            )
+            .unwrap();
+            state
+                .finish_channel((channel_payload.len() as u64) * 8)
+                .unwrap();
+            let channel_bytes = (state.bit_position() / 8) as usize;
+            assert!(channel_bytes <= channel_payload.len());
+            expected_payload.extend_from_slice(&channel_payload[..channel_bytes]);
+        }
+
+        let mut encoder =
+            AiffEncoder::new_aifc_dwvw_with_bits_per_sample(Cursor::new(Vec::new()), spec, bits)
+                .unwrap();
+        encoder.write_block(&input).unwrap();
+        let template = encoder.finish().unwrap().get_ref().clone();
+        let common = aiff_chunk_body(&template, b"COMM");
+        assert_eq!(u16::from_be_bytes(common[..2].try_into().unwrap()), 2);
+        assert_eq!(u32::from_be_bytes(common[2..6].try_into().unwrap()), 257);
+        let mut sound = vec![0; 8];
+        sound.extend_from_slice(&expected_payload);
+        let independent = replace_aiff_chunk_body(&template, b"SSND", &sound);
+        let mut decoder = AiffDecoder::new(Cursor::new(independent)).unwrap();
+        assert_eq!(decoder.spec(), spec);
+        let mut actual = Vec::new();
+        let mut frames = 0;
+        while let Some(block) = decoder.read_frames(37).unwrap() {
+            frames += block.frames();
+            append_pcm_bytes(block.samples(), &mut actual);
+        }
+        let mut expected_pcm = Vec::new();
+        append_pcm_bytes(input.samples(), &mut expected_pcm);
+        assert_eq!(frames, 257);
+        assert_eq!(
+            actual, expected_pcm,
+            "{bits}-bit stereo DWVW libsndfile oracle"
+        );
+    }
 }
 
 #[test]
