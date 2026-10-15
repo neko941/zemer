@@ -710,12 +710,16 @@ mod tests {
     #[test]
     fn compressed_frame_mutations_and_truncations_never_panic() {
         let frame_len = 4_704;
-        let dsd = vec![0; frame_len];
+        let mut dsd = vec![0; frame_len];
+        for bit in (15..frame_len * 8).step_by(16) {
+            dsd[bit / 8] |= 0x80 >> (bit % 8);
+        }
         let frame = crate::encode::encode_frame(&dsd, 1, frame_len).unwrap();
         assert_eq!(frame[0] >> 7, 1, "test input must use compressed mode");
+        assert!(frame.len() >= 128, "test frame must exercise deep mutations");
 
-        let step = (frame.len() / 128).max(1);
-        for byte_index in (0..frame.len()).step_by(step) {
+        for sample in 0..128 {
+            let byte_index = sample * frame.len() / 128;
             let mut mutated = frame.clone();
             let bit = (byte_index * 5 + 3) % 8;
             mutated[byte_index] ^= 1 << bit;
