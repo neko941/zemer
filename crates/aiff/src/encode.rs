@@ -10,6 +10,7 @@ pub struct AiffEncoder<W> {
     writer: W,
     spec: AudioSpec,
     kind: AiffKind,
+    bits_per_sample: u16,
     form_size_offset: u64,
     frame_count_offset: u64,
     data_size_offset: u64,
@@ -57,6 +58,44 @@ impl<W: Write + Seek> AiffEncoder<W> {
         Self::new_with_kind(writer, spec, metadata, AiffKind::Aifc)
     }
 
+    /// Creates an AIFF integer PCM encoder with the requested valid bit depth.
+    /// Samples use the high bits of their existing PCM container; discarded
+    /// low bits are cleared during encoding.
+    pub fn new_with_bits_per_sample(
+        writer: W,
+        spec: AudioSpec,
+        bits_per_sample: u16,
+    ) -> Result<Self, AudioError> {
+        Self::new_configured(
+            writer,
+            spec,
+            &Metadata::default(),
+            AiffKind::Aiff,
+            None,
+            false,
+            Some(bits_per_sample),
+        )
+    }
+
+    /// Creates an AIFC integer PCM encoder with the requested valid bit depth.
+    /// Samples use the high bits of their existing PCM container; discarded
+    /// low bits are cleared during encoding.
+    pub fn new_aifc_with_bits_per_sample(
+        writer: W,
+        spec: AudioSpec,
+        bits_per_sample: u16,
+    ) -> Result<Self, AudioError> {
+        Self::new_configured(
+            writer,
+            spec,
+            &Metadata::default(),
+            AiffKind::Aifc,
+            None,
+            false,
+            Some(bits_per_sample),
+        )
+    }
+
     pub fn new_aifc_g711(
         writer: W,
         spec: AudioSpec,
@@ -78,6 +117,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             AiffKind::Aifc,
             Some(encoding),
             false,
+            None,
         )
     }
 
@@ -87,7 +127,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
         metadata: &Metadata,
         kind: AiffKind,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(writer, spec, metadata, kind, None, false)
+        Self::new_configured(writer, spec, metadata, kind, None, false, None)
     }
 
     pub fn new_aifc_ima4(writer: W, spec: AudioSpec) -> Result<Self, AudioError> {
@@ -99,7 +139,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
         spec: AudioSpec,
         metadata: &Metadata,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(writer, spec, metadata, AiffKind::Aifc, None, true)
+        Self::new_configured(writer, spec, metadata, AiffKind::Aifc, None, true, None)
     }
 
     fn new_configured(
@@ -109,6 +149,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
         kind: AiffKind,
         g711: Option<G711Encoding>,
         ima4: bool,
+        requested_bits_per_sample: Option<u16>,
     ) -> Result<Self, AudioError> {
         validate_metadata(metadata)?;
         if ima4 && (kind != AiffKind::Aifc || spec.sample_format() != SampleFormat::PcmI16) {
@@ -142,6 +183,36 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 "AIFF supports integer PCM; AIFC also supports IEEE float32/64",
             ));
         }
+        let container_bits = match spec.sample_format() {
+            SampleFormat::PcmU8 => 8,
+            SampleFormat::PcmI16 => 16,
+            SampleFormat::PcmI24 => 24,
+            SampleFormat::PcmI32 => 32,
+            SampleFormat::Float32 => 32,
+            SampleFormat::Float64 => 64,
+        };
+        let bits_per_sample = requested_bits_per_sample.unwrap_or(container_bits);
+        let integer_pcm = matches!(
+            spec.sample_format(),
+            SampleFormat::PcmU8
+                | SampleFormat::PcmI16
+                | SampleFormat::PcmI24
+                | SampleFormat::PcmI32
+        );
+        let valid_bit_depth = match spec.sample_format() {
+            SampleFormat::PcmU8 => (1..=8).contains(&bits_per_sample),
+            SampleFormat::PcmI16 => (9..=16).contains(&bits_per_sample),
+            SampleFormat::PcmI24 => (17..=24).contains(&bits_per_sample),
+            SampleFormat::PcmI32 => (25..=32).contains(&bits_per_sample),
+            SampleFormat::Float32 | SampleFormat::Float64 => bits_per_sample == container_bits,
+        };
+        if !valid_bit_depth
+            || requested_bits_per_sample.is_some() && (!integer_pcm || g711.is_some() || ima4)
+        {
+            return Err(AudioError::InvalidData(
+                "AIFF bit depth does not match the sample format",
+            ));
+        }
         writer.write_all(b"FORM\0\0\0\0")?;
         writer.write_all(match kind {
             AiffKind::Aiff => b"AIFF",
@@ -154,10 +225,14 @@ impl<W: Write + Seek> AiffEncoder<W> {
             (_, true, _) => (16_u16, *b"ima4", b"IMA 4:1".as_slice()),
             (Some(G711Encoding::ALaw), false, _) => (16_u16, *b"alaw", b"ALaw 2:1".as_slice()),
             (Some(G711Encoding::MuLaw), false, _) => (16_u16, *b"ulaw", b"uLaw 2:1".as_slice()),
-            (None, false, SampleFormat::PcmU8) => (8_u16, *b"NONE", b"not compressed".as_slice()),
-            (None, false, SampleFormat::PcmI16) => (16, *b"NONE", b"not compressed".as_slice()),
-            (None, false, SampleFormat::PcmI24) => (24, *b"NONE", b"not compressed".as_slice()),
-            (None, false, SampleFormat::PcmI32) => (32, *b"NONE", b"not compressed".as_slice()),
+            (
+                None,
+                false,
+                SampleFormat::PcmU8
+                | SampleFormat::PcmI16
+                | SampleFormat::PcmI24
+                | SampleFormat::PcmI32,
+            ) => (bits_per_sample, *b"NONE", b"not compressed".as_slice()),
             (None, false, SampleFormat::Float32) => {
                 (32, *b"fl32", b"32-bit floating point".as_slice())
             }
@@ -191,6 +266,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             writer,
             spec,
             kind,
+            bits_per_sample,
             form_size_offset: 4,
             frame_count_offset,
             data_size_offset,
@@ -304,7 +380,9 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 bytes
                     .try_reserve_exact(values.len())
                     .map_err(|_| AudioError::InvalidData("AIFF block is too large"))?;
-                bytes.extend(values.iter().map(|sample| sample ^ 0x80));
+                let unused_bits = 8 - self.bits_per_sample;
+                let mask = !((1_u8 << unused_bits) - 1);
+                bytes.extend(values.iter().map(|sample| (sample ^ 0x80) & mask));
             }
             Samples::I16(values) => {
                 bytes
@@ -315,8 +393,9 @@ impl<W: Write + Seek> AiffEncoder<W> {
                             .ok_or(AudioError::InvalidData("AIFF block size overflow"))?,
                     )
                     .map_err(|_| AudioError::InvalidData("AIFF block is too large"))?;
+                let mask = !((1_u16 << (16 - self.bits_per_sample)) - 1);
                 for value in values {
-                    bytes.extend_from_slice(&value.to_be_bytes());
+                    bytes.extend_from_slice(&((*value as u16 & mask).to_be_bytes()));
                 }
             }
             Samples::I24(values) => {
@@ -328,13 +407,14 @@ impl<W: Write + Seek> AiffEncoder<W> {
                             .ok_or(AudioError::InvalidData("AIFF block size overflow"))?,
                     )
                     .map_err(|_| AudioError::InvalidData("AIFF block is too large"))?;
+                let mask = !((1_u32 << (24 - self.bits_per_sample)) - 1);
                 for &value in values {
                     if !(-8_388_608..=8_388_607).contains(&value) {
                         return Err(AudioError::InvalidData(
                             "AIFF 24-bit sample is out of range",
                         ));
                     }
-                    bytes.extend_from_slice(&value.to_be_bytes()[1..]);
+                    bytes.extend_from_slice(&((value as u32 & mask).to_be_bytes()[1..]));
                 }
             }
             Samples::I32(values) => {
@@ -346,8 +426,9 @@ impl<W: Write + Seek> AiffEncoder<W> {
                             .ok_or(AudioError::InvalidData("AIFF block size overflow"))?,
                     )
                     .map_err(|_| AudioError::InvalidData("AIFF block is too large"))?;
+                let mask = !((1_u32 << (32 - self.bits_per_sample)) - 1);
                 for value in values {
-                    bytes.extend_from_slice(&value.to_be_bytes());
+                    bytes.extend_from_slice(&((*value as u32 & mask).to_be_bytes()));
                 }
             }
             Samples::F32(values) => {
