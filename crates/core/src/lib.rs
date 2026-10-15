@@ -103,6 +103,25 @@ pub fn transcode_dsd<D: DsdDecoder + ?Sized, E: DsdEncoder + ?Sized>(
     encoder: &mut E,
     block_octet_frames: usize,
 ) -> Result<u64, AudioError> {
+    transcode_dsd_inner(decoder, encoder, None, block_octet_frames)
+}
+
+/// Copies packed native DSD octets using metadata selected for the output format.
+pub fn transcode_dsd_with_metadata<D: DsdDecoder + ?Sized, E: DsdEncoder + ?Sized>(
+    decoder: &mut D,
+    encoder: &mut E,
+    metadata: &Metadata,
+    block_octet_frames: usize,
+) -> Result<u64, AudioError> {
+    transcode_dsd_inner(decoder, encoder, Some(metadata), block_octet_frames)
+}
+
+fn transcode_dsd_inner<D: DsdDecoder + ?Sized, E: DsdEncoder + ?Sized>(
+    decoder: &mut D,
+    encoder: &mut E,
+    metadata: Option<&Metadata>,
+    block_octet_frames: usize,
+) -> Result<u64, AudioError> {
     if block_octet_frames == 0 {
         return Err(AudioError::InvalidData(
             "block_octet_frames must be greater than zero",
@@ -114,7 +133,7 @@ pub fn transcode_dsd<D: DsdDecoder + ?Sized, E: DsdEncoder + ?Sized>(
         ));
     }
     let exact_sample_count = decoder.sample_count();
-    encoder.set_metadata(decoder.metadata())?;
+    encoder.set_metadata(metadata.unwrap_or_else(|| decoder.metadata()))?;
     let mut octet_frames = 0_u64;
     while let Some(block) = decoder.read_dsd_octets(block_octet_frames)? {
         if block.spec() != decoder.dsd_spec() {

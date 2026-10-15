@@ -519,6 +519,19 @@ and paired raw DSD reference MP4s kept outside the repository. Set
 The default corpus test compares ten frames per vector; a separate ignored test
 compares complete sequences.
 
+The ignored `tests/cli.rs::dsdiff_dst_real_audio_matches_ffmpeg_pcm_oracle`
+regression downloads no files automatically. It uses the first ten complete
+DSD64 stereo frames from Decaud's CC0 Variatio 5 DSF source, converts them
+through the CLI to DSDIFF DST and back to DSF, then compares FFmpeg-decoded
+Float32 PCM byte-for-byte. This exercises real source tags that the DSDIFF
+writer cannot represent while checking that TITLE and ARTIST survive. The
+external file is 66,628,959 bytes with SHA-256
+`bd3fbb4db97c7f8f7e9f4f780da34421c5ccaaf5a6a49182c62f4371db43234e`;
+its CC0 provenance and direct download are documented at
+https://www.decaud.io/dsd.html. Set `ZEMER_DSDIFF_CC0_DSF` to the downloaded
+file and run `cargo test --test cli dsdiff_dst_real_audio_matches_ffmpeg_pcm_oracle -- --ignored`.
+The test needs FFmpeg with DSF demuxing and Float32 output support.
+
 `aifc-ima4-ffmpeg-8_1.aifc` was encoded by FFmpeg 8.1 from a 0.1-second,
 8 kHz synthetic mono tone. `aifc-ima4-ffmpeg-stereo-8_1.aifc` was encoded
 from two synthetic tones at 8 kHz. The AIFC COMM frame count is 13 packets;
