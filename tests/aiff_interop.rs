@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs::File,
     io::{BufReader, Cursor, Read, Write},
     process::{Command, Stdio},
@@ -278,6 +279,80 @@ fn encodes_aifc_float_compatible_with_ffmpeg() {
         assert_eq!(actual, expected, "Zemer {format:?} round-trip");
         assert_eq!(oracle, expected, "FFmpeg {format:?} decode");
     }
+}
+
+#[test]
+#[ignore = "requires Python 3 and libsndfile"]
+fn encodes_mono_24_bit_aifc_dwvw_compatible_with_libsndfile() {
+    let python = std::env::var_os("ZEMER_SNDFILE_PYTHON")
+        .unwrap_or_else(|| OsString::from(if cfg!(windows) { "python" } else { "python3" }));
+    let spec = AudioSpec::new(44_100, 1, SampleFormat::PcmI24).unwrap();
+    let frames = 257_usize;
+    let samples: Vec<_> = (0..frames)
+        .map(|frame| {
+            let phase = i64::try_from(frame).unwrap() * 65_537;
+            (phase % 8_000_000 - 4_000_000) as i32
+        })
+        .collect();
+    let mut encoder =
+        AiffEncoder::new_aifc_dwvw_with_bits_per_sample(Cursor::new(Vec::new()), spec, 24).unwrap();
+    for (start, end) in [(0, 41), (41, 187), (187, frames)] {
+        let block = PcmBuffer::new(spec, Samples::I24(samples[start..end].to_vec())).unwrap();
+        encoder.write_block(&block).unwrap();
+    }
+    let encoded = encoder.finish().unwrap().get_ref().clone();
+    let input_path =
+        std::env::temp_dir().join(format!("zemer-aifc-dwvw-{}.aifc", std::process::id()));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&input_path)
+        .unwrap()
+        .write_all(&encoded)
+        .unwrap();
+    let oracle_script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/scripts/decode_libsndfile.py");
+    let output = Command::new(python)
+        .arg(oracle_script)
+        .arg(&input_path)
+        .output()
+        .unwrap();
+    std::fs::remove_file(input_path).unwrap();
+    assert!(
+        output.status.success(),
+        "libsndfile rejected AIFF output: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut expected_i24 = Vec::with_capacity(samples.len() * 3);
+    let mut expected_s32 = Vec::with_capacity(samples.len() * 4);
+    for sample in &samples {
+        expected_i24.extend_from_slice(&sample.to_le_bytes()[..3]);
+        expected_s32.extend_from_slice(&(*sample << 8).to_le_bytes());
+    }
+    assert_eq!(output.stdout.len(), expected_s32.len());
+    for (index, (actual, expected)) in output
+        .stdout
+        .chunks_exact(4)
+        .zip(expected_s32.chunks_exact(4))
+        .enumerate()
+    {
+        assert_eq!(
+            i32::from_le_bytes(actual.try_into().unwrap()),
+            i32::from_le_bytes(expected.try_into().unwrap()),
+            "libsndfile DWVW sample {index}"
+        );
+    }
+
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(decoder.spec(), spec);
+    let mut actual = Vec::new();
+    let mut decoded_frames = 0;
+    while let Some(block) = decoder.read_frames(37).unwrap() {
+        decoded_frames += block.frames();
+        append_pcm_bytes(block.samples(), &mut actual);
+    }
+    assert_eq!(decoded_frames, frames);
+    assert_eq!(actual, expected_i24, "Zemer DWVW round trip differs");
 }
 
 #[test]
