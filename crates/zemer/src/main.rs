@@ -8,7 +8,7 @@ use std::{
     process::ExitCode,
 };
 
-use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffMarker, G726Rate};
+use aiff::{AiffComment, AiffDecoder, AiffEncoder, AiffInstrument, AiffMarker, G726Rate};
 use au::{AuDecoder, AuEncoder};
 use dsdiff::{DsdiffDecoder, DsdiffEncoder};
 use dsf::{DsfDecoder, DsfEncoder};
@@ -45,6 +45,7 @@ struct AudioInput {
     container: Option<WavContainer>,
     aiff_comments: Option<Vec<AiffComment>>,
     aiff_markers: Option<Vec<AiffMarker>>,
+    aiff_instrument: Option<AiffInstrument>,
     aiff_id3_tag: Option<Vec<u8>>,
     au_annotation: Option<Vec<u8>>,
 }
@@ -694,6 +695,7 @@ fn convert_audio(
         mut decoder,
         aiff_comments,
         aiff_markers,
+        aiff_instrument,
         aiff_id3_tag,
         au_annotation,
         ..
@@ -842,6 +844,11 @@ fn convert_audio(
                         .set_markers(markers)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
+                if let Some(instrument) = &aiff_instrument {
+                    encoder
+                        .set_instrument(instrument)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
                 if let Some(comments) = &aiff_comments {
                     encoder
                         .set_comments(comments)
@@ -867,6 +874,11 @@ fn convert_audio(
                 if let Some(markers) = &aiff_markers {
                     encoder
                         .set_markers(markers)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                if let Some(instrument) = &aiff_instrument {
+                    encoder
+                        .set_instrument(instrument)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
                 if let Some(comments) = &aiff_comments {
@@ -940,6 +952,11 @@ fn convert_audio(
                         .set_markers(markers)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
+                if let Some(instrument) = &aiff_instrument {
+                    encoder
+                        .set_instrument(instrument)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
                 if let Some(comments) = &aiff_comments {
                     encoder
                         .set_comments(comments)
@@ -962,6 +979,11 @@ fn convert_audio(
                 if let Some(markers) = &aiff_markers {
                     encoder
                         .set_markers(markers)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                if let Some(instrument) = &aiff_instrument {
+                    encoder
+                        .set_instrument(instrument)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
                 if let Some(comments) = &aiff_comments {
@@ -997,6 +1019,11 @@ fn convert_audio(
                 if let Some(markers) = &aiff_markers {
                     encoder
                         .set_markers(markers)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                if let Some(instrument) = &aiff_instrument {
+                    encoder
+                        .set_instrument(instrument)
                         .map_err(|error| cli_audio_error(error, &output))?;
                 }
                 if let Some(comments) = &aiff_comments {
@@ -1409,6 +1436,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             container: None,
             aiff_comments: None,
             aiff_markers: None,
+            aiff_instrument: None,
             aiff_id3_tag: None,
             au_annotation: Some(annotation),
         })
@@ -1420,6 +1448,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             container: None,
             aiff_comments: None,
             aiff_markers: None,
+            aiff_instrument: None,
             aiff_id3_tag: None,
             au_annotation: None,
         })
@@ -1444,6 +1473,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
                 container: None,
                 aiff_comments: None,
                 aiff_markers: None,
+                aiff_instrument: None,
                 aiff_id3_tag: None,
                 au_annotation: None,
             })
@@ -1456,6 +1486,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
                 container: None,
                 aiff_comments: None,
                 aiff_markers: None,
+                aiff_instrument: None,
                 aiff_id3_tag: None,
                 au_annotation: None,
             })
@@ -1469,6 +1500,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             container: None,
             aiff_comments: None,
             aiff_markers: None,
+            aiff_instrument: None,
             aiff_id3_tag: None,
             au_annotation: None,
         })
@@ -1476,6 +1508,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
         let decoder = AiffDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
         let format = if decoder.is_aifc() { "aifc" } else { "aiff" };
         let id3_tag = decoder.id3_tag().map(<[u8]>::to_vec);
+        let instrument = decoder.instrument().cloned();
         let mut comments = Vec::new();
         comments
             .try_reserve_exact(decoder.comments().len())
@@ -1496,6 +1529,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             container: None,
             aiff_comments: (!comments.is_empty()).then_some(comments),
             aiff_markers: (!markers.is_empty()).then_some(markers),
+            aiff_instrument: instrument,
             aiff_id3_tag: id3_tag,
             au_annotation: None,
         })
@@ -1508,6 +1542,7 @@ fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
             container: Some(container),
             aiff_comments: None,
             aiff_markers: None,
+            aiff_instrument: None,
             aiff_id3_tag: None,
             au_annotation: None,
         })
