@@ -1,0 +1,12 @@
+[package]
+name = "zemer-ima-adpcm"
+description = "IMA/DVI ADPCM predictor and quantizer for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "ima_adpcm"
+
+[dependencies]

@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::encode::WavContainer;
+use crate::ima_adpcm::{decode_block as decode_ima_block, frames_in_block};
 use crate::info::key_from_id;
 use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{decode_alaw, decode_mulaw};
@@ -39,6 +40,7 @@ enum AudioSegment {
     Data {
         next_offset: u64,
         remaining_frames: u64,
+        remaining_bytes: u64,
     },
     Silence {
         remaining_frames: u64,
@@ -126,16 +128,13 @@ pub(super) fn parse_ds64(bytes: &[u8]) -> Result<Ds64, AudioError> {
 
 fn parse_wavl<R: Read + Seek>(
     reader: &mut R,
-    start: u64,
-    size: u64,
+    end: u64,
     frame_bytes: u16,
+    encoding: WaveEncoding,
     container: WavContainer,
     ds64: &mut Option<Ds64>,
     audio: &mut AudioLayout,
 ) -> Result<(), AudioError> {
-    let end = start
-        .checked_add(size)
-        .ok_or(AudioError::InvalidFormat("wavl LIST size overflow"))?;
     loop {
         let position = reader.stream_position()?;
         if position == end {
@@ -183,14 +182,29 @@ fn parse_wavl<R: Read + Seek>(
         }
         match &id {
             b"data" => {
-                if chunk_size % u64::from(frame_bytes) != 0 {
+                let frames = if let WaveEncoding::ImaAdpcm {
+                    block_align,
+                    samples_per_block,
+                } = encoding
+                {
+                    frames_in_block(chunk_size, frame_bytes / 2, block_align, samples_per_block)?
+                } else {
+                    if chunk_size % u64::from(frame_bytes) != 0 {
+                        return Err(AudioError::InvalidFormat(
+                            "wavl data chunk ends in a partial sample frame",
+                        ));
+                    }
+                    chunk_size / u64::from(frame_bytes)
+                };
+                if frames == 0 && chunk_size != 0 {
                     return Err(AudioError::InvalidFormat(
-                        "wavl data chunk ends in a partial sample frame",
+                        "wavl data chunk contains no complete audio frame",
                     ));
                 }
                 audio.push(AudioSegment::Data {
                     next_offset: data_start,
-                    remaining_frames: chunk_size / u64::from(frame_bytes),
+                    remaining_frames: frames,
+                    remaining_bytes: chunk_size,
                 })?;
             }
             b"slnt" => {
@@ -217,6 +231,31 @@ enum WaveEncoding {
     Pcm(SampleFormat),
     ALaw,
     MuLaw,
+    ImaAdpcm {
+        block_align: u16,
+        samples_per_block: u16,
+    },
+}
+
+fn data_frames(
+    bytes: u64,
+    frame_bytes: u16,
+    encoding: WaveEncoding,
+    channels: u16,
+) -> Result<u64, AudioError> {
+    if let WaveEncoding::ImaAdpcm {
+        block_align,
+        samples_per_block,
+    } = encoding
+    {
+        frames_in_block(bytes, channels, block_align, samples_per_block)
+    } else if bytes % u64::from(frame_bytes) == 0 {
+        Ok(bytes / u64::from(frame_bytes))
+    } else {
+        Err(AudioError::InvalidFormat(
+            "data chunk ends in a partial sample frame",
+        ))
+    }
 }
 
 pub struct WavDecoder<R> {
@@ -232,6 +271,8 @@ pub struct WavDecoder<R> {
     remaining_frames: u64,
     last_frame: Option<Vec<u8>>,
     encoding: WaveEncoding,
+    ima_pending: Vec<i16>,
+    ima_pending_offset: usize,
 }
 
 impl<R: Read + Seek> WavDecoder<R> {
@@ -298,6 +339,7 @@ impl<R: Read + Seek> WavDecoder<R> {
         let mut parsed_spec = None;
         let mut frame_bytes = None;
         let mut encoding = None;
+        let mut fact_sample_count = None;
         let mut audio = AudioLayout::default();
         let mut has_audio = false;
         let mut metadata = Metadata::default();
@@ -385,7 +427,15 @@ impl<R: Read + Seek> WavDecoder<R> {
                     reader.read_exact(&mut bytes)?;
                     let (spec, align, parsed_encoding) = parse_format(&bytes)?;
                     parsed_spec = Some(spec);
-                    frame_bytes = Some(align);
+                    let decoded_frame_bytes =
+                        if matches!(parsed_encoding, WaveEncoding::ImaAdpcm { .. }) {
+                            spec.channels()
+                                .checked_mul(2)
+                                .ok_or(AudioError::InvalidFormat("WAVE frame alignment overflow"))?
+                        } else {
+                            align
+                        };
+                    frame_bytes = Some(decoded_frame_bytes);
                     encoding = Some(parsed_encoding);
                 }
                 b"data" if parsed_spec.is_none() => {
@@ -394,16 +444,32 @@ impl<R: Read + Seek> WavDecoder<R> {
                 b"data" => {
                     let frame_bytes = frame_bytes
                         .ok_or(AudioError::InvalidFormat("fmt chunk must precede data"))?;
-                    if chunk_size % u64::from(frame_bytes) != 0 {
+                    let (spec, encoding) = match (parsed_spec, encoding) {
+                        (Some(spec), Some(encoding)) => (spec, encoding),
+                        _ => return Err(AudioError::InvalidFormat("missing WAVE format")),
+                    };
+                    let frames = data_frames(chunk_size, frame_bytes, encoding, spec.channels())?;
+                    if frames == 0 && chunk_size != 0 {
                         return Err(AudioError::InvalidFormat(
-                            "data chunk ends in a partial sample frame",
+                            "data chunk contains no complete audio frame",
                         ));
                     }
                     audio.push(AudioSegment::Data {
                         next_offset: chunk_start,
-                        remaining_frames: chunk_size / u64::from(frame_bytes),
+                        remaining_frames: frames,
+                        remaining_bytes: chunk_size,
                     })?;
                     has_audio = true;
+                }
+                b"fact" => {
+                    if fact_sample_count.is_some() || chunk_size < 4 {
+                        return Err(AudioError::InvalidFormat(
+                            "invalid or duplicate WAVE fact chunk",
+                        ));
+                    }
+                    let mut bytes = [0; 4];
+                    reader.read_exact(&mut bytes)?;
+                    fact_sample_count = Some(u64::from(u32::from_le_bytes(bytes)));
                 }
                 b"LIST" if chunk_size >= 4 => {
                     let mut list_type = [0; 4];
@@ -424,11 +490,15 @@ impl<R: Read + Seek> WavDecoder<R> {
                                 "fmt chunk must precede wavl audio",
                             ))?;
                             let wavl_start = reader.stream_position()?;
+                            let wavl_end = wavl_start
+                                .checked_add(chunk_size - 4)
+                                .ok_or(AudioError::InvalidFormat("wavl LIST size overflow"))?;
                             parse_wavl(
                                 &mut reader,
-                                wavl_start,
-                                chunk_size - 4,
+                                wavl_end,
                                 frame_bytes,
+                                encoding
+                                    .ok_or(AudioError::InvalidFormat("missing WAVE encoding"))?,
                                 container,
                                 &mut ds64,
                                 &mut audio,
@@ -447,6 +517,17 @@ impl<R: Read + Seek> WavDecoder<R> {
         let frame_bytes =
             frame_bytes.ok_or(AudioError::InvalidFormat("missing frame alignment"))?;
         let encoding = encoding.ok_or(AudioError::InvalidFormat("missing WAVE encoding"))?;
+        if let WaveEncoding::ImaAdpcm { .. } = encoding {
+            let fact_frames = fact_sample_count.ok_or(AudioError::InvalidFormat(
+                "IMA ADPCM WAVE file is missing its fact sample count",
+            ))?;
+            if fact_frames > audio.remaining_frames {
+                return Err(AudioError::InvalidFormat(
+                    "IMA ADPCM fact sample count exceeds the encoded block samples",
+                ));
+            }
+            audio.remaining_frames = fact_frames;
+        }
         if !has_audio {
             return Err(AudioError::InvalidFormat("missing data or wavl audio"));
         }
@@ -464,6 +545,8 @@ impl<R: Read + Seek> WavDecoder<R> {
             remaining_frames: audio.remaining_frames,
             last_frame: None,
             encoding,
+            ima_pending: Vec::new(),
+            ima_pending_offset: 0,
         })
     }
 
@@ -503,6 +586,11 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
         if frames == 0 {
             return Ok(None);
         }
+        if matches!(self.encoding, WaveEncoding::ImaAdpcm { .. }) {
+            let frames = usize::try_from(frames)
+                .map_err(|_| AudioError::InvalidData("requested IMA ADPCM block is too large"))?;
+            return self.read_ima_frames(frames).map(Some);
+        }
         let frames = usize::try_from(frames)
             .map_err(|_| AudioError::InvalidData("requested block size overflow"))?;
         let byte_count = frames
@@ -520,6 +608,7 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
                 AudioSegment::Data {
                     next_offset,
                     remaining_frames,
+                    remaining_bytes,
                 } => {
                     if *remaining_frames == 0 {
                         self.segments.pop_front();
@@ -539,6 +628,7 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
                         .checked_add(take_bytes as u64)
                         .ok_or(AudioError::InvalidData("WAVE data offset overflow"))?;
                     *remaining_frames -= take_frames;
+                    *remaining_bytes -= take_bytes as u64;
                     let frame_bytes = usize::from(self.frame_bytes);
                     self.last_frame = Some(bytes[bytes.len() - frame_bytes..].to_vec());
                 }
@@ -590,6 +680,136 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
     }
 }
 
+impl<R: Read + Seek> WavDecoder<R> {
+    fn read_ima_frames(&mut self, requested_frames: usize) -> Result<PcmBuffer, AudioError> {
+        let channels = usize::from(self.spec.channels());
+        let sample_count =
+            requested_frames
+                .checked_mul(channels)
+                .ok_or(AudioError::InvalidData(
+                    "requested IMA ADPCM block size overflow",
+                ))?;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(sample_count)
+            .map_err(|_| AudioError::InvalidData("requested IMA ADPCM block is too large"))?;
+        while output.len() < sample_count {
+            if self.ima_pending_offset < self.ima_pending.len() {
+                let count = (sample_count - output.len())
+                    .min(self.ima_pending.len() - self.ima_pending_offset);
+                output.extend_from_slice(
+                    &self.ima_pending[self.ima_pending_offset..self.ima_pending_offset + count],
+                );
+                self.ima_pending_offset += count;
+                if let Some(frame) = output.chunks_exact(channels).last() {
+                    let mut bytes = Vec::with_capacity(channels * 2);
+                    for sample in frame {
+                        bytes.extend_from_slice(&sample.to_le_bytes());
+                    }
+                    self.last_frame = Some(bytes);
+                }
+                if self.ima_pending_offset == self.ima_pending.len() {
+                    self.ima_pending.clear();
+                    self.ima_pending_offset = 0;
+                }
+                continue;
+            }
+            let Some(segment) = self.segments.front_mut() else {
+                return Err(AudioError::InvalidFormat(
+                    "IMA ADPCM data ended before the fact sample count",
+                ));
+            };
+            match segment {
+                AudioSegment::Data {
+                    next_offset,
+                    remaining_frames,
+                    remaining_bytes,
+                } => {
+                    if *remaining_bytes == 0 || *remaining_frames == 0 {
+                        self.segments.pop_front();
+                        continue;
+                    }
+                    let WaveEncoding::ImaAdpcm {
+                        block_align,
+                        samples_per_block,
+                    } = self.encoding
+                    else {
+                        unreachable!("IMA reader is called only for IMA data")
+                    };
+                    let byte_count = usize::try_from(
+                        (*remaining_bytes).min(u64::from(block_align)),
+                    )
+                    .map_err(|_| AudioError::InvalidFormat("IMA ADPCM block is too large"))?;
+                    let mut bytes = vec![0; byte_count];
+                    self.reader.seek(SeekFrom::Start(*next_offset))?;
+                    self.reader.read_exact(&mut bytes)?;
+                    let decoded =
+                        decode_ima_block(&bytes, self.spec.channels(), samples_per_block)?;
+                    let decoded_frames = decoded.len() / channels;
+                    if decoded_frames as u64 > *remaining_frames {
+                        return Err(AudioError::InvalidFormat(
+                            "IMA ADPCM block sample count exceeds its data segment",
+                        ));
+                    }
+                    *next_offset = next_offset
+                        .checked_add(byte_count as u64)
+                        .ok_or(AudioError::InvalidFormat("IMA ADPCM data offset overflow"))?;
+                    *remaining_bytes -= byte_count as u64;
+                    *remaining_frames -= decoded_frames as u64;
+                    self.ima_pending = decoded;
+                }
+                AudioSegment::Silence { remaining_frames } => {
+                    if *remaining_frames == 0 {
+                        self.segments.pop_front();
+                        continue;
+                    }
+                    let frames_left = (sample_count - output.len()) / channels;
+                    let take_frames = (*remaining_frames).min(frames_left as u64) as usize;
+                    let frame: Vec<i16> = self
+                        .last_frame
+                        .as_deref()
+                        .map(|bytes| {
+                            bytes
+                                .chunks_exact(2)
+                                .map(|sample| i16::from_le_bytes(sample.try_into().unwrap()))
+                                .collect()
+                        })
+                        .unwrap_or_else(|| vec![0; channels]);
+                    for _ in 0..take_frames {
+                        output.extend_from_slice(&frame);
+                    }
+                    *remaining_frames -= take_frames as u64;
+                }
+            }
+            let exhausted = match self.segments.front() {
+                Some(AudioSegment::Data {
+                    remaining_frames,
+                    remaining_bytes,
+                    ..
+                }) => *remaining_frames == 0 || *remaining_bytes == 0,
+                Some(AudioSegment::Silence { remaining_frames }) => *remaining_frames == 0,
+                None => false,
+            };
+            if exhausted {
+                self.segments.pop_front();
+            }
+        }
+        let decoded_frames = (output.len() / channels) as u64;
+        self.remaining_frames = self
+            .remaining_frames
+            .checked_sub(decoded_frames)
+            .ok_or(AudioError::InvalidData("WAVE sample count underflow"))?;
+        if let Some(frame) = output.chunks_exact(channels).last() {
+            let mut bytes = Vec::with_capacity(channels * 2);
+            for sample in frame {
+                bytes.extend_from_slice(&sample.to_le_bytes());
+            }
+            self.last_frame = Some(bytes);
+        }
+        PcmBuffer::new(self.spec, Samples::I16(output)).map_err(AudioError::from)
+    }
+}
+
 fn decode_samples(encoding: WaveEncoding, bytes: Vec<u8>) -> Result<Samples, AudioError> {
     let format = match encoding {
         WaveEncoding::Pcm(format) => format,
@@ -602,6 +822,11 @@ fn decode_samples(encoding: WaveEncoding, bytes: Vec<u8>) -> Result<Samples, Aud
             let mut output = reserve_samples(bytes.len())?;
             output.extend(bytes.into_iter().map(decode_mulaw));
             return Ok(Samples::I16(output));
+        }
+        WaveEncoding::ImaAdpcm { .. } => {
+            return Err(AudioError::InvalidData(
+                "IMA ADPCM data must be decoded one block at a time",
+            ));
         }
     };
     let sample_count = match format {
@@ -685,6 +910,55 @@ fn parse_format(bytes: &[u8]) -> Result<(AudioSpec, u16, WaveEncoding), AudioErr
     let block_align = u16::from_le_bytes(bytes[12..14].try_into().unwrap());
     let bits = u16::from_le_bytes(bytes[14..16].try_into().unwrap());
     let mut channel_mask = None;
+
+    if tag == 0x0011 {
+        let extension_size = bytes
+            .get(16..18)
+            .map(|value| u16::from_le_bytes(value.try_into().unwrap()));
+        if bytes.len() < 20
+            || extension_size.is_none_or(|size| size < 2 || usize::from(size) > bytes.len() - 18)
+            || bits != 4
+            || !(1..=2).contains(&channels)
+            || sample_rate == 0
+        {
+            return Err(AudioError::InvalidFormat(
+                "invalid IMA ADPCM WAVE format extension",
+            ));
+        }
+        let samples_per_block = u16::from_le_bytes(bytes[18..20].try_into().unwrap());
+        let header_size = channels
+            .checked_mul(4)
+            .ok_or(AudioError::InvalidFormat("IMA ADPCM header size overflow"))?;
+        let payload_size =
+            block_align
+                .checked_sub(header_size)
+                .ok_or(AudioError::InvalidFormat(
+                    "IMA ADPCM block is smaller than its headers",
+                ))?;
+        let channel_group = channels.checked_mul(4).ok_or(AudioError::InvalidFormat(
+            "IMA ADPCM channel group overflow",
+        ))?;
+        if payload_size == 0 || payload_size % channel_group != 0 {
+            return Err(AudioError::InvalidFormat(
+                "invalid IMA ADPCM block alignment",
+            ));
+        }
+        let expected_samples = 1 + payload_size * 2 / channels;
+        if samples_per_block != expected_samples {
+            return Err(AudioError::InvalidFormat(
+                "inconsistent IMA ADPCM samples per block",
+            ));
+        }
+        // Existing WAVE IMA encoders disagree about the channel divisor here.
+        return Ok((
+            AudioSpec::new(sample_rate, channels, SampleFormat::PcmI16)?,
+            block_align,
+            WaveEncoding::ImaAdpcm {
+                block_align,
+                samples_per_block,
+            },
+        ));
+    }
 
     if tag == 0xfffe {
         if bytes.len() < 40 || u16::from_le_bytes(bytes[16..18].try_into().unwrap()) < 22 {
@@ -1069,6 +1343,28 @@ mod tests {
         bytes
     }
 
+    fn wavl_ima(data: &[u8], silence_frames: u32, fact_frames: u32) -> Vec<u8> {
+        let mut bytes = b"RIFF\0\0\0\0WAVE".to_vec();
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&17_u16.to_le_bytes());
+        fmt.extend_from_slice(&1_u16.to_le_bytes());
+        fmt.extend_from_slice(&48_000_u32.to_le_bytes());
+        fmt.extend_from_slice(&42_667_u32.to_le_bytes());
+        fmt.extend_from_slice(&8_u16.to_le_bytes());
+        fmt.extend_from_slice(&4_u16.to_le_bytes());
+        fmt.extend_from_slice(&2_u16.to_le_bytes());
+        fmt.extend_from_slice(&9_u16.to_le_bytes());
+        append_chunk(&mut bytes, b"fmt ", &fmt);
+        append_chunk(&mut bytes, b"fact", &fact_frames.to_le_bytes());
+        let mut wavl = b"wavl".to_vec();
+        append_chunk(&mut wavl, b"data", data);
+        append_chunk(&mut wavl, b"slnt", &silence_frames.to_le_bytes());
+        append_chunk(&mut bytes, b"LIST", &wavl);
+        let riff_size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        bytes
+    }
+
     #[test]
     fn decodes_wavl_data_and_slnt_in_order_across_read_boundaries() {
         let bytes = wavl_pcm(
@@ -1094,6 +1390,38 @@ mod tests {
             &Samples::U8(vec![0x30])
         );
         assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn ima_wavl_silence_holds_the_last_decoded_frame_within_one_read() {
+        let data = [0xe8, 0x03, 0, 0, 0x11, 0x11, 0x11, 0x11];
+        let block = decode_ima_block(&data, 1, 9).unwrap();
+        let bytes = wavl_ima(&data, 1, 10);
+        let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
+        let decoded = decoder.read_frames(10).unwrap().unwrap();
+        let Samples::I16(samples) = decoded.samples() else {
+            panic!("IMA ADPCM must decode to signed 16-bit PCM");
+        };
+        assert_eq!(&samples[..9], block);
+        assert_eq!(samples[9], block[8]);
+    }
+
+    #[test]
+    fn rejects_truncated_ima_format_extension_and_missing_fact_chunk() {
+        let data = [0, 0, 0, 0, 0x11, 0x11, 0x11, 0x11];
+        let mut bytes = wavl_ima(&data, 0, 9);
+        bytes[36..38].copy_from_slice(&4_u16.to_le_bytes());
+        assert!(WavDecoder::new(Cursor::new(bytes)).is_err());
+
+        let mut bytes = wavl_ima(&data, 0, 9);
+        let fact = bytes
+            .windows(4)
+            .position(|window| window == b"fact")
+            .unwrap();
+        bytes.drain(fact..fact + 12);
+        let riff_size = (bytes.len() - 8) as u32;
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        assert!(WavDecoder::new(Cursor::new(bytes)).is_err());
     }
 
     #[test]
