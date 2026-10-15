@@ -33,9 +33,9 @@ The typed ``AiffMarker`` API reads and writes the optional ``MARK`` chunk.
 Marker IDs are unique positive signed 16-bit values, positions count sample
 frames (including the valid end position), and names retain their Pascal-string
 bytes without assuming a text encoding. The decoder validates record bounds,
-padding, IDs, positions, and duplicate chunks. Same-format CLI conversion to
-AIFF or AIFC carries these markers to the output; the metadata rewrite also
-preserves the original MARK chunk byte-for-byte.
+padding, IDs, positions, and duplicate chunks. CLI conversion to AIFF or AIFC
+carries typed comments and markers to the output; metadata edits preserve the
+original COMT and MARK chunks byte-for-byte.
 
 Chunk bounds, odd-size padding, the AIFC version, the extended sample rate,
 SSND offsets, COMM frame counts, and metadata size are checked. ``SSND`` is
