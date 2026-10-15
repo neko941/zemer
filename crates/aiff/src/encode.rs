@@ -1105,23 +1105,27 @@ mod tests {
     }
 
     #[test]
-    fn aifc_dwvw_decodes_independent_payloads_per_stereo_channel() {
+    fn aifc_dwvw_decodes_independent_payloads_across_channel_counts() {
         let channel_payload = &INDEPENDENT_DWVW_16[..18];
-        let mut stereo_payload = channel_payload.to_vec();
-        stereo_payload.extend_from_slice(channel_payload);
-        let file = aifc_dwvw_file(2, 9, &stereo_payload);
-
-        let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
         let expected_channel = [287, 4255, 8549, 12341, 15845, 18660, 20931, 22349, 23079];
-        let expected: Vec<_> = expected_channel
-            .into_iter()
-            .flat_map(|sample| [sample, sample])
-            .collect();
-        assert_eq!(
-            decoder.read_frames(9).unwrap().unwrap().samples(),
-            &Samples::I16(expected)
-        );
-        assert!(decoder.read_frames(1).unwrap().is_none());
+        for channels in 1..=8 {
+            let mut payload = Vec::with_capacity(channel_payload.len() * usize::from(channels));
+            for _ in 0..channels {
+                payload.extend_from_slice(channel_payload);
+            }
+            let file = aifc_dwvw_file(channels, 9, &payload);
+            let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
+            let expected: Vec<_> = expected_channel
+                .into_iter()
+                .flat_map(|sample| std::iter::repeat_n(sample, usize::from(channels)))
+                .collect();
+            assert_eq!(
+                decoder.read_frames(9).unwrap().unwrap().samples(),
+                &Samples::I16(expected),
+                "failed with {channels} DWVW channels"
+            );
+            assert!(decoder.read_frames(1).unwrap().is_none());
+        }
     }
 
     fn aifc_dwvw_file(channels: u16, frame_count: u32, payload: &[u8]) -> Vec<u8> {
