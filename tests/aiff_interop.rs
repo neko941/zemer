@@ -5,6 +5,7 @@ use std::{
 };
 
 use aiff::{AiffDecoder, AiffEncoder};
+use g711::G711Encoding;
 use zemer_core::{AudioDecoder, AudioSpec, PcmBuffer, SampleFormat, Samples};
 
 fn append_pcm_bytes(samples: &Samples, output: &mut Vec<u8>) {
@@ -166,6 +167,40 @@ fn encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg() {
             );
             assert_eq!(actual, oracle, "{format:?}, {valid_bits} valid bits");
         }
+    }
+}
+
+#[test]
+#[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
+fn encodes_aifc_g711_compatible_with_ffmpeg() {
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
+    let spec = AudioSpec::new(8_000, 2, SampleFormat::PcmI16).unwrap();
+    let samples: Vec<_> = (0..=u16::MAX).map(|sample| sample as i16).collect();
+    let input = PcmBuffer::new(spec, Samples::I16(samples.clone())).unwrap();
+
+    for encoding in [G711Encoding::ALaw, G711Encoding::MuLaw] {
+        let mut encoder =
+            AiffEncoder::new_aifc_g711(Cursor::new(Vec::new()), spec, encoding).unwrap();
+        for samples in samples.chunks(1_000) {
+            encoder
+                .write_block(&PcmBuffer::new(spec, Samples::I16(samples.to_vec())).unwrap())
+                .unwrap();
+        }
+        let encoded = encoder.finish().unwrap().get_ref().clone();
+        let oracle = decode_ffmpeg(&ffmpeg, &encoded, "s16le");
+
+        let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+        assert!(decoder.is_aifc());
+        assert_eq!(decoder.spec(), spec);
+        let mut actual = Vec::new();
+        let mut frames = 0;
+        while let Some(block) = decoder.read_frames(333).unwrap() {
+            frames += block.frames();
+            append_pcm_bytes(block.samples(), &mut actual);
+        }
+        assert_eq!(frames, input.frames());
+        assert_eq!(oracle.len(), samples.len() * 2);
+        assert_eq!(actual, oracle, "{encoding:?} differs from FFmpeg");
     }
 }
 

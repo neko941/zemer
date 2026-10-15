@@ -684,3 +684,12 @@ the same cross-decoder check for AIFF PCM at every valid depth from 1 through
 ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
   encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg -- --ignored --exact
 ```
+
+The ignored `encodes_aifc_g711_compatible_with_ffmpeg` test encodes the full
+16-bit input-code range with both A-law and μ-law, then compares FFmpeg and
+Zemer's decoded PCM. Run it with:
+
+```sh
+ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
+  encodes_aifc_g711_compatible_with_ffmpeg -- --ignored --exact
+```
