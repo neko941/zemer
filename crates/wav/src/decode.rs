@@ -3,7 +3,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
 };
 
-use crate::BextChunk;
+use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use crate::encode::WavContainer;
 use g711::{decode_alaw, decode_mulaw};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
@@ -224,6 +224,8 @@ pub struct WavDecoder<R> {
     container: WavContainer,
     metadata: Metadata,
     bext: Option<BextChunk>,
+    cue: Option<WavCueChunk>,
+    sampler: Option<WavSamplerChunk>,
     frame_bytes: u16,
     segments: VecDeque<AudioSegment>,
     remaining_frames: u64,
@@ -299,6 +301,8 @@ impl<R: Read + Seek> WavDecoder<R> {
         let mut has_audio = false;
         let mut metadata = Metadata::default();
         let mut bext = None;
+        let mut cue = None;
+        let mut sampler = None;
         let mut info_metadata_bytes = 0;
         let mut info_metadata_values = 0;
         loop {
@@ -352,6 +356,22 @@ impl<R: Read + Seek> WavDecoder<R> {
                     let size = u32::try_from(chunk_size)
                         .map_err(|_| AudioError::InvalidFormat("BWF bext chunk is too large"))?;
                     bext = Some(BextChunk::read(&mut reader, size)?);
+                }
+                b"cue " => {
+                    if cue.is_some() {
+                        return Err(AudioError::InvalidFormat("duplicate WAVE cue chunk"));
+                    }
+                    let size = u32::try_from(chunk_size)
+                        .map_err(|_| AudioError::InvalidFormat("WAVE cue chunk is too large"))?;
+                    cue = Some(WavCueChunk::read(&mut reader, size)?);
+                }
+                b"smpl" => {
+                    if sampler.is_some() {
+                        return Err(AudioError::InvalidFormat("duplicate WAVE sampler chunk"));
+                    }
+                    let size = u32::try_from(chunk_size)
+                        .map_err(|_| AudioError::InvalidFormat("WAVE sampler chunk is too large"))?;
+                    sampler = Some(WavSamplerChunk::read(&mut reader, size)?);
                 }
                 b"fmt " if parsed_spec.is_none() => {
                     if chunk_size > u64::from(MAX_FORMAT_CHUNK) {
@@ -435,6 +455,8 @@ impl<R: Read + Seek> WavDecoder<R> {
             container,
             metadata,
             bext,
+            cue,
+            sampler,
             frame_bytes,
             segments: audio.segments,
             remaining_frames: audio.remaining_frames,
@@ -449,6 +471,14 @@ impl<R: Read + Seek> WavDecoder<R> {
 
     pub fn bext(&self) -> Option<&BextChunk> {
         self.bext.as_ref()
+    }
+
+    pub fn cue(&self) -> Option<&WavCueChunk> {
+        self.cue.as_ref()
+    }
+
+    pub fn sampler(&self) -> Option<&WavSamplerChunk> {
+        self.sampler.as_ref()
     }
 }
 

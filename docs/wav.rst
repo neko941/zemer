@@ -8,6 +8,10 @@ Reading
 then returns decoded audio in frame blocks through ``AudioDecoder``.
 The typed ``bext`` accessor exposes the fixed Broadcast Wave fields as their
 original bytes, preserving non-UTF-8 values and versioned reserved data.
+``cue()`` exposes WAVE cue-point records and ``sampler()`` exposes sampler
+header fields, sample-loop records, and opaque sampler-specific bytes. Each
+typed chunk is limited to 16 MiB; duplicate cue names and sample-loop
+identifiers are rejected.
 
 .. code-block:: rust
 
@@ -23,6 +27,16 @@ original bytes, preserving non-UTF-8 values and versioned reserved data.
    if let Some(bext) = decoder.bext() {
        let time_reference = bext.time_reference;
        let coding_history = &bext.coding_history;
+   }
+   if let Some(cue) = decoder.cue() {
+       for point in &cue.points {
+           let sample = point.sample_offset;
+       }
+   }
+   if let Some(sampler) = decoder.sampler() {
+       for sample_loop in &sampler.loops {
+           let loop_start = sample_loop.start;
+       }
    }
 
 Writing
@@ -44,6 +58,10 @@ caller.
    let mut writer = WavWriter::new(BufWriter::new(File::create("output.wav")?), spec)?;
    // Supply matching PcmBuffer blocks with writer.write_block(&block)?;
    writer.finish()?;
+
+Set ``WavWriter::set_cue`` and ``set_sampler`` before finishing to write these
+chunks after audio data. The chunk fields are preserved as supplied; cue
+records use the format's 32-bit positions and offsets.
 
 To create a Broadcast Wave file, provide a ``BextChunk`` when constructing the
 writer. Its 602-byte fixed record, versioned reserved bytes, and variable coding
@@ -101,6 +119,8 @@ Supported samples
 * Read and write common text tags in RIFF ``LIST/INFO`` chunks: title, artist,
   album, date, genre, and comment. Other metadata keys are rejected by the WAV
   writer rather than silently discarded.
+* Read and write typed ``cue `` cue-point and ``smpl`` sampler-loop chunks,
+  preserving their fields and sampler-specific data bytes.
 
 The reader concatenates top-level ``data`` chunks and ``LIST/wavl`` child
 segments in file order. A ``wavl`` list may contain ``data`` sample bytes and
@@ -119,7 +139,7 @@ Metadata rewriting
 
 ``wav::rewrite_metadata`` edits supported ``LIST/INFO`` text tags while
 copying audio bytes, unknown RIFF/RF64 chunks, and unrecognized INFO subchunks
-unchanged. It preserves ``bext`` chunks unchanged. It updates RIFF sizes and
+unchanged. It preserves ``bext``, ``cue ``, and ``smpl`` chunks unchanged. It updates RIFF sizes and
 RF64 ``ds64`` size fields, including a size-table entry for a rewritten
 sentinel-sized INFO chunk. It accepts a
 seekable input and output; callers should write to a new temporary file and
@@ -152,5 +172,7 @@ segments. The writer does not create segmented ``wavl`` audio; it writes a
 contiguous ``data`` chunk. Each supported INFO value is limited to 1 MiB; the
 reader retains at most 16 MiB and 65,536 supported INFO values across the file.
 The first ``bext`` chunk is parsed and bounded to 16 MiB; its fixed fields are
-602 bytes followed by coding history. Writers accept one typed ``BextChunk``.
-Other embedded metadata chunks are not interpreted.
+602 bytes followed by coding history. A single ``cue `` or ``smpl`` chunk is
+parsed; each is bounded to 16 MiB. Cue records have 32-bit fields and do not
+provide RF64-scale marker positions. Writers emit at most one of each typed
+chunk. Other embedded metadata chunks are not interpreted.

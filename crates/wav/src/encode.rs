@@ -1,6 +1,6 @@
 use std::io::{Seek, SeekFrom, Write};
 
-use crate::BextChunk;
+use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{encode_alaw, encode_mulaw};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
@@ -31,6 +31,9 @@ pub struct WavWriter<W> {
     riff_overhead: u64,
     metadata: Metadata,
     metadata_chunk_bytes: u64,
+    cue: Option<WavCueChunk>,
+    sampler: Option<WavSamplerChunk>,
+    embedded_chunk_bytes: u64,
     g711: Option<G711Encoding>,
     container: WavContainer,
     poisoned: bool,
@@ -266,6 +269,9 @@ impl<W: Write + Seek> WavWriter<W> {
             riff_overhead: riff_overhead + bext_chunk_bytes,
             metadata: metadata.clone(),
             metadata_chunk_bytes,
+            cue: None,
+            sampler: None,
+            embedded_chunk_bytes: 0,
             g711,
             container,
             poisoned: false,
@@ -280,6 +286,7 @@ impl<W: Write + Seek> WavWriter<W> {
             .checked_add(self.data_bytes)
             .and_then(|size| size.checked_add(self.data_bytes & 1))
             .and_then(|size| size.checked_add(chunk_bytes))
+            .and_then(|size| size.checked_add(self.embedded_chunk_bytes))
             .ok_or(AudioError::Unsupported("RIFF/WAVE output size overflow"))?;
         if self.container == WavContainer::Riff && riff_size > u64::from(u32::MAX) {
             return Err(AudioError::Unsupported(
@@ -288,6 +295,72 @@ impl<W: Write + Seek> WavWriter<W> {
         }
         self.metadata = metadata.clone();
         self.metadata_chunk_bytes = chunk_bytes;
+        Ok(())
+    }
+
+    /// Adds or replaces a typed `cue ` chunk written after the audio data.
+    pub fn set_cue(&mut self, cue: Option<WavCueChunk>) -> Result<(), AudioError> {
+        self.ensure_metadata_writable()?;
+        let cue_bytes = cue
+            .as_ref()
+            .map(cue_chunk_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        let sampler_bytes = self
+            .sampler
+            .as_ref()
+            .map(sampler_chunk_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        self.replace_embedded_chunks(cue_bytes, sampler_bytes)?;
+        self.cue = cue;
+        Ok(())
+    }
+
+    /// Adds or replaces a typed `smpl` chunk written after the audio data.
+    pub fn set_sampler(&mut self, sampler: Option<WavSamplerChunk>) -> Result<(), AudioError> {
+        self.ensure_metadata_writable()?;
+        let cue_bytes = self
+            .cue
+            .as_ref()
+            .map(cue_chunk_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        let sampler_bytes = sampler
+            .as_ref()
+            .map(sampler_chunk_bytes)
+            .transpose()?
+            .unwrap_or(0);
+        self.replace_embedded_chunks(cue_bytes, sampler_bytes)?;
+        self.sampler = sampler;
+        Ok(())
+    }
+
+    fn ensure_metadata_writable(&self) -> Result<(), AudioError> {
+        if self.finished {
+            return Err(AudioError::InvalidData("WAVE writer is already finalized"));
+        }
+        if self.poisoned {
+            return Err(AudioError::InvalidData("WAVE writer is unusable after an earlier I/O failure"));
+        }
+        Ok(())
+    }
+
+    fn replace_embedded_chunks(&mut self, cue_bytes: u64, sampler_bytes: u64) -> Result<(), AudioError> {
+        let chunk_bytes = cue_bytes
+            .checked_add(sampler_bytes)
+            .ok_or(AudioError::Unsupported("WAVE embedded metadata size overflow"))?;
+        let riff_size = self
+            .riff_overhead
+            .checked_add(self.data_bytes)
+            .and_then(|size| size.checked_add(self.data_bytes & 1))
+            .and_then(|size| size.checked_add(self.metadata_chunk_bytes))
+            .and_then(|size| size.checked_add(chunk_bytes))
+            .ok_or(AudioError::Unsupported("WAVE output size overflow"))?;
+        if self.container == WavContainer::Riff && riff_size > u64::from(u32::MAX) {
+            return Err(AudioError::Unsupported("WAVE metadata exceeds the RIFF/WAVE size limit"));
+        }
+        self.embedded_chunk_bytes = chunk_bytes;
         Ok(())
     }
 
@@ -320,6 +393,12 @@ impl<W: Write + Seek> WavWriter<W> {
         }
         if self.metadata_chunk_bytes > 0 {
             write_info_chunk(&mut self.writer, &self.metadata)?;
+        }
+        if let Some(cue) = &self.cue {
+            cue.write(&mut self.writer)?;
+        }
+        if let Some(sampler) = &self.sampler {
+            sampler.write(&mut self.writer)?;
         }
         let end = self.writer.stream_position()?;
         let riff_size = end
@@ -402,6 +481,7 @@ impl<W: Write + Seek> AudioEncoder for WavWriter<W> {
             .checked_add(new_size)
             .and_then(|size| size.checked_add(new_size & 1))
             .and_then(|size| size.checked_add(self.metadata_chunk_bytes))
+            .and_then(|size| size.checked_add(self.embedded_chunk_bytes))
             .ok_or(AudioError::Unsupported("RIFF/WAVE output size overflow"))?;
         if self.container == WavContainer::Riff
             && (new_size > u64::from(u32::MAX) || riff_size > u64::from(u32::MAX))
@@ -436,6 +516,16 @@ fn subformat_guid(format_tag: u16) -> [u8; 16] {
         ],
         _ => unreachable!("writer only selects known WAVE subformats"),
     }
+}
+
+fn cue_chunk_bytes(cue: &WavCueChunk) -> Result<u64, AudioError> {
+    let size = cue.chunk_size()?;
+    Ok(8 + u64::from(size) + u64::from(size & 1))
+}
+
+fn sampler_chunk_bytes(sampler: &WavSamplerChunk) -> Result<u64, AudioError> {
+    let size = sampler.chunk_size()?;
+    Ok(8 + u64::from(size) + u64::from(size & 1))
 }
 
 pub fn write_wav<W: Write + Seek>(writer: W, audio: &PcmBuffer) -> Result<W, AudioError> {
