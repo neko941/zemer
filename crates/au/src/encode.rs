@@ -4,7 +4,7 @@ use g711::{encode_alaw, encode_mulaw};
 use g726::{G726Encoder, G726Packing, G726Rate};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
-use crate::{MAX_ANNOTATION_BYTES, UNKNOWN_DATA_SIZE};
+use crate::{MAX_ANNOTATION_BYTES, UNKNOWN_DATA_SIZE, g726_packing_group};
 
 pub use g711::G711Encoding;
 
@@ -18,7 +18,7 @@ enum Encoding {
     Float64,
     MuLaw,
     ALaw,
-    G721,
+    G726(G726Rate),
 }
 
 impl Encoding {
@@ -32,7 +32,12 @@ impl Encoding {
             Self::Float32 => 6,
             Self::Float64 => 7,
             Self::ALaw => 27,
-            Self::G721 => 23,
+            Self::G726(G726Rate::Kbps32) => 23,
+            Self::G726(G726Rate::Kbps24) => 25,
+            Self::G726(G726Rate::Kbps40) => 26,
+            Self::G726(G726Rate::Kbps16) => {
+                unreachable!("AU does not assign the 2-bit G.726 profile")
+            }
         }
     }
 
@@ -54,8 +59,8 @@ pub struct AuEncoder<W> {
     spec: AudioSpec,
     encoding: Encoding,
     data_bytes: u64,
-    g721_encoder: Option<G726Encoder>,
-    g721_samples: u64,
+    g726_encoder: Option<G726Encoder>,
+    g726_samples: u64,
     poisoned: bool,
     finished: bool,
 }
@@ -119,7 +124,48 @@ impl<W: Write + Seek> AuEncoder<W> {
                 "AU G.721 requires 8 kHz mono signed 16-bit PCM",
             ));
         }
-        Self::new_configured(writer, spec, Encoding::G721, metadata)
+        Self::new_configured(writer, spec, Encoding::G726(G726Rate::Kbps32), metadata)
+    }
+
+    pub fn new_g723_3(writer: W, spec: AudioSpec) -> Result<Self, AudioError> {
+        Self::new_g723_3_with_metadata(writer, spec, &Metadata::default())
+    }
+
+    pub fn new_g723_3_with_metadata(
+        writer: W,
+        spec: AudioSpec,
+        metadata: &Metadata,
+    ) -> Result<Self, AudioError> {
+        Self::new_g723(writer, spec, G726Rate::Kbps24, metadata)
+    }
+
+    pub fn new_g723_5(writer: W, spec: AudioSpec) -> Result<Self, AudioError> {
+        Self::new_g723_5_with_metadata(writer, spec, &Metadata::default())
+    }
+
+    pub fn new_g723_5_with_metadata(
+        writer: W,
+        spec: AudioSpec,
+        metadata: &Metadata,
+    ) -> Result<Self, AudioError> {
+        Self::new_g723(writer, spec, G726Rate::Kbps40, metadata)
+    }
+
+    fn new_g723(
+        writer: W,
+        spec: AudioSpec,
+        rate: G726Rate,
+        metadata: &Metadata,
+    ) -> Result<Self, AudioError> {
+        if spec.sample_rate() != 8_000
+            || spec.channels() != 1
+            || spec.sample_format() != SampleFormat::PcmI16
+        {
+            return Err(AudioError::Unsupported(
+                "AU G.723 requires 8 kHz mono signed 16-bit PCM",
+            ));
+        }
+        Self::new_configured(writer, spec, Encoding::G726(rate), metadata)
     }
 
     fn new_configured(
@@ -146,10 +192,10 @@ impl<W: Write + Seek> AuEncoder<W> {
         writer.write_all(&spec.sample_rate().to_be_bytes())?;
         writer.write_all(&u32::from(spec.channels()).to_be_bytes())?;
         writer.write_all(&annotation)?;
-        let g721_encoder = if matches!(encoding, Encoding::G721) {
+        let g726_encoder = if let Encoding::G726(rate) = encoding {
             Some(
-                G726Encoder::new(G726Rate::Kbps32, 1, G726Packing::LsbFirst)
-                    .map_err(|_| AudioError::InvalidData("invalid AU G.721 configuration"))?,
+                G726Encoder::new(rate, 1, G726Packing::LsbFirst)
+                    .map_err(|_| AudioError::InvalidData("invalid AU G.72x configuration"))?,
             )
         } else {
             None
@@ -160,8 +206,8 @@ impl<W: Write + Seek> AuEncoder<W> {
             spec,
             encoding,
             data_bytes: 0,
-            g721_encoder,
-            g721_samples: 0,
+            g726_encoder,
+            g726_samples: 0,
             poisoned: false,
             finished: false,
         })
@@ -169,7 +215,7 @@ impl<W: Write + Seek> AuEncoder<W> {
 
     /// Replaces the unstructured annotation bytes before any audio is written.
     pub fn set_annotation(&mut self, annotation: &[u8]) -> Result<(), AudioError> {
-        if self.finished || self.data_bytes != 0 || self.g721_samples != 0 {
+        if self.finished || self.data_bytes != 0 || self.g726_samples != 0 {
             return Err(AudioError::InvalidData(
                 "AU annotation must be set before writing audio",
             ));
@@ -216,12 +262,15 @@ impl<W: Write + Seek> AuEncoder<W> {
                 "AU writer failed while writing samples",
             ));
         }
-        if matches!(self.encoding, Encoding::G721) && self.g721_samples % 2 != 0 {
-            return Err(AudioError::InvalidData(
-                "AU G.721 output requires an even number of sample frames",
-            ));
+        if let Encoding::G726(rate) = self.encoding {
+            let (_, samples_per_group) = g726_packing_group(rate);
+            if self.g726_samples % samples_per_group != 0 {
+                return Err(AudioError::InvalidData(
+                    "AU G.72x output requires complete packing groups",
+                ));
+            }
         }
-        if let Some(encoder) = self.g721_encoder.as_mut() {
+        if let Some(encoder) = self.g726_encoder.as_mut() {
             let tail = encoder.finish();
             if !tail.is_empty() {
                 if let Err(error) = self.writer.write_all(&tail) {
@@ -275,32 +324,32 @@ impl<W: Write + Seek> AudioEncoder for AuEncoder<W> {
                 "PCM block does not match AU writer format",
             ));
         }
-        if matches!(self.encoding, Encoding::G721) {
+        if matches!(self.encoding, Encoding::G726(_)) {
             let Samples::I16(samples) = block.samples() else {
                 return Err(AudioError::InvalidData(
-                    "AU G.721 requires signed 16-bit PCM input",
+                    "AU G.72x requires signed 16-bit PCM input",
                 ));
             };
             let encoded = self
-                .g721_encoder
+                .g726_encoder
                 .as_mut()
-                .ok_or(AudioError::InvalidData("AU G.721 encoder is unavailable"))?
+                .ok_or(AudioError::InvalidData("AU G.72x encoder is unavailable"))?
                 .encode(samples)
-                .map_err(|_| AudioError::InvalidData("AU G.721 encoding failed"))?;
+                .map_err(|_| AudioError::InvalidData("AU G.72x encoding failed"))?;
             let next_size = self
                 .data_bytes
                 .checked_add(encoded.len() as u64)
                 .ok_or(AudioError::Unsupported("AU audio data size overflow"))?;
             let next_samples = self
-                .g721_samples
+                .g726_samples
                 .checked_add(samples.len() as u64)
-                .ok_or(AudioError::Unsupported("AU G.721 sample count overflow"))?;
+                .ok_or(AudioError::Unsupported("AU G.72x sample count overflow"))?;
             if let Err(error) = self.writer.write_all(&encoded) {
                 self.poisoned = true;
                 return Err(error.into());
             }
             self.data_bytes = next_size;
-            self.g721_samples = next_samples;
+            self.g726_samples = next_samples;
             return Ok(());
         }
         let bytes_per_sample = match self.encoding {
@@ -309,7 +358,7 @@ impl<W: Write + Seek> AudioEncoder for AuEncoder<W> {
             Encoding::Linear24 => 3,
             Encoding::Linear32 | Encoding::Float32 => 4,
             Encoding::Float64 => 8,
-            Encoding::G721 => unreachable!("G.721 uses its stateful encoder"),
+            Encoding::G726(_) => unreachable!("G.72x uses its stateful encoder"),
         };
         let block_bytes = u64::try_from(block.samples().len())
             .ok()
@@ -412,7 +461,7 @@ fn write_samples<W: Write>(
                 writer.write_all(&[encode_alaw(value)])?;
             }
         }
-        (Encoding::G721, _) => unreachable!("G.721 uses its stateful encoder"),
+        (Encoding::G726(_), _) => unreachable!("G.72x uses its stateful encoder"),
         _ => {
             return Err(AudioError::InvalidData(
                 "PCM storage does not match AU encoding",

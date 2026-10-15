@@ -1,6 +1,7 @@
 use std::io::Cursor;
 
 use au::{AuDecoder, AuEncoder, G711Encoding, rewrite_metadata};
+use g726::{G726Decoder, G726Rate};
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
 };
@@ -118,6 +119,112 @@ fn g721_matches_ffmpeg_codewords_and_pcm_reference_across_odd_blocks() {
         max_difference <= 8,
         "FFmpeg PCM differs by {max_difference}"
     );
+}
+
+#[test]
+fn g723_profiles_round_trip_streaming_blocks_and_use_complete_groups() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let input = [0, 1_000, -1_000, 3_000, -3_000, 8_000, -8_000, 16_000];
+    for (code, bytes, is_three_bit) in [(25_u32, 3, true), (26_u32, 5, false)] {
+        let mut encoder = if is_three_bit {
+            AuEncoder::new_g723_3(Cursor::new(Vec::new()), spec)
+        } else {
+            AuEncoder::new_g723_5(Cursor::new(Vec::new()), spec)
+        }
+        .unwrap();
+        for chunk in [&input[..3], &input[3..]] {
+            encoder
+                .write_block(&PcmBuffer::new(spec, Samples::I16(chunk.to_vec())).unwrap())
+                .unwrap();
+        }
+        let encoded = encoder.finish().unwrap().into_inner();
+        assert_eq!(
+            u32::from_be_bytes(encoded[12..16].try_into().unwrap()),
+            code
+        );
+        assert_eq!(encoded.len(), 28 + bytes);
+        let mut decoder = AuDecoder::new(Cursor::new(encoded)).unwrap();
+        let mut decoded = Vec::new();
+        while let Some(block) = decoder.read_frames(1).unwrap() {
+            let Samples::I16(samples) = block.samples() else {
+                panic!("G.723 must decode to signed 16-bit PCM");
+            };
+            decoded.extend_from_slice(samples);
+        }
+        assert_eq!(decoded.len(), input.len());
+    }
+
+    for is_three_bit in [true, false] {
+        let mut encoder = if is_three_bit {
+            AuEncoder::new_g723_3(Cursor::new(Vec::new()), spec)
+        } else {
+            AuEncoder::new_g723_5(Cursor::new(Vec::new()), spec)
+        }
+        .unwrap();
+        encoder
+            .write_block(&PcmBuffer::new(spec, Samples::I16(vec![1])).unwrap())
+            .unwrap();
+        assert!(encoder.finish().is_err());
+    }
+}
+
+#[test]
+fn g723_long_au_stream_matches_shared_decoder_across_read_boundaries() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let input: Vec<i16> = (0..4_096)
+        .map(|index| ((index * 12_347 % 65_536) - 32_768) as i16)
+        .collect();
+
+    for (rate, is_three_bit) in [(G726Rate::Kbps24, true), (G726Rate::Kbps40, false)] {
+        let mut encoder = if is_three_bit {
+            AuEncoder::new_g723_3(Cursor::new(Vec::new()), spec)
+        } else {
+            AuEncoder::new_g723_5(Cursor::new(Vec::new()), spec)
+        }
+        .unwrap();
+        for samples in input.chunks(37) {
+            encoder
+                .write_block(&PcmBuffer::new(spec, Samples::I16(samples.to_vec())).unwrap())
+                .unwrap();
+        }
+        let encoded = encoder.finish().unwrap().into_inner();
+        let data_offset = u32::from_be_bytes(encoded[4..8].try_into().unwrap()) as usize;
+        let mut reference = G726Decoder::new(rate, 1).unwrap();
+        let expected = reference
+            .decode_packed_lsb(&encoded[data_offset..], input.len())
+            .unwrap();
+
+        let mut decoder = AuDecoder::new(Cursor::new(encoded)).unwrap();
+        let mut actual = Vec::new();
+        let read_sizes = [1, 7, 64, 3, 257, 19];
+        let mut read_index = 0;
+        while let Some(block) = decoder
+            .read_frames(read_sizes[read_index % read_sizes.len()])
+            .unwrap()
+        {
+            let Samples::I16(samples) = block.samples() else {
+                panic!("AU G.723 must decode to signed 16-bit PCM");
+            };
+            actual.extend_from_slice(samples);
+            read_index += 1;
+        }
+        assert_eq!(actual, expected, "AU G.723 decode using {rate:?}");
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+}
+
+#[test]
+fn g723_decoder_rejects_incomplete_packing_groups() {
+    for (code, bytes) in [(25_u32, 1_u32), (26_u32, 4_u32)] {
+        let mut encoded = vec![0; 28 + bytes as usize];
+        encoded[..4].copy_from_slice(b".snd");
+        encoded[4..8].copy_from_slice(&28_u32.to_be_bytes());
+        encoded[8..12].copy_from_slice(&bytes.to_be_bytes());
+        encoded[12..16].copy_from_slice(&code.to_be_bytes());
+        encoded[16..20].copy_from_slice(&8_000_u32.to_be_bytes());
+        encoded[20..24].copy_from_slice(&1_u32.to_be_bytes());
+        assert!(AuDecoder::new(Cursor::new(encoded)).is_err());
+    }
 }
 
 #[test]
