@@ -76,6 +76,85 @@ fn g711_profiles_round_trip_the_encoded_codes() {
 }
 
 #[test]
+fn g721_matches_ffmpeg_codewords_and_pcm_reference_across_odd_blocks() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let input = [
+        0, 1_000, -1_000, 3_000, -3_000, 8_000, -8_000, 16_000, -16_000, 32_767, -32_768, 1_234,
+        -2_345, 512, -512, 42,
+    ];
+    let ffmpeg_au_codewords = [0x7f, 0x78, 0x78, 0x78, 0x78, 0xf8, 0xff, 0xef];
+    let ffmpeg_pcm = [
+        0, 88, -120, 172, -244, 376, -584, 1_044, -2_116, 4_704, -14_008, 3_068, -2_536, 1_648,
+        -1_444, -692,
+    ];
+
+    let mut encoder = AuEncoder::new_g721(Cursor::new(Vec::new()), spec).unwrap();
+    for samples in [&input[..5], &input[5..]] {
+        encoder
+            .write_block(&PcmBuffer::new(spec, Samples::I16(samples.to_vec())).unwrap())
+            .unwrap();
+    }
+    let encoded = encoder.finish().unwrap().into_inner();
+    assert_eq!(u32::from_be_bytes(encoded[12..16].try_into().unwrap()), 23);
+    assert_eq!(u32::from_be_bytes(encoded[8..12].try_into().unwrap()), 8);
+    assert_eq!(&encoded[28..], ffmpeg_au_codewords);
+
+    let mut decoder = AuDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(decoder.spec(), spec);
+    let mut decoded = Vec::new();
+    while let Some(block) = decoder.read_frames(3).unwrap() {
+        let Samples::I16(samples) = block.samples() else {
+            panic!("G.721 must decode to signed 16-bit PCM");
+        };
+        decoded.extend_from_slice(samples);
+    }
+    let max_difference = decoded
+        .iter()
+        .zip(ffmpeg_pcm)
+        .map(|(actual, expected)| actual.abs_diff(expected))
+        .max()
+        .unwrap();
+    assert!(
+        max_difference <= 8,
+        "FFmpeg PCM differs by {max_difference}"
+    );
+}
+
+#[test]
+fn g721_requires_even_frame_count_and_8khz_mono_i16() {
+    for spec in [
+        AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap(),
+        AudioSpec::new(8_000, 2, SampleFormat::PcmI16).unwrap(),
+        AudioSpec::new(8_000, 1, SampleFormat::PcmI24).unwrap(),
+    ] {
+        assert!(AuEncoder::new_g721(Cursor::new(Vec::new()), spec).is_err());
+    }
+
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let mut encoder = AuEncoder::new_g721(Cursor::new(Vec::new()), spec).unwrap();
+    encoder
+        .write_block(&PcmBuffer::new(spec, Samples::I16(vec![1])).unwrap())
+        .unwrap();
+    assert!(encoder.finish().is_err());
+}
+
+#[test]
+fn g721_decoder_rejects_non_8khz_or_multichannel_headers() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let encoded = AuEncoder::new_g721(Cursor::new(Vec::new()), spec)
+        .unwrap()
+        .finish()
+        .unwrap()
+        .into_inner();
+
+    for (offset, invalid) in [(16, 44_100_u32), (20, 2_u32)] {
+        let mut malformed = encoded.clone();
+        malformed[offset..offset + 4].copy_from_slice(&invalid.to_be_bytes());
+        assert!(AuDecoder::new(Cursor::new(malformed)).is_err());
+    }
+}
+
+#[test]
 fn annotation_round_trips_as_a_comment_and_retains_raw_bytes() {
     let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap();
     let mut metadata = Metadata::default();

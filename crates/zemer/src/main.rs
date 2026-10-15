@@ -75,6 +75,7 @@ enum OutputFormat {
     Aiff,
     Aifc,
     Au,
+    AuG721,
     AuG711(G711Encoding),
     AifcG711(G711Encoding),
     AifcIma4,
@@ -91,6 +92,7 @@ impl OutputFormat {
             Self::G711(_) => Some(SampleFormat::PcmI16),
             Self::AifcG711(_) => Some(SampleFormat::PcmI16),
             Self::AuG711(_) => Some(SampleFormat::PcmI16),
+            Self::AuG721 => Some(SampleFormat::PcmI16),
             Self::AifcIma4 => Some(SampleFormat::PcmI16),
             Self::AifcG726 => Some(SampleFormat::PcmI16),
             Self::Flac | Self::OggFlac | Self::Aiff
@@ -123,6 +125,7 @@ impl OutputFormat {
             Self::Au => "au",
             Self::AuG711(G711Encoding::ALaw) => "au_alaw",
             Self::AuG711(G711Encoding::MuLaw) => "au_mulaw",
+            Self::AuG721 => "au_g721",
             Self::AifcG711(G711Encoding::ALaw) => "aifc_alaw",
             Self::AifcG711(G711Encoding::MuLaw) => "aifc_mulaw",
             Self::AifcIma4 => "aifc_ima4",
@@ -599,6 +602,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
             | OutputFormat::Aiff
             | OutputFormat::Aifc
             | OutputFormat::Au
+            | OutputFormat::AuG721
             | OutputFormat::AuG711(_)
             | OutputFormat::AifcG711(_)
             | OutputFormat::AifcIma4
@@ -639,6 +643,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "aifc_mulaw" => Some(OutputFormat::AifcG711(G711Encoding::MuLaw)),
         "au_alaw" => Some(OutputFormat::AuG711(G711Encoding::ALaw)),
         "au_mulaw" => Some(OutputFormat::AuG711(G711Encoding::MuLaw)),
+        "au_g721" => Some(OutputFormat::AuG721),
         "aifc_ima4" => Some(OutputFormat::AifcIma4),
         "aifc_g726" => Some(OutputFormat::AifcG726),
         "flac" => Some(OutputFormat::Flac),
@@ -869,6 +874,20 @@ fn convert_audio(
                 }
                 Box::new(encoder)
             }
+            OutputFormat::AuG721 => {
+                let mut encoder = AuEncoder::new_g721_with_metadata(
+                    output_file,
+                    spec,
+                    &au_metadata(decoder.metadata()),
+                )
+                .map_err(|error| cli_audio_error(error, &output))?;
+                if let Some(annotation) = &au_annotation {
+                    encoder
+                        .set_annotation(annotation)
+                        .map_err(|error| cli_audio_error(error, &output))?;
+                }
+                Box::new(encoder)
+            }
             OutputFormat::AifcG711(encoding) => {
                 let mut encoder = AiffEncoder::new_aifc_g711_with_metadata(
                     output_file,
@@ -1000,7 +1019,7 @@ fn convert_audio(
                 OutputFormat::WavPack => "wavpack",
                 OutputFormat::Aiff => "aiff",
                 OutputFormat::Aifc => "aifc",
-                OutputFormat::Au | OutputFormat::AuG711(_) => "au",
+                OutputFormat::Au | OutputFormat::AuG721 | OutputFormat::AuG711(_) => "au",
                 OutputFormat::AifcG711(_) => "aifc",
                 OutputFormat::AifcIma4 => "aifc",
                 OutputFormat::AifcG726 => "aifc",
@@ -1016,6 +1035,7 @@ fn convert_audio(
                 format,
                 OutputFormat::G711(_)
                     | OutputFormat::AuG711(_)
+                    | OutputFormat::AuG721
                     | OutputFormat::AifcG711(_)
                     | OutputFormat::AifcIma4
                     | OutputFormat::AifcG726
@@ -1034,6 +1054,7 @@ fn convert_audio(
                     | OutputFormat::AifcG726
                     | OutputFormat::Au
                     | OutputFormat::AuG711(_)
+                    | OutputFormat::AuG721
                     | OutputFormat::Dsf
             ))
             .then_some(container),
@@ -1525,7 +1546,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|au|au_alaw|au_mulaw|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|au|au_alaw|au_mulaw|au_g721|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 

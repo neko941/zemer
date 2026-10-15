@@ -882,8 +882,9 @@ fn au_cli_inspects_converts_preserves_annotations_and_edits_comments() {
     let converted_path = temporary_path().with_extension("au");
     let edited_path = temporary_path().with_extension("au");
     let g711_path = temporary_path().with_extension("au");
+    let g721_path = temporary_path().with_extension("au");
     let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
-    let audio = PcmBuffer::new(spec, Samples::I16(vec![i16::MIN, -1, 0, 1, i16::MAX])).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![i16::MIN, -1, 0, 1, i16::MAX, 42])).unwrap();
     let mut encoder = AuEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
     encoder.set_annotation(b"\0opaque\xff").unwrap();
     encoder.write_block(&audio).unwrap();
@@ -958,7 +959,35 @@ fn au_cli_inspects_converts_preserves_annotations_and_edits_comments() {
         1
     );
 
-    for path in [input_path, converted_path, edited_path, g711_path] {
+    let g721 = Command::new(cli_path())
+        .args(["convert", "--format", "au_g721", "--json"])
+        .arg(&input_path)
+        .arg(&g721_path)
+        .output()
+        .unwrap();
+    assert!(
+        g721.status.success(),
+        "{}",
+        String::from_utf8_lossy(&g721.stderr)
+    );
+    assert!(String::from_utf8_lossy(&g721.stdout).contains("\"output_encoding\":\"au_g721\""));
+    let g721_bytes = fs::read(&g721_path).unwrap();
+    assert_eq!(
+        u32::from_be_bytes(g721_bytes[12..16].try_into().unwrap()),
+        23
+    );
+    let mut decoded = AuDecoder::new(Cursor::new(g721_bytes)).unwrap();
+    assert_eq!(decoded.spec(), spec);
+    assert_eq!(decoded.read_frames(8).unwrap().unwrap().frames(), 6);
+    assert!(decoded.read_frames(8).unwrap().is_none());
+
+    for path in [
+        input_path,
+        converted_path,
+        edited_path,
+        g711_path,
+        g721_path,
+    ] {
         let _ = fs::remove_file(path);
     }
 }
