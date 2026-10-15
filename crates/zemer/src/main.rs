@@ -34,6 +34,7 @@ struct Report {
     frames: u64,
     metadata: Metadata,
     output_encoding: Option<&'static str>,
+    output_valid_bits: Option<u16>,
     container: Option<WavContainer>,
     companion_output: Option<PathBuf>,
 }
@@ -195,6 +196,9 @@ fn main() -> ExitCode {
                 );
                 if let Some(encoding) = report.output_encoding {
                     println!("output_encoding: {encoding}");
+                }
+                if let Some(valid_bits) = report.output_valid_bits {
+                    println!("output_valid_bits: {valid_bits}");
                 }
             }
             ExitCode::SUCCESS
@@ -497,6 +501,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
     let mut format = None;
     let mut container = None;
     let mut bitrate = None;
+    let mut valid_bits = None;
     let mut paths = Vec::new();
     let mut index = 1;
     while index < args.len() {
@@ -539,6 +544,20 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
                 return Err(usage_error());
             }
             index += 1;
+        } else if args[index] == "--valid-bits" {
+            index += 1;
+            let Some(value) = args
+                .get(index)
+                .and_then(|arg| arg.to_str())
+                .and_then(|value| value.parse::<u16>().ok())
+                .filter(|value| (1..=32).contains(value))
+            else {
+                return Err(usage_error());
+            };
+            if valid_bits.replace(value).is_some() {
+                return Err(usage_error());
+            }
+            index += 1;
         } else {
             paths.push(PathBuf::from(&args[index]));
             index += 1;
@@ -570,6 +589,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
                 | OutputFormat::WavPack
         ) || container.is_some()
             || bitrate.is_some()
+            || valid_bits.is_some()
         {
             return Err(CliError {
                 kind: "unsupported",
@@ -590,6 +610,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
     };
     if (bitrate.is_some() && !valid_bitrate)
         || (matches!(format, OutputFormat::AifcG726) && bitrate.is_none())
+        || (valid_bits.is_some() && !matches!(format, OutputFormat::Aiff | OutputFormat::Aifc))
     {
         return Err(usage_error());
     }
@@ -617,6 +638,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         format,
         container.unwrap_or(WavContainer::Riff),
         bitrate,
+        valid_bits,
     )?;
     Ok(CommandReport::Convert(report, output))
 }
@@ -666,6 +688,7 @@ fn convert_audio(
     format: OutputFormat,
     container: WavContainer,
     bitrate_kbps: Option<u32>,
+    valid_bits: Option<u16>,
 ) -> Result<Report, CliError> {
     let AudioInput {
         mut decoder,
@@ -800,8 +823,12 @@ fn convert_audio(
                 }
             }
             OutputFormat::Aiff => {
-                let mut encoder = AiffEncoder::new(output_file, spec)
-                    .map_err(|error| cli_audio_error(error, &output))?;
+                let mut encoder = if let Some(valid_bits) = valid_bits {
+                    AiffEncoder::new_with_bits_per_sample(output_file, spec, valid_bits)
+                } else {
+                    AiffEncoder::new(output_file, spec)
+                }
+                .map_err(|error| cli_audio_error(error, &output))?;
                 if let Some(tag) = &aiff_id3_tag {
                     encoder
                         .set_id3_tag(tag)
@@ -823,8 +850,12 @@ fn convert_audio(
                 Box::new(encoder)
             }
             OutputFormat::Aifc => {
-                let mut encoder = AiffEncoder::new_aifc(output_file, spec)
-                    .map_err(|error| cli_audio_error(error, &output))?;
+                let mut encoder = if let Some(valid_bits) = valid_bits {
+                    AiffEncoder::new_aifc_with_bits_per_sample(output_file, spec, valid_bits)
+                } else {
+                    AiffEncoder::new_aifc(output_file, spec)
+                }
+                .map_err(|error| cli_audio_error(error, &output))?;
                 if let Some(tag) = &aiff_id3_tag {
                     encoder
                         .set_id3_tag(tag)
@@ -1041,6 +1072,7 @@ fn convert_audio(
                     | OutputFormat::AifcG726
             )
             .then(|| format.name()),
+            output_valid_bits: valid_bits,
             container: (!matches!(
                 format,
                 OutputFormat::Flac
@@ -1525,6 +1557,7 @@ fn inspect_audio(path: PathBuf) -> Result<Report, CliError> {
         frames,
         metadata: decoder.metadata().clone(),
         output_encoding: None,
+        output_valid_bits: None,
         container,
         companion_output: None,
     })
@@ -1546,7 +1579,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|au|au_alaw|au_mulaw|au_g721|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|aiff|aifc|au|au_alaw|au_mulaw|au_g721|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC integer PCM>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>...".to_owned(),
     }
 }
 
@@ -1695,6 +1728,9 @@ fn conversion_json(report: &Report, output: &Path) -> String {
             1,
             &format!("\"output_encoding\":{},", json_string(encoding)),
         );
+    }
+    if let Some(valid_bits) = report.output_valid_bits {
+        json.insert_str(1, &format!("\"output_valid_bits\":{valid_bits},"));
     }
     json
 }

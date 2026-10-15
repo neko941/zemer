@@ -1046,6 +1046,67 @@ fn convert_inspects_and_converts_aiff_and_aifc() {
 }
 
 #[test]
+fn convert_aiff_valid_bits_through_cli() {
+    let input_path = temporary_path().with_extension("wav");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(vec![i16::MIN, 1, -2, i16::MAX]),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    for (format, extension) in [("aiff", "aiff"), ("aifc", "aifc")] {
+        let output_path = temporary_path().with_extension(extension);
+        let output = Command::new(cli_path())
+            .args([
+                "convert",
+                "--format",
+                format,
+                "--valid-bits",
+                "12",
+                "--json",
+            ])
+            .arg(&input_path)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("\"output_valid_bits\":12"));
+
+        let bytes = fs::read(&output_path).unwrap();
+        let comm = bytes.windows(4).position(|chunk| chunk == b"COMM").unwrap();
+        assert_eq!(
+            u16::from_be_bytes(bytes[comm + 14..comm + 16].try_into().unwrap()),
+            12
+        );
+        let mut decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(
+            decoder.read_frames(2).unwrap().unwrap().samples(),
+            &Samples::I16(vec![i16::MIN, 0, -16, 32_752])
+        );
+        assert!(decoder.read_frames(1).unwrap().is_none());
+        let _ = fs::remove_file(output_path);
+    }
+
+    for (format, valid_bits) in [("pcm_i16", "12"), ("aiff", "20"), ("aiff", "33")] {
+        let output_path = temporary_path();
+        let output = Command::new(cli_path())
+            .args(["convert", "--format", format, "--valid-bits", valid_bits])
+            .arg(&input_path)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(!output_path.exists());
+    }
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
 fn aiff_conversion_preserves_typed_metadata_across_aiff_and_aifc() {
     let input_path = temporary_path().with_extension("aiff");
     let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();

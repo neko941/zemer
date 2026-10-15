@@ -55,6 +55,8 @@ Convert WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF inpu
 
    cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
    cargo run -p zemer -- convert --format aiff input.wav output.aiff
+   cargo run -p zemer -- convert --format aiff --valid-bits 12 input.wav output.aiff
+   cargo run -p zemer -- convert --format aifc --valid-bits 12 input.wav output.aifc
    cargo run -p zemer -- convert --format aifc input.wav output.aifc
    cargo run -p zemer -- convert --format au input.wav output.au
    cargo run -p zemer -- convert --format au_mulaw input.wav output-mulaw.au
@@ -76,6 +78,10 @@ Convert WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF inpu
    cargo run -p zemer -- convert --format wavpack input.dsf output.wv
 
 WAVE output defaults to classic RIFF; choose RF64 explicitly when needed.
+``--valid-bits`` is available only for AIFF/AIFC integer PCM output. Its value
+must fit the selected PCM container (1–8 for 8-bit, 9–16 for 16-bit, 17–24
+for 24-bit, or 25–32 for 32-bit); unused low bits are cleared. It is not valid
+for AIFC float output or other formats.
 ``--bitrate`` is in kbit/s and accepts 24 through 9600 for Vorbis and
 WavPack, or 16, 24, 32, or 40 for AIFC G.726. G.726 requires 8 kHz input and
 encodes signed 16-bit PCM. With WavPack it writes a hybrid ``.wv`` file and a companion
