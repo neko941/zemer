@@ -187,6 +187,38 @@ fn encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg() {
 
 #[test]
 #[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
+fn encodes_aiff_multichannel_pcm_compatible_with_ffmpeg() {
+    let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
+
+    for channels in 1..=8 {
+        let spec = AudioSpec::new(48_000, channels, SampleFormat::PcmI24).unwrap();
+        let samples: Vec<_> = (0..7 * usize::from(channels))
+            .map(|index| ((index * 1_003_117 % (1 << 24)) as i32) - (1 << 23))
+            .collect();
+        let input = PcmBuffer::new(spec, Samples::I24(samples)).unwrap();
+        let mut encoder = AiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.write_block(&input).unwrap();
+        let encoded = encoder.finish().unwrap().get_ref().clone();
+        let oracle = decode_ffmpeg(&ffmpeg, &encoded, "s24le");
+
+        let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+        assert_eq!(decoder.spec(), spec, "{channels} channels");
+        let mut actual = Vec::new();
+        let mut frames = 0;
+        while let Some(block) = decoder.read_frames(3).unwrap() {
+            frames += block.frames();
+            append_pcm_bytes(block.samples(), &mut actual);
+        }
+        let mut expected = Vec::new();
+        append_pcm_bytes(input.samples(), &mut expected);
+        assert_eq!(frames, 7, "{channels} channels");
+        assert_eq!(actual, expected, "Zemer, {channels} channels");
+        assert_eq!(oracle, expected, "FFmpeg, {channels} channels");
+    }
+}
+
+#[test]
+#[ignore = "requires FFmpeg in ZEMER_FFMPEG"]
 fn encodes_aifc_float_compatible_with_ffmpeg() {
     let ffmpeg = std::env::var_os("ZEMER_FFMPEG").expect("set ZEMER_FFMPEG to FFmpeg");
     let cases = [

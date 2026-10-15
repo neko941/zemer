@@ -685,6 +685,16 @@ ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
   encodes_aiff_pcm_bit_depths_compatible_with_ffmpeg -- --ignored --exact
 ```
 
+The ignored `encodes_aiff_multichannel_pcm_compatible_with_ffmpeg` test checks
+generated 24-bit AIFF PCM at each channel count from mono through eight
+channels. It compares the exact sample bytes and seven-frame duration from
+Zemer and FFmpeg, with Zemer decoding in three-frame blocks. Run it with:
+
+```sh
+ZEMER_FFMPEG=ffmpeg cargo test -p zemer-tests --test aiff_interop \
+  encodes_aiff_multichannel_pcm_compatible_with_ffmpeg -- --ignored --exact
+```
+
 The ignored `encodes_aifc_float_compatible_with_ffmpeg` test checks both AIFC
 IEEE float widths (`fl32` and `fl64`). It encodes stereo samples including
 signed zero, minimum positive normal, and maximum finite values, then requires
