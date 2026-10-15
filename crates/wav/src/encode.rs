@@ -27,6 +27,7 @@ pub struct WavWriter<W> {
     data_bytes: u64,
     start: u64,
     data_size_offset: u64,
+    fact_sample_count_offset: Option<u64>,
     ds64_body_offset: Option<u64>,
     riff_overhead: u64,
     metadata: Metadata,
@@ -190,7 +191,10 @@ impl<W: Write + Seek> WavWriter<W> {
             (None, SampleFormat::Float64) => (3, 64),
         };
         let extensible = spec.speaker_mask().is_some();
+        let non_pcm = legacy_tag != 1;
         let riff_overhead = (if extensible { 60_u64 } else { 36_u64 })
+            + if non_pcm && !extensible { 14 } else { 0 }
+            + if non_pcm { 12 } else { 0 }
             + if container == WavContainer::Rf64 {
                 36
             } else {
@@ -237,7 +241,16 @@ impl<W: Write + Seek> WavWriter<W> {
             }
         }
         writer.write_all(b"fmt ")?;
-        writer.write_all(&(if extensible { 40_u32 } else { 16_u32 }).to_le_bytes())?;
+        writer.write_all(
+            &(if extensible {
+                40_u32
+            } else if non_pcm {
+                18
+            } else {
+                16
+            })
+            .to_le_bytes(),
+        )?;
         writer.write_all(&(if extensible { 0xfffe_u16 } else { legacy_tag }).to_le_bytes())?;
         writer.write_all(&spec.channels().to_le_bytes())?;
         writer.write_all(&spec.sample_rate().to_le_bytes())?;
@@ -249,7 +262,18 @@ impl<W: Write + Seek> WavWriter<W> {
             writer.write_all(&bits_per_sample.to_le_bytes())?;
             writer.write_all(&spec.speaker_mask().unwrap_or(0).to_le_bytes())?;
             writer.write_all(&subformat_guid(legacy_tag))?;
+        } else if non_pcm {
+            writer.write_all(&0_u16.to_le_bytes())?;
         }
+        let fact_sample_count_offset = if non_pcm {
+            writer.write_all(b"fact")?;
+            writer.write_all(&4_u32.to_le_bytes())?;
+            let offset = writer.stream_position()?;
+            writer.write_all(&0_u32.to_le_bytes())?;
+            Some(offset)
+        } else {
+            None
+        };
         writer.write_all(b"data")?;
         let data_size_offset = writer.stream_position()?;
         writer.write_all(&if container == WavContainer::Rf64 {
@@ -265,6 +289,7 @@ impl<W: Write + Seek> WavWriter<W> {
             data_bytes: 0,
             start,
             data_size_offset,
+            fact_sample_count_offset,
             ds64_body_offset,
             riff_overhead: riff_overhead + bext_chunk_bytes,
             metadata: metadata.clone(),
@@ -412,13 +437,25 @@ impl<W: Write + Seek> WavWriter<W> {
             .ok_or(AudioError::InvalidData(
                 "WAVE output position moved before RIFF data",
             ))?;
+        let block_align = u64::from(self.spec.channels())
+            .checked_mul(u64::from(self.bytes_per_sample))
+            .ok_or(AudioError::InvalidData("WAVE block alignment overflow"))?;
+        let sample_count = self.data_bytes / block_align;
+        if self.container == WavContainer::Riff && riff_size > u64::from(u32::MAX) {
+            return Err(AudioError::Unsupported(
+                "RIFF/WAVE output larger than 4 GiB; select RF64 for large files",
+            ));
+        }
+        if let Some(offset) = self.fact_sample_count_offset {
+            self.writer.seek(SeekFrom::Start(offset))?;
+            self.writer.write_all(
+                &u32::try_from(sample_count)
+                    .unwrap_or(u32::MAX)
+                    .to_le_bytes(),
+            )?;
+        }
         match self.container {
             WavContainer::Riff => {
-                if riff_size > u64::from(u32::MAX) {
-                    return Err(AudioError::Unsupported(
-                        "RIFF/WAVE output larger than 4 GiB; select RF64 for large files",
-                    ));
-                }
                 self.writer.seek(SeekFrom::Start(self.start + 4))?;
                 self.writer.write_all(&(riff_size as u32).to_le_bytes())?;
                 self.writer.seek(SeekFrom::Start(self.data_size_offset))?;
@@ -429,10 +466,6 @@ impl<W: Write + Seek> WavWriter<W> {
                 let body = self.ds64_body_offset.ok_or(AudioError::InvalidData(
                     "RF64 writer is missing its ds64 size fields",
                 ))?;
-                let block_align = u64::from(self.spec.channels())
-                    .checked_mul(u64::from(self.bytes_per_sample))
-                    .ok_or(AudioError::InvalidData("WAVE block alignment overflow"))?;
-                let sample_count = self.data_bytes / block_align;
                 self.writer.seek(SeekFrom::Start(body))?;
                 self.writer.write_all(&riff_size.to_le_bytes())?;
                 self.writer.write_all(&self.data_bytes.to_le_bytes())?;
@@ -811,15 +844,59 @@ mod tests {
             writer.write_block(&audio).unwrap();
             let bytes = writer.finish().unwrap().into_inner();
             assert_eq!(u16::from_le_bytes(bytes[20..22].try_into().unwrap()), tag);
+            assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 18);
+            assert_eq!(u16::from_le_bytes(bytes[36..38].try_into().unwrap()), 0);
+            assert_eq!(&bytes[38..42], b"fact");
+            assert_eq!(u32::from_le_bytes(bytes[46..50].try_into().unwrap()), 3);
             assert_eq!(u16::from_le_bytes(bytes[32..34].try_into().unwrap()), 1);
             assert_eq!(u16::from_le_bytes(bytes[34..36].try_into().unwrap()), 8);
-            assert_eq!(&bytes[44..47], expected);
+            assert_eq!(&bytes[58..61], expected);
 
             let mut decoder = crate::WavDecoder::new(Cursor::new(bytes)).unwrap();
             assert_eq!(decoder.spec(), spec);
             assert_eq!(decoder.metadata(), &metadata);
             assert_eq!(decoder.read_frames(3).unwrap().unwrap().frames(), 3);
         }
+    }
+
+    #[test]
+    fn float_writer_emits_fact_with_per_channel_frame_count() {
+        for (format, samples) in [
+            (SampleFormat::Float32, Samples::F32(vec![0.25, -0.5, 1.0, 0.0])),
+            (SampleFormat::Float64, Samples::F64(vec![0.25, -0.5, 1.0, 0.0])),
+        ] {
+            let spec = AudioSpec::new(48_000, 2, format).unwrap();
+            let audio = PcmBuffer::new(spec, samples).unwrap();
+            let bytes = super::write_wav(Cursor::new(Vec::new()), &audio)
+                .unwrap()
+                .into_inner();
+
+            assert_eq!(&bytes[12..16], b"fmt ");
+            assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 18);
+            assert_eq!(u16::from_le_bytes(bytes[36..38].try_into().unwrap()), 0);
+            assert_eq!(&bytes[38..42], b"fact");
+            assert_eq!(u32::from_le_bytes(bytes[46..50].try_into().unwrap()), 2);
+            assert_eq!(&bytes[50..54], b"data");
+
+            let mut decoder = crate::WavDecoder::new(Cursor::new(bytes)).unwrap();
+            assert_eq!(decoder.spec(), spec);
+            assert_eq!(decoder.read_frames(2).unwrap().unwrap(), audio);
+        }
+    }
+
+    #[test]
+    fn extensible_float_writer_emits_fact_chunk() {
+        let spec =
+            AudioSpec::new_with_speaker_mask(48_000, 2, SampleFormat::Float32, Some(3)).unwrap();
+        let audio = PcmBuffer::new(spec, Samples::F32(vec![0.25, -0.5])).unwrap();
+        let bytes = super::write_wav(Cursor::new(Vec::new()), &audio)
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(&bytes[60..64], b"fact");
+        assert_eq!(u32::from_le_bytes(bytes[68..72].try_into().unwrap()), 1);
+        let mut decoder = crate::WavDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.read_frames(1).unwrap().unwrap(), audio);
     }
 
     #[test]
@@ -938,6 +1015,38 @@ mod tests {
         assert_eq!(
             decoder.read_frames(2).unwrap().unwrap().samples(),
             &Samples::U8(vec![0, 0])
+        );
+    }
+
+    #[test]
+    fn rf64_float_fact_uses_sentinel_when_frame_count_exceeds_u32() {
+        let spec = AudioSpec::new(48_000, 1, SampleFormat::Float32).unwrap();
+        let mut writer = WavWriter::new_with_container(
+            SparseWriter::default(),
+            spec,
+            WavContainer::Rf64,
+        )
+        .unwrap();
+        let data_bytes = (u64::from(u32::MAX) + 1) * 4;
+        let data_start = writer.data_size_offset + 4;
+        writer.data_bytes = data_bytes;
+        writer
+            .writer
+            .seek(SeekFrom::Start(data_start + data_bytes - 1))
+            .unwrap();
+        writer.writer.write_all(&[0]).unwrap();
+
+        let mut output = writer.finish().unwrap();
+        output.seek(SeekFrom::Start(82)).unwrap();
+        let mut fact = [0; 4];
+        output.read_exact(&mut fact).unwrap();
+        assert_eq!(u32::from_le_bytes(fact), u32::MAX);
+        output.seek(SeekFrom::Start(36)).unwrap();
+        let mut ds64_sample_count = [0; 8];
+        output.read_exact(&mut ds64_sample_count).unwrap();
+        assert_eq!(
+            u64::from_le_bytes(ds64_sample_count),
+            u64::from(u32::MAX) + 1
         );
     }
 }
