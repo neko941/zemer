@@ -92,7 +92,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
             reader.read_exact(&mut header)?;
             let size = u64::from(u32::from_be_bytes(header[4..8].try_into().unwrap()));
             let body = reader.stream_position()?;
-            let end = body
+            let mut end = body
                 .checked_add(size)
                 .and_then(|value| value.checked_add(size & 1))
                 .ok_or(AudioError::InvalidFormat("AIFF chunk size overflow"))?;
@@ -106,7 +106,11 @@ impl<R: Read + Seek> AiffDecoder<R> {
             match &header[..4] {
                 b"COMM" => {
                     if common.is_some()
-                        || size < if aifc { 23 } else { 18 }
+                        || (if aifc {
+                            size != 18 && size < 23
+                        } else {
+                            size < 18
+                        })
                         || size > MAX_COMM_BYTES
                     {
                         return Err(AudioError::InvalidFormat(
@@ -117,6 +121,26 @@ impl<R: Read + Seek> AiffDecoder<R> {
                         .map_err(|_| AudioError::InvalidFormat("AIFF COMM chunk is too large"))?;
                     let mut bytes = vec![0; read_size];
                     reader.read_exact(&mut bytes)?;
+                    if aifc && size == 18 {
+                        // McGill's digit0v0 declares the classic fields only, but stores NONE after them.
+                        let extension_end = body
+                            .checked_add(38)
+                            .ok_or(AudioError::InvalidFormat("AIFF-C COMM size overflow"))?;
+                        if extension_end > file_end || extension_end > physical_end {
+                            return Err(AudioError::InvalidFormat(
+                                "AIFF-C COMM extension exceeds FORM",
+                            ));
+                        }
+                        let mut extension = [0; 20];
+                        reader.read_exact(&mut extension)?;
+                        if &extension != b"NONE\x0enot compressed\0" {
+                            return Err(AudioError::InvalidFormat(
+                                "invalid short AIFF-C COMM chunk",
+                            ));
+                        }
+                        bytes.extend_from_slice(&extension);
+                        end = extension_end;
+                    }
                     common = Some(parse_common(&bytes, aifc)?);
                 }
                 b"FVER" => {
@@ -454,6 +478,7 @@ fn parse_common(bytes: &[u8], aifc: bool) -> Result<(u16, u32, u16, u32, Encodin
     let frames = u32::from_be_bytes(bytes[2..6].try_into().unwrap());
     let bits = u16::from_be_bytes(bytes[6..8].try_into().unwrap());
     let rate = extended_rate(&bytes[8..18])?;
+    // McGill's digit0v0 uses the 18-byte AIFF PCM COMM body in an AIFC form.
     let encoding = if !aifc {
         Encoding::IntegerBe
     } else {

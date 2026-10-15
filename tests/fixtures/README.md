@@ -555,6 +555,28 @@ ZEMER_MCGILL_AIFF_PERVERSE_CORPUS="$dir" ZEMER_FFMPEG=ffmpeg \
   decodes_mcgill_aifc_perverse_files_against_ffmpeg -- --ignored --exact
 ```
 
+The ignored `tests/aiff_interop.rs::decodes_mcgill_ccrma_samples_against_ffmpeg`
+test adds seven older CCRMA samples: AIFF 8/16-bit PCM, AIFC G.711, 12/24-bit
+AIFF versions of the same recording, and `digit0v0.aiff`, whose AIFC `COMM`
+declares only its 18-byte PCM fields while storing `NONE` and its name after
+the declared boundary. For the independent FFmpeg oracle only, the test writes
+a temporary copy with the `COMM` size corrected to include those fields; Zemer
+decodes the unchanged original. Samples are kept external; download and run
+them with:
+
+```sh
+base=https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/AIFF/Samples/CCRMA
+dir=/tmp/zemer-mcgill-ccrma-aiff
+mkdir -p "$dir"
+for sample in aiff-16.snd aiff-8.snd alaw.aifc ulaw.aifc \
+  digit0v0.aiff wood12.aiff wood24.aiff; do
+  curl -fsSL "$base/$sample" -o "$dir/$sample"
+done
+ZEMER_MCGILL_CCRMA_AIFF_CORPUS="$dir" ZEMER_FFMPEG=ffmpeg \
+  cargo test -p zemer-tests --test aiff_interop \
+  decodes_mcgill_ccrma_samples_against_ffmpeg -- --ignored --exact
+```
+
 The ignored `tests/dst_iso_conformance.rs` tests use official ISO DST bitstreams
 and paired raw DSD reference MP4s kept outside the repository. Set
 `ZEMER_DST_COMPRESSED_DIR` and `ZEMER_DST_REFERENCE_DIR` to the corresponding

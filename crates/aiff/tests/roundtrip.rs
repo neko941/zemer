@@ -483,6 +483,40 @@ fn tolerates_only_a_missing_final_odd_chunk_pad_byte() {
 }
 
 #[test]
+fn decodes_aifc_with_underreported_comm_size_for_none() {
+    let mut bytes = b"FORM\0\0\0\0AIFC".to_vec();
+    append_chunk(&mut bytes, b"FVER", &0xA280_5140_u32.to_be_bytes());
+    let mut comm = Vec::from(1_u16.to_be_bytes());
+    comm.extend_from_slice(&1_u32.to_be_bytes());
+    comm.extend_from_slice(&16_u16.to_be_bytes());
+    comm.extend_from_slice(&[0x40, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0]);
+    comm.extend_from_slice(b"NONE\x0enot compressed");
+    append_chunk(&mut bytes, b"COMM", &comm);
+    let mut sound = vec![0; 8];
+    sound.extend_from_slice(&[0x12, 0x34]);
+    append_chunk(&mut bytes, b"SSND", &sound);
+    let form_size = (bytes.len() - 8) as u32;
+    bytes[4..8].copy_from_slice(&form_size.to_be_bytes());
+
+    let comm = bytes
+        .windows(4)
+        .position(|window| window == b"COMM")
+        .unwrap();
+    bytes[comm + 4..comm + 8].copy_from_slice(&18_u32.to_be_bytes());
+    let mut invalid = bytes.clone();
+    invalid[comm + 4..comm + 8].copy_from_slice(&19_u32.to_be_bytes());
+
+    let mut decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
+    assert!(decoder.is_aifc());
+    assert_eq!(
+        decoder.read_frames(1).unwrap().unwrap().samples(),
+        &Samples::I16(vec![0x1234])
+    );
+
+    assert!(AiffDecoder::new(Cursor::new(invalid)).is_err());
+}
+
+#[test]
 fn allows_zero_frame_file_without_an_ssnd_chunk() {
     let without_ssnd = |mut bytes: Vec<u8>| {
         let sound = bytes

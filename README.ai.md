@@ -58,6 +58,8 @@ AIFC samples with independent FFmpeg PCM oracles; the sample files and oracles
 are temporary inputs, not bundled fixtures. A second optional corpus test
 checks six McGill AIFC edge cases; the reader tolerates a single missing final
 odd-chunk pad byte only when the file and chunk bounds prove that exact case.
+An additional external corpus check covers seven CCRMA AIFF/AIFC files and the
+underreported COMM size in McGill's `digit0v0.aiff` sample.
 
 The WAVE reader handles top-level `data` and ordered `LIST/wavl` `data`/`slnt`
 segments in RIFF and RF64. Silence segments hold the previous interleaved frame;
