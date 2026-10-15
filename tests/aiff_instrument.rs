@@ -17,7 +17,7 @@ fn instrument() -> AiffInstrument {
         detune: -12,
         low_note: 24,
         high_note: 96,
-        low_velocity: 2,
+        low_velocity: 0,
         high_velocity: 120,
         gain: -3,
         sustain_loop: AiffLoop {

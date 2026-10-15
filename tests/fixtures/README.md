@@ -1,5 +1,16 @@
 # Generated audio fixtures
 
+## AIFF instrument metadata
+
+`crates/aiff/src/instrument.rs` includes the 20-byte `INST` payload shown in
+Jacob Vosmaer's description of a Typhoon-generated AIFF. It exercises a real
+sampler's full velocity range (`lowVelocity = 0`, `highVelocity = 127`). The
+AIFF specification states a nominal low velocity of 1, so Zemer accepts zero
+as a compatibility value and preserves it during AIFF/AIFC conversion. The
+test uses only the short metadata vector; it does not include the linked audio
+sample or implementation source.
+Source: <https://blog.jacobvosmaer.nl/0042-akwf-tx16w/>.
+
 `ogg-flac-granule-trim.oga` contains a generated 512-frame, 44.1 kHz, mono
 16-bit sine wave. The native FLAC stream was encoded with the host's
 `libsndfile` 1.x FLAC encoder, then wrapped according to Xiph's Ogg-FLAC 1.0
