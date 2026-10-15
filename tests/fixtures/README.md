@@ -512,6 +512,42 @@ compares two McGill/AFsp 12-bit samples with FFmpeg-generated signed 16-bit PCM
 oracles. Both formats decode to the same 23,493-frame stereo signal at 8 kHz.
 The external files are not bundled.
 
+The ignored `tests/au_interop.rs::decodes_mcgill_au_profiles_against_ffmpeg`
+test compares eight McGill AU PCM, float, and G.711 samples with FFmpeg raw PCM
+output. The samples are not bundled because the sample page does not state
+redistribution terms. Download them and run the independent comparison:
+
+```sh
+base=https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/AU/Samples/AFsp
+dir=/tmp/zemer-mcgill-au
+mkdir -p "$dir"
+for sample in M1F1-Alaw-AFsp.au M1F1-mulaw-AFsp.au M1F1-int8-AFsp.au \
+  M1F1-int16-AFsp.au M1F1-int24-AFsp.au M1F1-int32-AFsp.au \
+  M1F1-float32-AFsp.au M1F1-float64-AFsp.au; do
+  curl -fsSL "$base/$sample" -o "$dir/$sample"
+done
+ZEMER_MCGILL_AU_CORPUS="$dir" ZEMER_FFMPEG=ffmpeg \
+  cargo test -p zemer-tests --test au_interop \
+  decodes_mcgill_au_profiles_against_ffmpeg -- --ignored --exact
+```
+
+The optional ignored test `tests/au_interop.rs::rejects_mcgill_perverse_au_samples`
+checks McGill's malformed `monkey.au` (data offset 24 instead of the minimum
+28) and `soundB.au` (declared data length twice the actual size). Neither file
+is bundled. Download them and run the rejection check:
+
+```sh
+base=https://www.mmsp.ece.mcgill.ca/Documents/AudioFormats/AU/Samples/Perverse
+dir=/tmp/zemer-mcgill-au-perverse
+mkdir -p "$dir"
+for sample in monkey.au soundB.au; do
+  curl -fsSL "$base/$sample" -o "$dir/$sample"
+done
+ZEMER_MCGILL_AU_PERVERSE_CORPUS="$dir" \
+  cargo test -p zemer-tests --test au_interop \
+  rejects_mcgill_perverse_au_samples -- --ignored --exact
+```
+
 The ignored `tests/aiff_interop.rs::decodes_mcgill_afsp_profiles_against_ffmpeg`
 test compares 15 McGill AFsp samples sample-for-sample with FFmpeg raw PCM
 output. It covers AIFF and AIFC 8/12/16/24/32-bit integer PCM, `sowt`, float32,

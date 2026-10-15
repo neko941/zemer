@@ -2,7 +2,8 @@ Sun/NeXT AU
 ===========
 
 The ``zemer-au`` crate reads and writes the documented Sun/NeXT AU encodings
-listed here. AU files start with a 24-byte ``.snd`` header. Header integers,
+listed here. AU files start with a 24-byte ``.snd`` header and at least four
+annotation bytes, so the audio data offset must be at least 28. Header integers,
 linear PCM samples, and IEEE floating-point samples use big-endian byte order.
 The format's data offset locates the annotation and audio; a data size of
 ``0xffffffff`` means that audio continues to end of file.
