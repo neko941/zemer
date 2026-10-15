@@ -362,6 +362,19 @@ mod tests {
     }
 
     #[test]
+    fn matches_the_published_12_bit_minimum_delta_frame() {
+        let mut encoder = ChannelEncoder::new(Vec::new(), 12).unwrap();
+        encoder.write_samples(&[-2048]).unwrap();
+        let bytes = encoder.finish().unwrap();
+        assert_eq!(bytes, [0x7f, 0xfe]);
+
+        let mut state = DecoderState::at(0);
+        let mut decoded = [0];
+        decode_samples(&mut Cursor::new(bytes), &mut state, 12, 16, &mut decoded).unwrap();
+        assert_eq!(decoded, [-2048]);
+    }
+
+    #[test]
     fn round_trips_extreme_deltas_at_supported_widths() {
         for depth in 2..=32 {
             let min = -(1_i64 << (depth - 1));
