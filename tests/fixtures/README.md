@@ -729,3 +729,21 @@ ZEMER_G726_ENCODER_ORACLE_DIR=/path/to/spandsp-encode \
   cargo test -p zemer-tests --test aiff_interop \
   encodes_aifc_g726_matches_spandsp_oracles -- --ignored --exact
 ```
+
+The ignored `decodes_audacity_24_bit_dwvw_against_libsndfile_oracle` test
+checks the mono 44.1-kHz, 24-bit [Audacity DWVW export](https://github.com/audiojs/audio-lena/blob/master/audacity/lena-24-dwvw.aiff)
+from `audiojs/audio-lena` against PCM decoded by libsndfile 1.2.2. The upstream
+repository lists this file as an Audacity DWVW export but has no visible
+license, so do not copy it or its PCM oracle into this repository. Generate a
+signed 32-bit little-endian oracle with libsndfile's `sf_readf_int` API, whose
+24-bit samples are left-aligned in each 32-bit value. The development oracle
+has SHA-256
+`8444994ef4d1e010d364d68c099b1cf576ed09b072c06f8be4da5382705d0642`.
+The encoded sample's SHA-256 is
+`df549324f124f4cee3494aa85cbadf66f70b929412f2169004e6317496dba541`.
+Set `ZEMER_AIFC_DWVW_SAMPLE` and `ZEMER_AIFC_DWVW_PCM_ORACLE`, then run:
+
+```sh
+cargo test -p zemer-tests --test aiff_interop \
+  decodes_audacity_24_bit_dwvw_against_libsndfile_oracle -- --ignored --exact
+```

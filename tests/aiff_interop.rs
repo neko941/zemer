@@ -695,3 +695,34 @@ fn decodes_mcgill_aifc_g726_against_spandsp_pcm_oracle() {
     let mut trailing = [0; 1];
     assert_eq!(oracle.read(&mut trailing).unwrap(), 0);
 }
+
+#[test]
+#[ignore = "requires Audacity DWVW sample and libsndfile 1.2.2 S32LE oracle paths in ZEMER_AIFC_DWVW_*"]
+fn decodes_audacity_24_bit_dwvw_against_libsndfile_oracle() {
+    let sample = std::env::var_os("ZEMER_AIFC_DWVW_SAMPLE")
+        .expect("set ZEMER_AIFC_DWVW_SAMPLE to lena-24-dwvw.aiff");
+    let oracle = std::env::var_os("ZEMER_AIFC_DWVW_PCM_ORACLE")
+        .expect("set ZEMER_AIFC_DWVW_PCM_ORACLE to libsndfile S32LE PCM");
+    let oracle = std::fs::read(oracle).unwrap();
+    assert_eq!(oracle.len(), 541_184 * 4);
+
+    let mut decoder = AiffDecoder::new(File::open(sample).unwrap()).unwrap();
+    assert!(decoder.is_aifc());
+    assert_eq!(decoder.spec().sample_rate(), 44_100);
+    assert_eq!(decoder.spec().channels(), 1);
+    assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI24);
+
+    let mut decoded = Vec::with_capacity(oracle.len());
+    let mut frames = 0;
+    while let Some(block) = decoder.read_frames(113).unwrap() {
+        let Samples::I24(samples) = block.samples() else {
+            panic!("AIFC DWVW sample format changed during decode");
+        };
+        frames += block.frames();
+        for sample in samples {
+            decoded.extend_from_slice(&sample.wrapping_shl(8).to_le_bytes());
+        }
+    }
+    assert_eq!(frames, 541_184);
+    assert_eq!(decoded, oracle, "Zemer and libsndfile DWVW decoders differ");
+}
