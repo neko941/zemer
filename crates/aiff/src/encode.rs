@@ -755,6 +755,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
         for (key, id) in [
             ("title", *b"NAME"),
             ("artist", *b"AUTH"),
+            ("copyright", *b"(c) "),
             ("comment", *b"ANNO"),
         ] {
             let values = self.metadata.values(key);
@@ -875,9 +876,12 @@ impl<W: Write + Seek> AudioEncoder for AiffEncoder<W> {
 }
 
 pub(super) fn validate_metadata(metadata: &Metadata) -> Result<(), AudioError> {
-    if metadata.values("TITLE").len() > 1 || metadata.values("ARTIST").len() > 1 {
+    if metadata.values("TITLE").len() > 1
+        || metadata.values("ARTIST").len() > 1
+        || metadata.values("COPYRIGHT").len() > 1
+    {
         return Err(AudioError::Unsupported(
-            "AIFF supports one TITLE and one ARTIST value",
+            "AIFF supports one TITLE, ARTIST, and COPYRIGHT value",
         ));
     }
     if metadata.iter().any(|(key, values)| {
@@ -907,7 +911,7 @@ pub(super) fn validate_metadata(metadata: &Metadata) -> Result<(), AudioError> {
 
 pub(super) fn id3_metadata(metadata: &Metadata) -> Metadata {
     let mut id3_metadata = metadata.clone();
-    for key in ["title", "artist", "comment"] {
+    for key in ["title", "artist", "copyright", "comment"] {
         if metadata.values(key).iter().all(|value| value.is_ascii()) {
             id3_metadata.remove(key);
         }
@@ -928,7 +932,7 @@ fn validate_combined_metadata(
     markers: &[AiffMarker],
     instrument: Option<&AiffInstrument>,
 ) -> Result<u64, AudioError> {
-    let text_size = ["title", "artist", "comment"]
+    let text_size = ["title", "artist", "copyright", "comment"]
         .iter()
         .try_fold(0_u64, |size, key| {
             let values = metadata.values(key);

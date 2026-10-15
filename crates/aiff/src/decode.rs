@@ -83,6 +83,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
         let mut version = None;
         let mut sound = None;
         let mut native_metadata = Metadata::default();
+        let mut copyright_seen = false;
         let mut id3_metadata = None;
         let mut id3_tag = None;
         let mut comments = None;
@@ -187,7 +188,15 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     }
                     sound = Some((sound_data, sound_end));
                 }
-                b"NAME" | b"AUTH" | b"ANNO" => {
+                b"NAME" | b"AUTH" | b"ANNO" | b"(c) " => {
+                    if &header[..4] == b"(c) " {
+                        if copyright_seen {
+                            return Err(AudioError::InvalidFormat(
+                                "duplicate AIFF copyright chunk",
+                            ));
+                        }
+                        copyright_seen = true;
+                    }
                     metadata_bytes = metadata_bytes
                         .checked_add(size)
                         .ok_or(AudioError::InvalidFormat("AIFF metadata size overflow"))?;
@@ -205,6 +214,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     match &header[..4] {
                         b"NAME" => native_metadata.insert("title", value),
                         b"AUTH" => native_metadata.insert("artist", value),
+                        b"(c) " => native_metadata.insert("copyright", value),
                         _ => native_metadata.insert("comment", value),
                     }
                 }

@@ -867,10 +867,62 @@ fn rewrites_tags_without_changing_audio_unknown_chunks_or_trailing_data() {
 }
 
 #[test]
+fn copyright_chunk_round_trips_and_rewrites_without_changing_audio() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![-123, 456])).unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("copyright", "1988 Apple Computer, Inc.");
+    let mut encoder =
+        AiffEncoder::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).unwrap();
+    encoder.write_block(&audio).unwrap();
+    let mut input = encoder.finish().unwrap().get_ref().clone();
+    assert_eq!(chunk_body(&input, b"(c) "), b"1988 Apple Computer, Inc.");
+    assert_eq!(
+        AiffDecoder::new(Cursor::new(input.clone()))
+            .unwrap()
+            .metadata(),
+        &metadata
+    );
+
+    let mut edited = Metadata::default();
+    edited.insert("copyright", "2026 Zemer");
+    let mut output = Cursor::new(Vec::new());
+    rewrite_metadata(Cursor::new(input.clone()), &mut output, &edited).unwrap();
+    input = output.into_inner();
+    assert_eq!(chunk_body(&input, b"(c) "), b"2026 Zemer");
+    let mut decoder = AiffDecoder::new(Cursor::new(input)).unwrap();
+    assert_eq!(decoder.metadata(), &edited);
+    assert_eq!(decoder.read_frames(2).unwrap().unwrap(), audio);
+}
+
+#[test]
+fn decoder_rejects_duplicate_copyright_chunks() {
+    let mut bytes = AiffEncoder::new(
+        Cursor::new(Vec::new()),
+        AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap()
+    .get_ref()
+    .clone();
+    append_form_chunk(&mut bytes, b"(c) ", b"first");
+    append_form_chunk(&mut bytes, b"(c) ", b"second");
+    assert!(AiffDecoder::new(Cursor::new(bytes)).is_err());
+}
+
+#[test]
 fn aiff_metadata_rewrite_rejects_multiple_single_value_tags() {
     let mut tags = Metadata::default();
     tags.insert("artist", "First");
     tags.insert("artist", "Second");
+    let mut output = Cursor::new(Vec::new());
+    assert!(rewrite_metadata(Cursor::new(Vec::new()), &mut output, &tags).is_err());
+    assert!(output.into_inner().is_empty());
+
+    tags.remove("artist");
+    tags.insert("copyright", "First");
+    tags.insert("copyright", "Second");
     let mut output = Cursor::new(Vec::new());
     assert!(rewrite_metadata(Cursor::new(Vec::new()), &mut output, &tags).is_err());
     assert!(output.into_inner().is_empty());
