@@ -143,6 +143,8 @@ NASA's public-domain SuperCam recording, and
 checks a 24-bit stereo Wapichan speech recording labelled public domain in the
 United States. A bundled CC0 Montréal Eaton Centre recording adds a 1,377,280-
 frame mono 24-bit check against an FFmpeg 4.2.2 PCM digest before and after
-comment rewriting. None of the ignored external recordings or oracles is
+comment rewriting. A bundled CC0 retro-game hit sound effect adds a 29,311-frame
+stereo 24-bit sample-for-sample FFmpeg 8.1 oracle check before and after comment
+rewriting. None of the ignored external recordings or oracles is
 bundled. All six ignored tests compare every decoded sample with an independent
 PCM oracle. These samples do not replace a broader independent Ogg-FLAC corpus.

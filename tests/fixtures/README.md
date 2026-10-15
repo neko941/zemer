@@ -465,6 +465,19 @@ Commons reports 3,103,293 bytes and SHA-1
 `fbd7d5f7bd9fda90d8089771923e2e3afba90bb7`. Fixture SHA-256:
 `a02c3cff4dbf76d3eb04d856c79ab9bc72fd5b7d5d85de95b2304aadcd43c2a0`.
 
+`ogg-flac-cc0-retro-hit.oga` is Rafael Tavares Juliani's 0.664649-second
+retro-game hit sound effect, dedicated under [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/)
+on [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Acerto_efeito_sonoro_retr%C3%B4.oga).
+The file is stereo, 44.1 kHz, signed 24-bit, and 29,311 frames; Commons lists
+FFmpeg Lavc 58.134.100 as the encoder. The unmodified 152,723-byte source
+matches Commons SHA-1 `787827efe2adec19c31c15774ca550ab72eb913c` and has SHA-256
+`32f6a4c35d55d2c3e301a0ff8988cd6ed48d90d0dfdc2d6c68acb989e5dec9ff`.
+FFmpeg 8.1's 175,866-byte s24le PCM oracle has SHA-256
+`c63603dd9b56e2cffd1f1f12cf43509a4e14f950fc53a39ce9c5440e361b64ed`.
+`decodes_and_rewrites_cc0_retro_hit_ogg_flac_fixture` compares every decoded
+sample against this oracle in 257-frame reads, both before and after a comment
+rewrite.
+
 `ogg-flac-shami.oga` is the 75.306729-second spoken Wikipedia article about
 Shami (Levantine Arabic), published under CC BY-SA 4.0 on [Wikimedia
 Commons](https://commons.wikimedia.org/wiki/File:Shami.oga); attribution is to

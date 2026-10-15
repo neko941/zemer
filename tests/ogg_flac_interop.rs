@@ -565,6 +565,52 @@ fn decodes_and_rewrites_cc0_eaton_centre_ogg_flac_fixture() {
 }
 
 #[test]
+fn decodes_and_rewrites_cc0_retro_hit_ogg_flac_fixture() {
+    const FRAMES: u64 = 29_311;
+    const TITLE: &str = "CC0 retro hit sound effect";
+
+    let input = include_bytes!("fixtures/ogg-flac-cc0-retro-hit.oga");
+    let oracle = include_bytes!("fixtures/ogg-flac-cc0-retro-hit.s24le");
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", TITLE);
+    let mut rewritten = Vec::new();
+    rewrite_ogg_metadata(Cursor::new(input), &mut rewritten, &metadata).unwrap();
+
+    for (stream, expected_title) in [
+        (input.as_slice(), None),
+        (rewritten.as_slice(), Some(TITLE)),
+    ] {
+        let mut decoder = OggFlacDecoder::new(Cursor::new(stream)).unwrap();
+        assert_eq!(
+            decoder.spec(),
+            AudioSpec::new(44_100, 2, SampleFormat::PcmI24).unwrap()
+        );
+        if let Some(title) = expected_title {
+            assert_eq!(decoder.metadata().values("TITLE"), [title]);
+        }
+
+        let mut sample_index = 0;
+        let mut frames = 0;
+        while let Some(block) = decoder.read_frames(257).unwrap() {
+            let Samples::I24(samples) = block.samples() else {
+                panic!("CC0 Ogg-FLAC fixture must decode to signed 24-bit PCM");
+            };
+            for &sample in samples {
+                let bytes = &oracle[sample_index * 3..sample_index * 3 + 3];
+                let packed = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0]);
+                let expected = packed << 8 >> 8;
+                assert_eq!(sample, expected, "interleaved sample {sample_index}");
+                sample_index += 1;
+            }
+            frames += block.frames() as u64;
+        }
+        assert!(decoder.read_frames(1).unwrap().is_none());
+        assert_eq!(frames, FRAMES);
+        assert_eq!(sample_index * 3, oracle.len());
+    }
+}
+
+#[test]
 fn decodes_and_rewrites_cc_by_sa_shami_ogg_flac_fixture() {
     const FRAMES: u64 = 3_614_723;
     const PCM_FNV1A64: u64 = 0x67f0_a56f_f1e8_f4b7;
