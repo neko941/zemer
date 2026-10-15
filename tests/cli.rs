@@ -1009,6 +1009,77 @@ fn convert_encodes_aifc_g711_only_when_explicitly_selected() {
 }
 
 #[test]
+fn convert_encodes_aifc_g726_at_each_explicit_rate() {
+    let input_path = temporary_path();
+    let samples: Vec<_> = (0..259)
+        .map(|index| ((index as f32 * 0.13).sin() * 20_000.0).round() as i16)
+        .collect();
+    let audio = PcmBuffer::new(
+        AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(samples),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("title", "G.726 AIFC");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    for (rate, bits_per_second) in [(16, 16_000_u32), (24, 24_000), (32, 32_000), (40, 40_000)] {
+        let output_path = temporary_path().with_extension("aifc");
+        let rate_arg = rate.to_string();
+        let output = Command::new(cli_path())
+            .args([
+                "convert",
+                "--format",
+                "aifc_g726",
+                "--bitrate",
+                &rate_arg,
+                "--json",
+            ])
+            .arg(&input_path)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{rate} kbit/s: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report = String::from_utf8_lossy(&output.stdout);
+        assert!(report.contains("\"format\":\"aifc\""));
+        assert!(report.contains("\"output_encoding\":\"aifc_g726\""));
+
+        let bytes = fs::read(&output_path).unwrap();
+        let mut hint = b"APPL\0\0\0\x0cstocG726".to_vec();
+        hint.extend_from_slice(&bits_per_second.to_be_bytes());
+        assert!(bytes.windows(hint.len()).any(|chunk| chunk == hint));
+        let mut decoder = AiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+        assert!(decoder.is_aifc());
+        assert_eq!(decoder.metadata(), &metadata);
+        assert_eq!(decoder.spec().sample_rate(), 8_000);
+        assert_eq!(decoder.read_frames(512).unwrap().unwrap().frames(), 259);
+        assert!(decoder.read_frames(1).unwrap().is_none());
+        let _ = fs::remove_file(output_path);
+    }
+
+    for args in [
+        vec!["convert", "--format", "aifc_g726"],
+        vec!["convert", "--format", "aifc_g726", "--bitrate", "20"],
+        vec!["convert", "--format", "aiff", "--bitrate", "40"],
+    ] {
+        let output_path = temporary_path().with_extension("aifc");
+        let output = Command::new(cli_path())
+            .args(args)
+            .arg(&input_path)
+            .arg(&output_path)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!output_path.exists());
+    }
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
 fn convert_encodes_aifc_ima4_with_packet_frame_count_and_padding() {
     let input_path = temporary_path();
     let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();

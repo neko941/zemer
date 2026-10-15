@@ -57,6 +57,7 @@ Convert WAVE, AIFF/AIFC, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF input to
    cargo run -p zemer -- convert --format aifc_alaw input.wav output-alaw.aifc
    cargo run -p zemer -- convert --format aifc_mulaw input.wav output-mulaw.aifc
    cargo run -p zemer -- convert --format aifc_ima4 input.wav output-ima4.aifc
+   cargo run -p zemer -- convert --format aifc_g726 --bitrate 40 input-8khz.wav output-g726.aifc
    cargo run -p zemer -- convert --format pcm_i16 input.flac output.wav
    cargo run -p zemer -- convert --format pcm_i16 input.wv output.wav
    cargo run -p zemer -- convert --format wavpack input.wav output.wv
@@ -72,7 +73,8 @@ Convert WAVE, AIFF/AIFC, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF input to
 
 WAVE output defaults to classic RIFF; choose RF64 explicitly when needed.
 ``--bitrate`` is in kbit/s and accepts 24 through 9600 for Vorbis and
-WavPack. With WavPack it writes a hybrid ``.wv`` file and a companion
+WavPack, or 16, 24, 32, or 40 for AIFC G.726. G.726 requires 8 kHz input and
+encodes signed 16-bit PCM. With WavPack it writes a hybrid ``.wv`` file and a companion
 ``.wvc`` correction file. With Vorbis it selects the experimental per-packet
 target-rate mode; sparse content can use fewer bits, and file headers raise
 the average bitrate of short files. The effective minimum is profile-dependent:
@@ -93,6 +95,7 @@ The same command can explicitly select G.711 output in WAVE or AIFF-C:
    cargo run -p zemer -- convert --format aifc_alaw input.wav output-alaw.aifc
    cargo run -p zemer -- convert --format aifc_mulaw input.wav output-mulaw.aifc
    cargo run -p zemer -- convert --format aifc_ima4 input.wav output-ima4.aifc
+   cargo run -p zemer -- convert --format aifc_g726 --bitrate 40 input-8khz.wav output-g726.aifc
 
 The output file must not already exist. Conversion keeps the input sample rate
 and channel count and carries text tags supported by both formats. It does not

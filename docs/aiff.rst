@@ -85,5 +85,6 @@ The CLI identifies AIFF and AIFC by their FORM signature, so filenames do not
 need conventional extensions. It can inspect either and convert to ``aiff``
 or ``aifc`` output. AIFF output accepts integer PCM. AIFC output additionally
 accepts float32/64 and preserves those sample bits. ``aifc_ima4`` encodes lossy
-16-bit input and reports packet-padded output frames. The CLI does not yet
-expose a G.726 output option; use the library API for explicit-rate encoding.
+16-bit input and reports packet-padded output frames. Select
+``aifc_g726 --bitrate 16|24|32|40`` for G.726 output; it requires 8 kHz input
+and encodes signed 16-bit PCM.
