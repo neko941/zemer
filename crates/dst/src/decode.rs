@@ -708,6 +708,33 @@ mod tests {
     }
 
     #[test]
+    fn compressed_frame_mutations_and_truncations_never_panic() {
+        let frame_len = 4_704;
+        let dsd = vec![0; frame_len];
+        let frame = crate::encode::encode_frame(&dsd, 1, frame_len).unwrap();
+        assert_eq!(frame[0] >> 7, 1, "test input must use compressed mode");
+
+        let step = (frame.len() / 128).max(1);
+        for byte_index in (0..frame.len()).step_by(step) {
+            let mut mutated = frame.clone();
+            let bit = (byte_index * 5 + 3) % 8;
+            mutated[byte_index] ^= 1 << bit;
+            assert!(
+                std::panic::catch_unwind(|| decode_frame(&mutated, 1, frame_len)).is_ok(),
+                "decoder panicked after mutating byte {byte_index}"
+            );
+        }
+
+        for removed in 1..=frame.len().min(32) {
+            let truncated = &frame[..frame.len() - removed];
+            assert!(
+                std::panic::catch_unwind(|| decode_frame(truncated, 1, frame_len)).is_ok(),
+                "decoder panicked after truncating {removed} bytes"
+            );
+        }
+    }
+
+    #[test]
     fn decodes_segmented_constant_prediction_frames_at_all_rates() {
         for (frame_len, resolution) in [(4_704, 128), (9_408, 256), (18_816, 512)] {
             let mut bits = BitWriter::default();
