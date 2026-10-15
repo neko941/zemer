@@ -12,3 +12,4 @@ name = "aiff"
 [dependencies]
 zemer-core.workspace = true
 g711.workspace = true
+g726.workspace = true

@@ -1,8 +1,10 @@
 use std::io::{Read, Seek, SeekFrom};
 
 use g711::{decode_alaw, decode_mulaw};
+use g726::G726Decoder;
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
+use crate::G726Rate;
 use crate::comment::{AiffComment, parse_comments};
 use crate::marker::{AiffMarker, parse_markers};
 
@@ -20,6 +22,7 @@ enum Encoding {
     Ima4,
     ALaw,
     MuLaw,
+    G726,
 }
 
 pub struct AiffDecoder<R> {
@@ -37,10 +40,20 @@ pub struct AiffDecoder<R> {
     ima4_pending: Vec<i16>,
     ima4_pending_offset: usize,
     ima4_states: Vec<Option<crate::ima4::State>>,
+    g726: Option<G726Decoder>,
 }
 
 impl<R: Read + Seek> AiffDecoder<R> {
-    pub fn new(mut reader: R) -> Result<Self, AudioError> {
+    pub fn new(reader: R) -> Result<Self, AudioError> {
+        Self::new_inner(reader, None)
+    }
+
+    /// Decode AIFC `G726` when the file does not contain a recognized bitrate hint.
+    pub fn new_with_g726_rate(reader: R, rate: G726Rate) -> Result<Self, AudioError> {
+        Self::new_inner(reader, Some(rate))
+    }
+
+    fn new_inner(mut reader: R, g726_rate_override: Option<G726Rate>) -> Result<Self, AudioError> {
         reader.seek(SeekFrom::Start(0))?;
         let mut form = [0; 12];
         reader.read_exact(&mut form)?;
@@ -67,6 +80,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
         let mut metadata = Metadata::default();
         let mut comments = None;
         let mut markers = None;
+        let mut g726_rate_hint = None;
         let mut metadata_bytes = 0_u64;
         while reader.stream_position()? < file_end {
             let position = reader.stream_position()?;
@@ -194,6 +208,27 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     reader.read_exact(&mut bytes)?;
                     markers = Some(parse_markers(&bytes)?);
                 }
+                b"APPL" if size == 12 => {
+                    let mut bytes = [0; 12];
+                    reader.read_exact(&mut bytes)?;
+                    if &bytes[..8] == b"stocG726" {
+                        let rate = match u32::from_be_bytes(bytes[8..].try_into().unwrap()) {
+                            16_000 => Some(G726Rate::Kbps16),
+                            24_000 => Some(G726Rate::Kbps24),
+                            32_000 => Some(G726Rate::Kbps32),
+                            40_000 => Some(G726Rate::Kbps40),
+                            _ => None,
+                        };
+                        if let Some(rate) = rate {
+                            if g726_rate_hint.is_some_and(|previous| previous != rate) {
+                                return Err(AudioError::InvalidFormat(
+                                    "conflicting AIFF-C G.726 bitrate hints",
+                                ));
+                            }
+                            g726_rate_hint = Some(rate);
+                        }
+                    }
+                }
                 _ => {}
             }
             reader.seek(SeekFrom::Start(end))?;
@@ -210,6 +245,19 @@ impl<R: Read + Seek> AiffDecoder<R> {
         }
         let (channels, frames, bits, rate, encoding) =
             common.ok_or(AudioError::InvalidFormat("AIFF file is missing COMM"))?;
+        if encoding == Encoding::G726 && rate != 8_000 {
+            return Err(AudioError::Unsupported(
+                "AIFC G.726 requires an 8 kHz sample rate",
+            ));
+        }
+        let g726_rate = (encoding == Encoding::G726)
+            .then(|| g726_rate_override.or(g726_rate_hint))
+            .flatten();
+        if encoding == Encoding::G726 && g726_rate.is_none() {
+            return Err(AudioError::Unsupported(
+                "AIFC G.726 bitrate is unknown; use AiffDecoder::new_with_g726_rate",
+            ));
+        }
         let (data_offset, sound_end) = match sound {
             Some(sound) => sound,
             None if frames == 0 => (file_end, file_end),
@@ -237,6 +285,14 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     .ok_or(AudioError::InvalidFormat("AIFF IMA4 data size overflow"))?,
                 packets,
             )
+        } else if encoding == Encoding::G726 {
+            let sample_count = u64::from(frames)
+                .checked_mul(u64::from(channels))
+                .ok_or(AudioError::InvalidFormat("AIFF sample count overflow"))?;
+            let bits = sample_count
+                .checked_mul(u64::from(g726_rate.unwrap().bits_per_sample()))
+                .ok_or(AudioError::InvalidFormat("AIFF G.726 size overflow"))?;
+            (u64::from(frames), bits.div_ceil(8), 0)
         } else {
             (
                 u64::from(frames),
@@ -264,6 +320,12 @@ impl<R: Read + Seek> AiffDecoder<R> {
             ));
         }
         reader.seek(SeekFrom::Start(data_offset))?;
+        let g726 = g726_rate
+            .map(|rate| {
+                G726Decoder::new(rate, usize::from(channels))
+                    .map_err(|_| AudioError::InvalidFormat("invalid AIFF-C G.726 channels"))
+            })
+            .transpose()?;
         Ok(Self {
             reader,
             spec,
@@ -279,6 +341,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
             ima4_pending: Vec::new(),
             ima4_pending_offset: 0,
             ima4_states: vec![None; usize::from(channels)],
+            g726,
         })
     }
 
@@ -367,6 +430,7 @@ impl Encoding {
     fn sample_format(self, bits: u16) -> Result<SampleFormat, AudioError> {
         match (self, bits) {
             (Self::Ima4, 4 | 16) | (Self::ALaw | Self::MuLaw, 16) => Ok(SampleFormat::PcmI16),
+            (Self::G726, 16) => Ok(SampleFormat::PcmI16),
             (Self::IntegerBe | Self::IntegerLe, 1..=8) => Ok(SampleFormat::PcmU8),
             (Self::IntegerBe | Self::IntegerLe, 9..=16) => Ok(SampleFormat::PcmI16),
             (Self::IntegerBe | Self::IntegerLe, 17..=24) => Ok(SampleFormat::PcmI24),
@@ -408,6 +472,7 @@ fn parse_common(bytes: &[u8], aifc: bool) -> Result<(u16, u32, u16, u32, Encodin
             b"alaw" | b"ALAW" if bits == 16 => Encoding::ALaw,
             b"ulaw" | b"ULAW" if bits == 16 => Encoding::MuLaw,
             b"ima4" if matches!(bits, 4 | 16) => Encoding::Ima4,
+            b"G726" if bits == 16 => Encoding::G726,
             _ => {
                 return Err(AudioError::Unsupported(
                     "AIFF-C compression type is not supported",
@@ -462,6 +527,9 @@ impl<R: Read + Seek> AudioDecoder for AiffDecoder<R> {
         if self.encoding == Encoding::Ima4 {
             return self.read_ima4_frames(max_frames);
         }
+        if self.encoding == Encoding::G726 {
+            return self.read_g726_frames(max_frames);
+        }
         let max_block_frames = (MAX_DECODE_BYTES / self.frame_bytes).max(1);
         let frames = self
             .frames_left
@@ -479,6 +547,50 @@ impl<R: Read + Seek> AudioDecoder for AiffDecoder<R> {
 }
 
 impl<R: Read + Seek> AiffDecoder<R> {
+    fn read_g726_frames(&mut self, max_frames: usize) -> Result<Option<PcmBuffer>, AudioError> {
+        let channels = usize::from(self.spec.channels());
+        let max_block_frames = (MAX_DECODE_BYTES / self.frame_bytes).max(1);
+        let frames = self
+            .frames_left
+            .min(max_frames as u64)
+            .min(max_block_frames) as usize;
+        let samples = frames
+            .checked_mul(channels)
+            .ok_or(AudioError::InvalidData("AIFF sample count overflow"))?;
+        let packed_len = self
+            .g726
+            .as_ref()
+            .ok_or(AudioError::InvalidData(
+                "AIFF G.726 decoder state is missing",
+            ))?
+            .packed_lsb_bytes_needed(samples)
+            .map_err(|_| AudioError::InvalidData("AIFF G.726 block size overflow"))?;
+        let mut packed = Vec::new();
+        packed
+            .try_reserve_exact(packed_len)
+            .map_err(|_| AudioError::InvalidData("AIFF G.726 block is too large"))?;
+        packed.resize(packed_len, 0);
+        self.reader.read_exact(&mut packed)?;
+        let mut input = packed.as_slice();
+        let decoded = self
+            .g726
+            .as_mut()
+            .ok_or(AudioError::InvalidData(
+                "AIFF G.726 decoder state is missing",
+            ))?
+            .decode_packed_lsb_stream(&mut input, samples)
+            .map_err(|_| AudioError::InvalidData("invalid AIFF G.726 packed block"))?;
+        if !input.is_empty() {
+            return Err(AudioError::InvalidData(
+                "AIFF G.726 decoder did not consume its packed block",
+            ));
+        }
+        self.frames_left -= frames as u64;
+        PcmBuffer::new(self.spec, Samples::I16(decoded))
+            .map(Some)
+            .map_err(Into::into)
+    }
+
     fn read_ima4_frames(&mut self, max_frames: usize) -> Result<Option<PcmBuffer>, AudioError> {
         let channels = usize::from(self.spec.channels());
         let frame_bytes = u64::try_from(channels)
