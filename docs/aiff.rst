@@ -34,6 +34,15 @@ G.726 bitrate field. ``AiffEncoder::new_aifc_g726`` takes an explicit rate and
 writes the same hint. The ``G726Rate`` enum is re-exported from the ``aiff``
 crate. The clean-room encoder matches an independent SpanDSP codeword oracle at
 all four rates.
+The AIFC ``DWVW`` compression code is decoded and encoded at 2–32 bits per
+sample. ``AiffDecoder`` scans the channel-sequential sound data once to find
+each channel boundary, then returns interleaved PCM blocks. The library writer
+provides ``new_aifc_dwvw`` and ``new_aifc_dwvw_with_bits_per_sample``; because
+DWVW stores channel planes, it spools samples to temporary files until finish.
+The clean-room decoder matches a published 16-bit example against an
+independently generated payload. Broader DWVW corpus and writer
+interoperability checks remain open.
+
 AIFF-C output includes the required ``FVER`` chunk. Both readers and writers
 map ``NAME``, ``AUTH``, ``(c) ``, and repeated ``ANNO`` chunks to TITLE,
 ARTIST, COPYRIGHT, and COMMENT. The copyright chunk is ASCII text and may
@@ -122,3 +131,5 @@ accepts float32/64 and preserves those sample bits. ``aifc_ima4`` encodes lossy
 16-bit input and reports packet-padded output frames. Select
 ``aifc_g726 --bitrate 16|24|32|40`` for G.726 output; it requires 8 kHz input
 and encodes signed 16-bit PCM.
+Use ``aifc_dwvw`` for AIFC DWVW output; it accepts integer PCM and optional
+``--valid-bits`` from 2 through 32, subject to the input container width.

@@ -1293,6 +1293,41 @@ fn convert_encodes_aifc_g726_at_each_explicit_rate() {
 }
 
 #[test]
+fn convert_encodes_aifc_dwvw_and_reports_compression() {
+    let input_path = temporary_path();
+    let samples = [-32_768, 32_767, -1, 1, 1234, -4567, 0, 0];
+    let audio = PcmBuffer::new(
+        AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(samples.to_vec()),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("title", "DWVW AIFC");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    let output_path = temporary_path().with_extension("aifc");
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "aifc_dwvw", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"output_encoding\":\"aifc_dwvw\""));
+    let mut decoder = AiffDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata(), &metadata);
+    assert_eq!(decoder.read_frames(4).unwrap().unwrap(), audio);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+
+    let _ = fs::remove_file(output_path);
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
 fn convert_encodes_aifc_ima4_with_packet_frame_count_and_padding() {
     let input_path = temporary_path();
     let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();

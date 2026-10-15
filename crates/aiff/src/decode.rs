@@ -1,5 +1,9 @@
 use std::io::{Read, Seek, SeekFrom};
 
+use dwvw::{
+    DecoderState as DwvwDecoderState, decode_samples as decode_dwvw_samples,
+    scan_samples as scan_dwvw_samples,
+};
 use g711::{decode_alaw, decode_mulaw};
 use g726::G726Decoder;
 use id3::parse_id3_tag;
@@ -7,6 +11,7 @@ use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, Sampl
 
 use crate::G726Rate;
 use crate::comment::{AiffComment, parse_comments};
+use crate::dwvw_spool::map_dwvw_error;
 use crate::instrument::{AiffInstrument, parse_instrument, validate_instrument_markers};
 use crate::marker::{AiffMarker, parse_markers};
 
@@ -25,6 +30,7 @@ enum Encoding {
     ALaw,
     MuLaw,
     G726,
+    Dwvw,
 }
 
 pub struct AiffDecoder<R> {
@@ -45,6 +51,9 @@ pub struct AiffDecoder<R> {
     ima4_pending_offset: usize,
     ima4_states: Vec<Option<crate::ima4::State>>,
     g726: Option<G726Decoder>,
+    dwvw_data_offset: u64,
+    dwvw_end_bit: u64,
+    dwvw_states: Vec<DwvwDecoderState>,
 }
 
 impl<R: Read + Seek> AiffDecoder<R> {
@@ -333,6 +342,11 @@ impl<R: Read + Seek> AiffDecoder<R> {
                 "AIFC G.726 requires an 8 kHz sample rate",
             ));
         }
+        if encoding == Encoding::Dwvw && !(2..=32).contains(&bits) {
+            return Err(AudioError::Unsupported(
+                "AIFC DWVW supports sample widths from 2 through 32 bits",
+            ));
+        }
         let g726_rate = (encoding == Encoding::G726)
             .then(|| g726_rate_override.or(g726_rate_hint))
             .flatten();
@@ -376,6 +390,8 @@ impl<R: Read + Seek> AiffDecoder<R> {
                 .checked_mul(u64::from(g726_rate.unwrap().bits_per_sample()))
                 .ok_or(AudioError::InvalidFormat("AIFF G.726 size overflow"))?;
             (u64::from(frames), bits.div_ceil(8), 0)
+        } else if encoding == Encoding::Dwvw {
+            (u64::from(frames), 0, 0)
         } else {
             (
                 u64::from(frames),
@@ -405,6 +421,34 @@ impl<R: Read + Seek> AiffDecoder<R> {
             return Err(AudioError::InvalidFormat(
                 "AIFF SSND is shorter than COMM frame count",
             ));
+        }
+        let dwvw_data_bytes = sound_end
+            .checked_sub(data_offset)
+            .ok_or(AudioError::InvalidFormat("invalid AIFC DWVW data range"))?;
+        let dwvw_end_bit = dwvw_data_bytes
+            .checked_mul(8)
+            .ok_or(AudioError::InvalidFormat("AIFC DWVW data size overflow"))?;
+        let mut dwvw_states = Vec::new();
+        if encoding == Encoding::Dwvw {
+            dwvw_states
+                .try_reserve_exact(usize::from(channels))
+                .map_err(|_| AudioError::InvalidFormat("AIFC DWVW has too many channels"))?;
+            let mut input = SoundDataReader::new(&mut reader, data_offset, sound_end);
+            let mut state = DwvwDecoderState::at(0);
+            for channel in 0..channels {
+                dwvw_states.push(DwvwDecoderState::at(state.bit_position()));
+                scan_dwvw_samples(
+                    &mut input,
+                    &mut state,
+                    bits as u8,
+                    dwvw_end_bit,
+                    u64::from(frames),
+                )
+                .map_err(map_dwvw_error)?;
+                if channel + 1 < channels {
+                    state.finish_channel(dwvw_end_bit).map_err(map_dwvw_error)?;
+                }
+            }
         }
         reader.seek(SeekFrom::Start(data_offset))?;
         let g726 = g726_rate
@@ -438,6 +482,9 @@ impl<R: Read + Seek> AiffDecoder<R> {
             ima4_pending_offset: 0,
             ima4_states: vec![None; usize::from(channels)],
             g726,
+            dwvw_data_offset: data_offset,
+            dwvw_end_bit,
+            dwvw_states,
         })
     }
 
@@ -537,6 +584,10 @@ impl Encoding {
         match (self, bits) {
             (Self::Ima4, 4 | 16) | (Self::ALaw | Self::MuLaw, 16) => Ok(SampleFormat::PcmI16),
             (Self::G726, 16) => Ok(SampleFormat::PcmI16),
+            (Self::Dwvw, 2..=8) => Ok(SampleFormat::PcmU8),
+            (Self::Dwvw, 9..=16) => Ok(SampleFormat::PcmI16),
+            (Self::Dwvw, 17..=24) => Ok(SampleFormat::PcmI24),
+            (Self::Dwvw, 25..=32) => Ok(SampleFormat::PcmI32),
             (Self::IntegerBe | Self::IntegerLe, 1..=8) => Ok(SampleFormat::PcmU8),
             (Self::IntegerBe | Self::IntegerLe, 9..=16) => Ok(SampleFormat::PcmI16),
             (Self::IntegerBe | Self::IntegerLe, 17..=24) => Ok(SampleFormat::PcmI24),
@@ -580,6 +631,7 @@ fn parse_common(bytes: &[u8], aifc: bool) -> Result<(u16, u32, u16, u32, Encodin
             b"ulaw" | b"ULAW" if bits == 16 => Encoding::MuLaw,
             b"ima4" if matches!(bits, 4 | 16) => Encoding::Ima4,
             b"G726" if bits == 16 => Encoding::G726,
+            b"DWVW" => Encoding::Dwvw,
             _ => {
                 return Err(AudioError::Unsupported(
                     "AIFF-C compression type is not supported",
@@ -614,6 +666,70 @@ fn extended_rate(bytes: &[u8]) -> Result<u32, AudioError> {
     Ok(rounded as u32)
 }
 
+fn zeroed_vec<T: Default + Clone>(len: usize) -> Result<Vec<T>, AudioError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|_| AudioError::InvalidData("AIFC DWVW block is too large"))?;
+    values.resize(len, T::default());
+    Ok(values)
+}
+
+struct SoundDataReader<'a, R> {
+    reader: &'a mut R,
+    base: u64,
+    end: u64,
+}
+
+impl<'a, R> SoundDataReader<'a, R> {
+    fn new(reader: &'a mut R, base: u64, end: u64) -> Self {
+        Self { reader, base, end }
+    }
+}
+
+impl<R: Read> Read for SoundDataReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        self.reader.read(buffer)
+    }
+}
+
+impl<R: Seek> Seek for SoundDataReader<'_, R> {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        match position {
+            SeekFrom::Start(offset) => {
+                let absolute = self.base.checked_add(offset).ok_or_else(seek_overflow)?;
+                self.reader.seek(SeekFrom::Start(absolute))?;
+                Ok(offset)
+            }
+            SeekFrom::Current(offset) => {
+                let current = self.reader.stream_position()?;
+                let relative = i128::from(current) - i128::from(self.base) + i128::from(offset);
+                self.seek_relative(relative)
+            }
+            SeekFrom::End(offset) => {
+                let relative_end = i128::from(self.end) - i128::from(self.base);
+                self.seek_relative(relative_end + i128::from(offset))
+            }
+        }
+    }
+}
+
+impl<R: Seek> SoundDataReader<'_, R> {
+    fn seek_relative(&mut self, relative: i128) -> std::io::Result<u64> {
+        if !(0..=i128::from(u64::MAX)).contains(&relative) {
+            return Err(seek_overflow());
+        }
+        let relative = relative as u64;
+        let absolute = self.base.checked_add(relative).ok_or_else(seek_overflow)?;
+        self.reader.seek(SeekFrom::Start(absolute))?;
+        Ok(relative)
+    }
+}
+
+fn seek_overflow() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, "seek overflow")
+}
+
 impl<R: Read + Seek> AudioDecoder for AiffDecoder<R> {
     fn spec(&self) -> AudioSpec {
         self.spec
@@ -637,6 +753,9 @@ impl<R: Read + Seek> AudioDecoder for AiffDecoder<R> {
         if self.encoding == Encoding::G726 {
             return self.read_g726_frames(max_frames);
         }
+        if self.encoding == Encoding::Dwvw {
+            return self.read_dwvw_frames(max_frames);
+        }
         let max_block_frames = (MAX_DECODE_BYTES / self.frame_bytes).max(1);
         let frames = self
             .frames_left
@@ -654,6 +773,85 @@ impl<R: Read + Seek> AudioDecoder for AiffDecoder<R> {
 }
 
 impl<R: Read + Seek> AiffDecoder<R> {
+    fn read_dwvw_frames(&mut self, max_frames: usize) -> Result<Option<PcmBuffer>, AudioError> {
+        let channels = usize::from(self.spec.channels());
+        let max_block_frames = ((MAX_DECODE_BYTES as usize) / channels.saturating_mul(4)).max(1);
+        let frames = self
+            .frames_left
+            .min(max_frames as u64)
+            .min(max_block_frames as u64) as usize;
+        let sample_count = frames
+            .checked_mul(channels)
+            .ok_or(AudioError::InvalidData("AIFC DWVW sample count overflow"))?;
+        let mut interleaved = zeroed_vec(sample_count)?;
+        let mut channel_samples = zeroed_vec(frames)?;
+        let sound_end = self
+            .dwvw_data_offset
+            .checked_add(self.dwvw_end_bit / 8)
+            .ok_or(AudioError::InvalidData("AIFC DWVW data end overflow"))?;
+        let mut input = SoundDataReader::new(&mut self.reader, self.dwvw_data_offset, sound_end);
+        for (channel, state) in self.dwvw_states.iter_mut().enumerate() {
+            decode_dwvw_samples(
+                &mut input,
+                state,
+                self.bits as u8,
+                self.dwvw_end_bit,
+                &mut channel_samples,
+            )
+            .map_err(map_dwvw_error)?;
+            for (frame, &sample) in channel_samples.iter().enumerate() {
+                interleaved[frame * channels + channel] = sample;
+            }
+        }
+        let samples = match self.spec.sample_format() {
+            SampleFormat::PcmU8 => {
+                let shift = 8 - self.bits;
+                Samples::U8(
+                    interleaved
+                        .into_iter()
+                        .map(|sample| ((i64::from(sample) << shift) + 128) as u8)
+                        .collect(),
+                )
+            }
+            SampleFormat::PcmI16 => {
+                let shift = 16 - self.bits;
+                Samples::I16(
+                    interleaved
+                        .into_iter()
+                        .map(|sample| (i64::from(sample) << shift) as i16)
+                        .collect(),
+                )
+            }
+            SampleFormat::PcmI24 => {
+                let shift = 24 - self.bits;
+                Samples::I24(
+                    interleaved
+                        .into_iter()
+                        .map(|sample| (i64::from(sample) << shift) as i32)
+                        .collect(),
+                )
+            }
+            SampleFormat::PcmI32 => {
+                let shift = 32 - self.bits;
+                Samples::I32(
+                    interleaved
+                        .into_iter()
+                        .map(|sample| (i64::from(sample) << shift) as i32)
+                        .collect(),
+                )
+            }
+            SampleFormat::Float32 | SampleFormat::Float64 => {
+                return Err(AudioError::InvalidData(
+                    "AIFC DWVW has a non-integer output type",
+                ));
+            }
+        };
+        self.frames_left -= frames as u64;
+        PcmBuffer::new(self.spec, samples)
+            .map(Some)
+            .map_err(Into::into)
+    }
+
     fn read_g726_frames(&mut self, max_frames: usize) -> Result<Option<PcmBuffer>, AudioError> {
         let channels = usize::from(self.spec.channels());
         let max_block_frames = (MAX_DECODE_BYTES / self.frame_bytes).max(1);

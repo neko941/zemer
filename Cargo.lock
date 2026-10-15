@@ -40,6 +40,7 @@ name = "zemer-aiff"
 version = "0.7.0"
 dependencies = [
  "zemer-core",
+ "zemer-dwvw",
  "zemer-g711",
  "zemer-g726",
  "zemer-id3",
@@ -96,6 +97,10 @@ version = "0.7.0"
 dependencies = [
  "zemer-core",
 ]
+
+[[package]]
+name = "zemer-dwvw"
+version = "0.7.0"
 
 [[package]]
 name = "zemer-flac"

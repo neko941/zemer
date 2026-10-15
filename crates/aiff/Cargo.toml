@@ -13,4 +13,5 @@ name = "aiff"
 zemer-core.workspace = true
 g711.workspace = true
 g726.workspace = true
+dwvw.workspace = true
 id3.workspace = true

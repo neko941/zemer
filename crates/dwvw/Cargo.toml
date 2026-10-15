@@ -1,0 +1,10 @@
+[package]
+name = "zemer-dwvw"
+description = "Clean-room DWVW audio codec for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "dwvw"
