@@ -1,6 +1,6 @@
 //! Native DSD block decoding, independent from the PCM entropy path.
 
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek, Take};
 
 use zemer_core::{AudioError, DsdBuffer, DsdDecoder, DsdSpec, Metadata, Samples};
 
@@ -9,6 +9,7 @@ use crate::{
     checksum::verify_dsd_checksum,
     decode::{ChannelInfo, WavPackDecoder, parse_channel_info, parse_sample_rate},
     metadata::visit_metadata_sub_blocks,
+    tags::trailing_metadata_and_audio_end,
 };
 
 const MONO_DATA: u32 = 1 << 2;
@@ -495,6 +496,27 @@ pub struct WavPackDsdDecoder<R> {
 impl<R: std::io::Read> WavPackDsdDecoder<R> {
     pub fn new(reader: R) -> Result<Self, AudioError> {
         let decoder = WavPackDecoder::<R>::new_inner(reader, None, true)?;
+        Self::from_decoder(decoder)
+    }
+}
+
+impl<R: Read + Seek> WavPackDsdDecoder<Take<R>> {
+    /// Opens a seekable WavPack file and reads its trailing APEv2 metadata.
+    pub fn new_seekable(mut reader: R) -> Result<Self, AudioError> {
+        let start = reader.stream_position()?;
+        let (audio_end, metadata) = trailing_metadata_and_audio_end(&mut reader)?;
+        let audio_size = audio_end
+            .checked_sub(start)
+            .ok_or(AudioError::InvalidData("invalid WavPack audio range"))?;
+        reader.seek(std::io::SeekFrom::Start(start))?;
+        let mut decoder = WavPackDecoder::new_inner(reader.take(audio_size), None, true)?;
+        decoder.metadata = metadata;
+        Self::from_decoder(decoder)
+    }
+}
+
+impl<R: Read> WavPackDsdDecoder<R> {
+    fn from_decoder(decoder: WavPackDecoder<R>) -> Result<Self, AudioError> {
         let spec = DsdSpec::new_with_speaker_mask(
             decoder
                 .spec
