@@ -497,6 +497,34 @@ pub(crate) fn decode_mid_side_pvq_band(
 
     let (mid_budget, side_budget) =
         split_stereo_shape_budget(remaining_eighth_bits, dimensions, angle.angle_q14)?;
+
+    // In two dimensions, normalized mid and side shapes are perpendicular.
+    // Only one PVQ vector plus a raw sign bit is needed; decoding two
+    // independent vectors would waste bits and violate CELT's special case.
+    if dimensions == 2 {
+        if remaining_eighth_bits < 8 {
+            return Ok((vec![0.0; dimensions], vec![0.0; dimensions]));
+        }
+        let mid_first = mid_budget >= side_budget;
+        let (coded, _) = decode_stereo_shape(
+            range,
+            dimensions,
+            remaining_eighth_bits - 8,
+            spread,
+            blocks,
+            tf_adjustment,
+        )?;
+        let side_sign = range.read_raw_bits(1)?;
+        let (mid, side) = if mid_first {
+            let sign = if side_sign == 0 { 1.0 } else { -1.0 };
+            (coded.clone(), vec![-coded[1] * sign, coded[0] * sign])
+        } else {
+            let sign = if side_sign == 0 { 1.0 } else { -1.0 };
+            (vec![coded[1] * sign, -coded[0] * sign], coded)
+        };
+        return combine_mid_side_shapes(&mid, &side, angle);
+    }
+
     let mid_first = mid_budget >= side_budget;
     let (first_budget, second_budget) = if mid_first {
         (mid_budget, side_budget)
@@ -1526,7 +1554,7 @@ mod tests {
     }
 
     #[test]
-    fn stereo_shape_decode_reassigns_first_codebook_remainder() {
+    fn two_dimensional_stereo_decodes_one_shape_and_a_raw_sign_bit() {
         let angle = crate::pvq::SplitAngle {
             resolution: 2,
             index: 1,
@@ -1534,8 +1562,7 @@ mod tests {
             left_gain: std::f32::consts::FRAC_1_SQRT_2,
             right_gain: std::f32::consts::FRAC_1_SQRT_2,
         };
-        assert_eq!(crate::pvq::pulses_for_allocation(2, 20).unwrap().pulses, 1);
-        assert_eq!(crate::pvq::pulses_for_allocation(2, 24).unwrap().pulses, 2);
+        assert_eq!(crate::pvq::pulses_for_allocation(2, 32).unwrap().pulses, 4);
 
         let bytes = [0x53; 32];
         let mut actual_range = RangeDecoder::new(&bytes);
@@ -1543,8 +1570,8 @@ mod tests {
             decode_mid_side_pvq_band(&mut actual_range, 2, 40, angle, 0, 1, 0).unwrap();
 
         let mut expected_range = RangeDecoder::new(&bytes);
-        crate::pvq::decode_codeword(&mut expected_range, 2, 1).unwrap();
-        crate::pvq::decode_codeword(&mut expected_range, 2, 2).unwrap();
+        crate::pvq::decode_codeword(&mut expected_range, 2, 4).unwrap();
+        expected_range.read_raw_bits(1).unwrap();
         assert_eq!(actual_range.tell_frac(), expected_range.tell_frac());
         for channel in [left, right] {
             let norm_squared = channel
@@ -1582,19 +1609,23 @@ mod tests {
             left_gain: 0.382_683_43,
             right_gain: 0.923_879_5,
         };
-        assert_eq!(
-            crate::pvq::split_stereo_shape_budget(40, 2, angle.angle_q14),
-            Ok((15, 25))
-        );
-        assert_eq!(crate::pvq::pulses_for_allocation(2, 25).unwrap().pulses, 2);
-        assert_eq!(crate::pvq::pulses_for_allocation(2, 16).unwrap().pulses, 1);
+        let (mid_budget, side_budget) =
+            crate::pvq::split_stereo_shape_budget(160, 4, angle.angle_q14).unwrap();
+        assert!(side_budget > mid_budget);
+        let first = crate::pvq::pulses_for_allocation(4, side_budget).unwrap();
+        let second = crate::pvq::pulses_for_allocation(
+            4,
+            mid_budget + side_budget - u32::from(first.codebook_eighth_bits),
+        )
+        .unwrap();
+        assert!(first.pulses > second.pulses);
 
         let bytes = [0x37; 32];
         let mut actual_range = RangeDecoder::new(&bytes);
-        decode_mid_side_pvq_band(&mut actual_range, 2, 40, angle, 0, 1, 0).unwrap();
+        decode_mid_side_pvq_band(&mut actual_range, 4, 160, angle, 0, 1, 0).unwrap();
         let mut expected_range = RangeDecoder::new(&bytes);
-        crate::pvq::decode_codeword(&mut expected_range, 2, 2).unwrap();
-        crate::pvq::decode_codeword(&mut expected_range, 2, 1).unwrap();
+        crate::pvq::decode_codeword(&mut expected_range, 4, first.pulses as usize).unwrap();
+        crate::pvq::decode_codeword(&mut expected_range, 4, second.pulses as usize).unwrap();
         assert_eq!(actual_range.tell_frac(), expected_range.tell_frac());
     }
 
