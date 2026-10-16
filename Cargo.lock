@@ -192,6 +192,7 @@ dependencies = [
 name = "zemer-wav"
 version = "0.7.0"
 dependencies = [
+ "encoding_rs",
  "zemer-core",
  "zemer-g711",
  "zemer-ima-adpcm",

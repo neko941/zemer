@@ -1,5 +1,6 @@
 use std::io::{Seek, SeekFrom, Write};
 
+use crate::cset::{UTF8_CODE_PAGE, encode_info_value, write_utf8_chunk};
 use crate::ima_adpcm::encode_block as encode_ima_block;
 use crate::info::id_from_key;
 use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
@@ -244,7 +245,7 @@ impl<W: Write + Seek> WavWriter<W> {
     ) -> Result<Self, AudioError> {
         let ima_adpcm = adpcm == Some(AdpcmEncoding::Ima);
         let ms_adpcm = adpcm == Some(AdpcmEncoding::Microsoft);
-        let metadata_chunk_bytes = metadata_chunk_size(metadata)?;
+        let metadata_chunk_bytes = writer_metadata_size(metadata)?;
         let bext_chunk_bytes = if let Some(chunk) = bext {
             let size = chunk.chunk_size()?;
             u64::from(size) + 8 + u64::from(size & 1)
@@ -440,7 +441,7 @@ impl<W: Write + Seek> WavWriter<W> {
     }
 
     fn replace_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
-        let chunk_bytes = metadata_chunk_size(metadata)?;
+        let chunk_bytes = writer_metadata_size(metadata)?;
         let riff_size = self
             .riff_overhead
             .checked_add(self.data_bytes)
@@ -568,7 +569,8 @@ impl<W: Write + Seek> WavWriter<W> {
             self.writer.write_all(&[0])?;
         }
         if self.metadata_chunk_bytes > 0 {
-            write_info_chunk(&mut self.writer, &self.metadata)?;
+            write_utf8_chunk(&mut self.writer)?;
+            write_info_chunk(&mut self.writer, &self.metadata, UTF8_CODE_PAGE)?;
         }
         if let Some(cue) = &self.cue {
             cue.write(&mut self.writer)?;
@@ -797,6 +799,13 @@ pub fn write_wav_with_metadata<W: Write + Seek>(
 }
 
 pub(super) fn metadata_chunk_size(metadata: &Metadata) -> Result<u64, AudioError> {
+    metadata_chunk_size_for_code_page(metadata, UTF8_CODE_PAGE)
+}
+
+pub(super) fn metadata_chunk_size_for_code_page(
+    metadata: &Metadata,
+    code_page: u16,
+) -> Result<u64, AudioError> {
     let mut list_size = 4_u64;
     let mut values = 0_u64;
     for (key, entries) in metadata.iter() {
@@ -804,7 +813,8 @@ pub(super) fn metadata_chunk_size(metadata: &Metadata) -> Result<u64, AudioError
             "WAVE INFO cannot store this metadata key",
         ))?;
         for value in entries.iter().filter(|value| !value.is_empty()) {
-            let size = value
+            let bytes = encode_info_value(value, code_page)?;
+            let size = bytes
                 .len()
                 .checked_add(1)
                 .ok_or(AudioError::Unsupported("WAVE metadata value size overflow"))?;
@@ -831,15 +841,26 @@ pub(super) fn metadata_chunk_size(metadata: &Metadata) -> Result<u64, AudioError
     Ok(8 + u64::from(list_chunk_size) + u64::from(list_chunk_size & 1))
 }
 
+fn writer_metadata_size(metadata: &Metadata) -> Result<u64, AudioError> {
+    let size = metadata_chunk_size(metadata)?;
+    if size == 0 {
+        Ok(0)
+    } else {
+        size.checked_add(16)
+            .ok_or(AudioError::Unsupported("WAVE metadata size overflow"))
+    }
+}
+
 pub(super) fn write_info_chunk<W: Write>(
     writer: &mut W,
     metadata: &Metadata,
+    code_page: u16,
 ) -> Result<(), AudioError> {
-    let chunk_size = metadata_chunk_size(metadata)? - 8;
+    let chunk_size = metadata_chunk_size_for_code_page(metadata, code_page)? - 8;
     writer.write_all(b"LIST")?;
     writer.write_all(&(chunk_size as u32).to_le_bytes())?;
     writer.write_all(b"INFO")?;
-    write_info_subchunks(writer, metadata)?;
+    write_info_subchunks(writer, metadata, code_page)?;
     if chunk_size & 1 != 0 {
         writer.write_all(&[0])?;
     }
@@ -849,17 +870,19 @@ pub(super) fn write_info_chunk<W: Write>(
 pub(super) fn write_info_subchunks<W: Write>(
     writer: &mut W,
     metadata: &Metadata,
+    code_page: u16,
 ) -> Result<(), AudioError> {
     for (key, entries) in metadata.iter() {
         let id = id_from_key(key).ok_or(AudioError::Unsupported(
             "WAVE INFO cannot store this metadata key",
         ))?;
         for value in entries.iter().filter(|value| !value.is_empty()) {
-            let size = u32::try_from(value.len() + 1)
+            let bytes = encode_info_value(value, code_page)?;
+            let size = u32::try_from(bytes.len() + 1)
                 .map_err(|_| AudioError::Unsupported("WAVE metadata value is too large"))?;
             writer.write_all(&id)?;
             writer.write_all(&size.to_le_bytes())?;
-            writer.write_all(value.as_bytes())?;
+            writer.write_all(&bytes)?;
             writer.write_all(&[0])?;
             if size & 1 != 0 {
                 writer.write_all(&[0])?;

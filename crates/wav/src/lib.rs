@@ -1,4 +1,5 @@
 mod bext;
+mod cset;
 mod cue;
 mod decode;
 mod encode;

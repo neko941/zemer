@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use crate::cset::{decode_info_value, read_code_page};
 use crate::encode::WavContainer;
 use crate::ima_adpcm::{decode_block as decode_ima_block, frames_in_block};
 use crate::info::key_from_id;
@@ -295,6 +296,8 @@ pub struct WavDecoder<R> {
 impl<R: Read + Seek> WavDecoder<R> {
     pub fn new(mut reader: R) -> Result<Self, AudioError> {
         reader.seek(SeekFrom::Start(0))?;
+        let info_code_page = read_code_page(&mut reader)?;
+        reader.seek(SeekFrom::Start(0))?;
         let mut header = [0; 12];
         reader.read_exact(&mut header)?;
         let container = match &header[..4] {
@@ -502,6 +505,7 @@ impl<R: Read + Seek> WavDecoder<R> {
                                 &mut metadata,
                                 &mut info_metadata_bytes,
                                 &mut info_metadata_values,
+                                info_code_page,
                             )?;
                         }
                         b"wavl" => {
@@ -1160,6 +1164,7 @@ fn parse_list_info<R: Read + Seek>(
     metadata: &mut Metadata,
     metadata_bytes: &mut usize,
     metadata_values: &mut usize,
+    code_page: u16,
 ) -> Result<(), AudioError> {
     let mut list_type = [0; 4];
     reader.read_exact(&mut list_type)?;
@@ -1187,10 +1192,8 @@ fn parse_list_info<R: Read + Seek>(
             reserve_info_value(size, metadata_bytes, metadata_values)?;
             let mut value = vec![0; size as usize];
             reader.read_exact(&mut value)?;
-            let value = String::from_utf8_lossy(&value)
-                .trim_end_matches('\0')
-                .trim()
-                .to_owned();
+            let value = decode_info_value(&value, code_page);
+            let value = value.trim_end_matches('\0').trim().to_owned();
             if !value.is_empty() {
                 metadata.insert(key, value);
             }
@@ -1209,6 +1212,7 @@ fn parse_list_info<R: Read + Seek>(
 }
 
 pub(super) fn read_info_metadata<R: Read + Seek>(reader: &mut R) -> Result<Metadata, AudioError> {
+    let info_code_page = read_code_page(reader)?;
     reader.seek(SeekFrom::Start(0))?;
     let mut header = [0; 12];
     reader.read_exact(&mut header)?;
@@ -1308,6 +1312,7 @@ pub(super) fn read_info_metadata<R: Read + Seek>(reader: &mut R) -> Result<Metad
                     &mut metadata,
                     &mut metadata_bytes,
                     &mut metadata_values,
+                    info_code_page,
                 )?;
             }
         }
@@ -1348,6 +1353,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+    use crate::cset::DEFAULT_CODE_PAGE;
     use crate::write_wav;
     use zemer_core::{AudioEncoder, transcode};
 
@@ -1367,6 +1373,7 @@ mod tests {
             &mut metadata,
             &mut bytes_read,
             &mut values_read,
+            DEFAULT_CODE_PAGE,
         )
         .unwrap();
         assert_eq!(bytes_read, MAX_INFO_METADATA_BYTES);
@@ -1380,6 +1387,7 @@ mod tests {
                 &mut metadata,
                 &mut bytes_read,
                 &mut values_read,
+                DEFAULT_CODE_PAGE,
             )
             .is_err()
         );
@@ -1401,6 +1409,7 @@ mod tests {
                 &mut metadata,
                 &mut 0,
                 &mut 0,
+                DEFAULT_CODE_PAGE,
             )
             .is_err()
         );

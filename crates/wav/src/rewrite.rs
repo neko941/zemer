@@ -6,8 +6,12 @@ use std::{
 use zemer_core::{AudioError, Metadata};
 
 use crate::{
+    cset::read_code_page,
     decode::{MAX_DS64_CHUNK, parse_ds64, read_info_metadata},
-    encode::{metadata_chunk_size, write_info_chunk, write_info_subchunks},
+    encode::{
+        metadata_chunk_size, metadata_chunk_size_for_code_page, write_info_chunk,
+        write_info_subchunks,
+    },
     info::is_managed_id,
 };
 
@@ -29,6 +33,7 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
     metadata: &Metadata,
 ) -> Result<W, AudioError> {
     metadata_chunk_size(metadata)?;
+    let code_page = read_code_page(&mut reader)?;
     let original_metadata = read_info_metadata(&mut reader)?;
     let mut changed_keys = BTreeSet::new();
     let mut metadata_to_write = Metadata::default();
@@ -45,7 +50,7 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
             changed_keys.insert(key.to_owned());
         }
     }
-    metadata_chunk_size(&metadata_to_write)?;
+    metadata_chunk_size_for_code_page(&metadata_to_write, code_page)?;
     reader.seek(SeekFrom::Start(0))?;
     let mut header = [0; 12];
     reader.read_exact(&mut header)?;
@@ -176,8 +181,10 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
 
         if &chunk_header[..4] == b"data" {
             first_data_seen = true;
-            if !wrote_metadata && metadata_chunk_size(&metadata_to_write)? != 0 {
-                write_info_chunk(&mut writer, &metadata_to_write)?;
+            if !wrote_metadata
+                && metadata_chunk_size_for_code_page(&metadata_to_write, code_page)? != 0
+            {
+                write_info_chunk(&mut writer, &metadata_to_write, code_page)?;
                 wrote_metadata = true;
             }
         }
@@ -193,6 +200,7 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
                 },
                 &metadata_to_write,
                 &changed_keys,
+                code_page,
                 &mut wrote_metadata,
             )?;
         } else {
@@ -210,8 +218,8 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
             ));
         }
     }
-    if !wrote_metadata && metadata_chunk_size(metadata)? != 0 {
-        write_info_chunk(&mut writer, metadata)?;
+    if !wrote_metadata && metadata_chunk_size_for_code_page(metadata, code_page)? != 0 {
+        write_info_chunk(&mut writer, metadata, code_page)?;
     }
 
     let output_riff_end = writer.stream_position()?;
@@ -239,6 +247,7 @@ fn rewrite_list_chunk<R: Read + Seek, W: Write + Seek>(
     chunk: Chunk,
     metadata: &Metadata,
     changed_keys: &BTreeSet<String>,
+    code_page: u16,
     wrote_metadata: &mut bool,
 ) -> Result<(), AudioError> {
     let body_start = reader.stream_position()?;
@@ -297,7 +306,7 @@ fn rewrite_list_chunk<R: Read + Seek, W: Write + Seek>(
         remaining -= full_size;
     }
     if !*wrote_metadata {
-        write_info_subchunks(writer, metadata)?;
+        write_info_subchunks(writer, metadata, code_page)?;
         *wrote_metadata = true;
     }
     let output_end = writer.stream_position()?;
@@ -499,7 +508,7 @@ mod tests {
             .into_inner();
         let decoder = WavDecoder::new(Cursor::new(rewritten.clone())).unwrap();
         assert_eq!(decoder.metadata().values("TITLE"), ["Updated title"]);
-        assert_eq!(decoder.metadata().values("ENGINEER"), ["Ol\u{fffd}"]);
+        assert_eq!(decoder.metadata().values("ENGINEER"), ["Olÿ"]);
         let engineer = rewritten
             .windows(4)
             .position(|bytes| bytes == b"IENG")
