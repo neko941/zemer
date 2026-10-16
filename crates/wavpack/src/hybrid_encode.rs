@@ -347,9 +347,9 @@ impl<W: Write + Seek, C: Write + Seek> AudioEncoder for WavPackHybridEncoder<W, 
             patch_total_samples(&mut self.correction, self.frames, &self.correction_blocks)?;
             self.writer.seek(SeekFrom::End(0))?;
             self.correction.seek(SeekFrom::End(0))?;
-            if self.metadata.iter().next().is_some() {
+            if self.metadata.iter().next().is_some() || !self.metadata.pictures().is_empty() {
                 let mut tag = ApeTag::new();
-                tag.replace_text_metadata(&self.metadata)
+                tag.replace_metadata(&self.metadata)
                     .map_err(|_| AudioError::InvalidData("invalid WavPack APEv2 metadata"))?;
                 self.writer.write_all(&tag.encode().map_err(|_| {
                     AudioError::InvalidData("WavPack APEv2 metadata exceeds the supported size")
@@ -368,11 +368,6 @@ impl<W: Write + Seek, C: Write + Seek> AudioEncoder for WavPackHybridEncoder<W, 
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
-        if !metadata.pictures().is_empty() {
-            return Err(AudioError::Unsupported(
-                "WavPack writer does not support embedded pictures",
-            ));
-        }
         if self.finished {
             return Err(AudioError::InvalidData(
                 "WavPack hybrid encoder is already finished",

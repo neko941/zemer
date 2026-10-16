@@ -441,9 +441,9 @@ impl<W: Write + Seek> AudioEncoder for WavPackEncoder<W> {
             self.flush_block()?;
             self.patch_total_samples()?;
             self.writer.seek(SeekFrom::End(0))?;
-            if self.metadata.iter().next().is_some() {
+            if self.metadata.iter().next().is_some() || !self.metadata.pictures().is_empty() {
                 let mut tag = ApeTag::new();
-                tag.replace_text_metadata(&self.metadata)
+                tag.replace_metadata(&self.metadata)
                     .map_err(|_| AudioError::InvalidData("invalid WavPack APEv2 metadata"))?;
                 self.writer.write_all(&tag.encode().map_err(|_| {
                     AudioError::InvalidData("WavPack APEv2 metadata exceeds the supported size")
@@ -461,11 +461,6 @@ impl<W: Write + Seek> AudioEncoder for WavPackEncoder<W> {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
-        if !metadata.pictures().is_empty() {
-            return Err(AudioError::Unsupported(
-                "WavPack writer does not support embedded pictures",
-            ));
-        }
         if self.finished {
             return Err(AudioError::InvalidData(
                 "WavPack encoder is already finished",
@@ -939,12 +934,23 @@ mod tests {
         let mut encoder = WavPackEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
         let mut metadata = Metadata::default();
         metadata.insert("artist", "Zemer");
+        metadata.add_picture(zemer_core::Picture::new(
+            3,
+            "image/jpeg",
+            "",
+            0,
+            0,
+            0,
+            0,
+            b"cover".to_vec(),
+        ));
         encoder.set_metadata(&metadata).unwrap();
         encoder.write_block(&source).unwrap();
         encoder.finish().unwrap();
         let bytes = encoder.into_inner().into_inner();
         let mut decoder = WavPackDecoder::new_seekable(Cursor::new(bytes)).unwrap();
         assert_eq!(decoder.metadata().values("ARTIST"), ["Zemer"]);
+        assert_eq!(decoder.metadata().pictures(), metadata.pictures());
         assert_eq!(decoder.spec().sample_rate(), 123_456);
         assert_eq!(decoder.spec().channels(), 1);
         assert_eq!(decoder.read_frames(16).unwrap().unwrap(), source);
