@@ -319,6 +319,59 @@ mod tests {
     use crate::range::{RangeDecoder, RangeError};
 
     #[test]
+    #[ignore = "requires the external RFC 8251 opus_newvectors corpus"]
+    fn rfc8251_silent_celt_packets_match_final_range() {
+        use crate::packet::{Mode, OpusPacket};
+        use std::{env, fs, path::Path};
+
+        let directory = env::var_os("ZEMER_OPUS_TESTVECTORS").unwrap();
+        let (mut silent, mut matched) = (0, 0);
+        for entry in fs::read_dir(Path::new(&directory)).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|extension| extension != "bit") {
+                continue;
+            }
+            let bytes = fs::read(&path).unwrap();
+            let mut cursor = 0;
+            while cursor + 8 <= bytes.len() {
+                let packet_bytes =
+                    u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+                let expected =
+                    u32::from_be_bytes(bytes[cursor + 4..cursor + 8].try_into().unwrap());
+                let end = cursor + 8 + packet_bytes;
+                if end > bytes.len() {
+                    break;
+                }
+                let Ok(packet) = OpusPacket::parse(&bytes[cursor + 8..end]) else {
+                    cursor = end;
+                    continue;
+                };
+                let toc = packet.toc();
+                if toc.mode() == Mode::Celt && toc.frame_code == 0 {
+                    let frame = packet.frames()[0];
+                    let mut range = RangeDecoder::new(frame);
+                    if decode_header(&mut range).unwrap().silence {
+                        silent += 1;
+                        if range.final_range() == expected {
+                            matched += 1;
+                        } else {
+                            eprintln!(
+                                "{} packet={cursor} actual={:#010x} expected={expected:#010x}",
+                                path.file_name().unwrap().to_string_lossy(),
+                                range.final_range()
+                            );
+                        }
+                    }
+                }
+                cursor = end;
+            }
+        }
+        eprintln!("silent CELT packets: {matched}/{silent} final ranges matched");
+        assert!(silent > 0);
+        assert_eq!(matched, silent);
+    }
+
+    #[test]
     fn silence_header_stops_before_energy_and_clears_the_current_envelope() {
         let packet = [0xff; 8];
         let previous = [12_345; 42];
