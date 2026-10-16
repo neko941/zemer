@@ -244,10 +244,10 @@ impl<'a> OpusPacket<'a> {
 
 /// Splits an Ogg Opus audio packet into its constituent elementary streams.
 /// The first `stream_count - 1` packets use RFC 6716 self-delimited framing.
-pub fn parse_multistream_packet<'a>(
-    packet: &'a [u8],
+pub fn parse_multistream_packet(
+    packet: &[u8],
     stream_count: u8,
-) -> Result<Vec<OpusPacket<'a>>, PacketError> {
+) -> Result<Vec<OpusPacket<'_>>, PacketError> {
     if stream_count == 0 {
         return Err(PacketError::InvalidFrameCount);
     }
