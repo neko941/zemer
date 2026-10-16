@@ -8,10 +8,7 @@ pub(super) fn decode_packet(
     decode_ima4_packet(packet, previous).map_err(AudioError::InvalidFormat)
 }
 
-pub(super) fn encode_packet(
-    samples: &[i16; 64],
-    previous: Option<State>,
-) -> ([u8; 34], State) {
+pub(super) fn encode_packet(samples: &[i16; 64], previous: Option<State>) -> ([u8; 34], State) {
     encode_ima4_packet(samples, previous)
 }
 

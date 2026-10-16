@@ -187,8 +187,7 @@ mod tests {
 
     #[test]
     fn ima4_packets_round_trip_and_reject_invalid_step_indices() {
-        let samples =
-            std::array::from_fn(|index| ((index as f32 * 0.31).sin() * 3_000.0) as i16);
+        let samples = std::array::from_fn(|index| ((index as f32 * 0.31).sin() * 3_000.0) as i16);
         let (packet, _) = super::encode_ima4_packet(&samples, None);
         let decoded = super::decode_ima4_packet(&packet, None).unwrap().0;
         let max_error = samples

@@ -1022,7 +1022,11 @@ fn caf_cli_inspects_converts_and_edits_metadata_without_changing_audio() {
         .arg(&caf_path)
         .output()
         .unwrap();
-    assert!(converted.status.success(), "{}", String::from_utf8_lossy(&converted.stderr));
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
     assert!(String::from_utf8_lossy(&converted.stdout).contains("\"format\":\"caf\""));
 
     let inspected = Command::new(cli_path())
@@ -1030,7 +1034,11 @@ fn caf_cli_inspects_converts_and_edits_metadata_without_changing_audio() {
         .arg(&caf_path)
         .output()
         .unwrap();
-    assert!(inspected.status.success(), "{}", String::from_utf8_lossy(&inspected.stderr));
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
     assert!(String::from_utf8_lossy(&inspected.stdout).contains("\"TITLE\":[\"CAF source\"]"));
     let mut decoder = CafDecoder::new(File::open(&caf_path).unwrap()).unwrap();
     assert_eq!(decoder.metadata(), &metadata);
@@ -1042,7 +1050,11 @@ fn caf_cli_inspects_converts_and_edits_metadata_without_changing_audio() {
         .arg(&edited_path)
         .output()
         .unwrap();
-    assert!(edited.status.success(), "{}", String::from_utf8_lossy(&edited.stderr));
+    assert!(
+        edited.status.success(),
+        "{}",
+        String::from_utf8_lossy(&edited.stderr)
+    );
     let mut edited_decoder = CafDecoder::new(File::open(&edited_path).unwrap()).unwrap();
     assert_eq!(edited_decoder.metadata().values("TITLE"), ["Updated"]);
     assert_eq!(edited_decoder.metadata().values("ARTIST"), ["One", "Two"]);
@@ -1054,7 +1066,11 @@ fn caf_cli_inspects_converts_and_edits_metadata_without_changing_audio() {
         .arg(&ima4_path)
         .output()
         .unwrap();
-    assert!(ima4.status.success(), "{}", String::from_utf8_lossy(&ima4.stderr));
+    assert!(
+        ima4.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ima4.stderr)
+    );
     let mut ima4_decoder = CafDecoder::new(File::open(&ima4_path).unwrap()).unwrap();
     let mut frames = 0;
     while let Some(block) = ima4_decoder.read_frames(17).unwrap() {
