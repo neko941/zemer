@@ -1501,11 +1501,15 @@ mod tests {
 
     #[test]
     fn hadamard_tf_axis_transforms_strided_axes_independently() {
-        let mut interleaved = [1.0, 2.0, 3.0, 4.0];
+        let mut interleaved = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         hadamard_tf_axis(&mut interleaved, 2, 2, false).unwrap();
         let expected = [
             8.0_f32.sqrt(),
             18.0_f32.sqrt(),
+            -2.0_f32.sqrt(),
+            -2.0_f32.sqrt(),
+            72.0_f32.sqrt(),
+            98.0_f32.sqrt(),
             -2.0_f32.sqrt(),
             -2.0_f32.sqrt(),
         ];
