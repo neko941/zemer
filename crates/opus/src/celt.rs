@@ -130,6 +130,84 @@ fn inverse_mdct_windowed(spectrum: &[f32]) -> Result<Vec<f32>, RangeError> {
     Ok(output)
 }
 
+/// Stateful CELT inverse-MDCT synthesis with center-aligned weighted overlap-add.
+#[derive(Default)]
+pub(crate) struct CeltSynthesis {
+    previous: Option<Vec<Vec<f32>>>,
+}
+
+impl CeltSynthesis {
+    pub(crate) fn reset(&mut self) {
+        self.previous = None;
+    }
+
+    /// Synthesizes channel-major spectra. The first block primes the overlap state.
+    pub(crate) fn synthesize(
+        &mut self,
+        spectra: &[Vec<f32>],
+    ) -> Result<Option<Vec<Vec<f32>>>, RangeError> {
+        if spectra.is_empty() {
+            return Err(RangeError::InvalidCeltEnergyLayout);
+        }
+        let mut current = Vec::new();
+        current
+            .try_reserve_exact(spectra.len())
+            .map_err(|_| RangeError::CorruptFrame)?;
+        for spectrum in spectra {
+            current.push(inverse_mdct_windowed(spectrum)?);
+        }
+
+        let Some(previous) = self.previous.as_ref() else {
+            self.previous = Some(current);
+            return Ok(None);
+        };
+        let Some(previous_size) = previous.first().map(Vec::len) else {
+            return Err(RangeError::CorruptFrame);
+        };
+        let current_size = current[0].len();
+        if previous.len() != current.len()
+            || previous
+                .iter()
+                .any(|channel| channel.len() != previous_size)
+            || current.iter().any(|channel| channel.len() != current_size)
+        {
+            return Err(RangeError::InvalidCeltEnergyLayout);
+        }
+        let output_frames = previous_size
+            .checked_add(current_size)
+            .ok_or(RangeError::InvalidCeltEnergyLayout)?
+            / 4;
+        let current_start = (previous_size as isize - current_size as isize) / 4;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(current.len())
+            .map_err(|_| RangeError::CorruptFrame)?;
+        for (previous_channel, current_channel) in previous.iter().zip(&current) {
+            let mut channel = Vec::new();
+            channel
+                .try_reserve_exact(output_frames)
+                .map_err(|_| RangeError::CorruptFrame)?;
+            for frame in 0..output_frames {
+                let previous_index = previous_size / 2 + frame;
+                let current_index = frame as isize - current_start;
+                let old = previous_channel.get(previous_index).copied().unwrap_or(0.0);
+                let new = usize::try_from(current_index)
+                    .ok()
+                    .and_then(|index| current_channel.get(index).copied())
+                    .unwrap_or(0.0);
+                let sample = old + new;
+                if !sample.is_finite() {
+                    return Err(RangeError::CorruptFrame);
+                }
+                channel.push(sample);
+            }
+            output.push(channel);
+        }
+        self.previous = Some(current);
+        Ok(Some(output))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AllocationReservations {
     pub(crate) remaining_eighth_bits: u32,
@@ -1506,6 +1584,76 @@ mod tests {
                 assert!(window[119] > 0.9999);
             }
         }
+    }
+
+    #[test]
+    fn low_overlap_window_transitions_are_power_complementary_across_sizes() {
+        for previous_bins in [120, 240, 480, 960] {
+            let previous = celt_low_overlap_window(previous_bins).unwrap();
+            for current_bins in [120, 240, 480, 960] {
+                let current = celt_low_overlap_window(current_bins).unwrap();
+                let output_frames = (previous_bins + current_bins) / 2;
+                let current_start = (previous_bins as isize - current_bins as isize) / 2;
+                for frame in 0..output_frames {
+                    let previous_index = previous_bins + frame;
+                    let current_index = frame as isize - current_start;
+                    let old = previous.get(previous_index).copied().unwrap_or(0.0);
+                    let new = usize::try_from(current_index)
+                        .ok()
+                        .and_then(|index| current.get(index).copied())
+                        .unwrap_or(0.0);
+                    let energy = old * old + new * new;
+                    assert!(
+                        (energy - 1.0).abs() < 1e-12,
+                        "previous={previous_bins}, current={current_bins}, frame={frame}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn celt_synthesis_overlap_adds_all_frame_size_transitions() {
+        use super::CeltSynthesis;
+
+        for previous_bins in [120, 240, 480, 960] {
+            for current_bins in [120, 240, 480, 960] {
+                let mut synthesis = CeltSynthesis::default();
+                assert!(
+                    synthesis
+                        .synthesize(&vec![vec![0.0; previous_bins]; 2])
+                        .unwrap()
+                        .is_none()
+                );
+                let output = synthesis
+                    .synthesize(&vec![vec![0.0; current_bins]; 2])
+                    .unwrap()
+                    .unwrap();
+                let expected_frames = (previous_bins + current_bins) / 2;
+                assert_eq!(output.len(), 2);
+                assert!(
+                    output
+                        .iter()
+                        .all(|channel| channel.len() == expected_frames)
+                );
+                assert!(output.iter().flatten().all(|&sample| sample == 0.0));
+            }
+        }
+    }
+
+    #[test]
+    fn celt_synthesis_reset_and_rejects_channel_count_changes() {
+        use super::CeltSynthesis;
+
+        let mut synthesis = CeltSynthesis::default();
+        assert!(synthesis.synthesize(&[vec![0.0; 120]]).unwrap().is_none());
+        assert_eq!(
+            synthesis.synthesize(&[vec![0.0; 120], vec![0.0; 120]]),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert!(synthesis.synthesize(&[vec![0.0; 120]]).unwrap().is_some());
+        synthesis.reset();
+        assert!(synthesis.synthesize(&[vec![0.0; 240]]).unwrap().is_none());
     }
 
     #[test]
