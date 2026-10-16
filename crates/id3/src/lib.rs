@@ -1,11 +1,11 @@
 use std::io::{Read, Seek, SeekFrom};
 
-use zemer_core::{AudioError, Metadata};
+use zemer_core::{AudioError, Metadata, Picture};
 
 const MAX_ID3_TAG_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn encode_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError> {
-    if metadata.iter().next().is_none() {
+    if metadata.iter().next().is_none() && metadata.pictures().is_empty() {
         return Ok(Vec::new());
     }
     let mut body = Vec::new();
@@ -53,8 +53,9 @@ pub fn encode_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError> {
             }
             payload.extend_from_slice(value.as_bytes());
         }
-        append_frame(&mut body, frame_id.unwrap_or(*b"TXXX"), &payload)?;
+        append_frame(&mut body, frame_id.unwrap_or(*b"TXXX"), &payload, 4)?;
     }
+    encode_pictures(&mut body, metadata, 4)?;
     if body.len() > MAX_ID3_TAG_BYTES {
         return Err(AudioError::InvalidData(
             "ID3 metadata exceeds its size limit",
@@ -108,6 +109,7 @@ pub fn rewrite_metadata_tag(tag: &[u8], metadata: &Metadata) -> Result<Vec<u8>, 
         let opaque = retain_opaque_frames(&body[frame_start..], version)?;
         let mut output_body = opaque;
         encode_metadata_frames(&mut output_body, metadata, version)?;
+        encode_pictures(&mut output_body, metadata, version)?;
         if output_body.is_empty() {
             return Ok(Vec::new());
         }
@@ -183,7 +185,16 @@ fn retain_opaque_frames(body: &[u8], version: u8) -> Result<Vec<u8>, AudioError>
             4 => remaining[9] & 0x0c != 0,
             _ => unreachable!(),
         };
-        if !text_tag || compressed {
+        let picture = (id == b"APIC" || id == b"PIC")
+            && !compressed
+            && parse_picture_with_flags(
+                id,
+                &remaining[header_size..end],
+                version,
+                if version == 2 { 0 } else { remaining[9] },
+            )
+            .is_some();
+        if (!text_tag && !picture) || compressed {
             output.extend_from_slice(&remaining[..end]);
         }
         position += end;
@@ -304,29 +315,55 @@ fn encode_metadata_frames(
     Ok(())
 }
 
-fn append_frame(body: &mut Vec<u8>, id: [u8; 4], payload: &[u8]) -> Result<(), AudioError> {
-    let size = u32::try_from(payload.len())
-        .ok()
-        .filter(|&size| size < (1 << 28))
-        .ok_or(AudioError::InvalidData("ID3 text frame is too large"))?;
+fn append_frame(
+    body: &mut Vec<u8>,
+    id: [u8; 4],
+    payload: &[u8],
+    version: u8,
+) -> Result<(), AudioError> {
+    let header_size = if version == 2 { 6 } else { 10 };
     let frame_size = payload
         .len()
-        .checked_add(10)
+        .checked_add(header_size)
         .filter(|&size| size <= MAX_ID3_TAG_BYTES.saturating_sub(body.len()))
         .ok_or(AudioError::InvalidData(
             "ID3 metadata exceeds its size limit",
         ))?;
     body.try_reserve_exact(frame_size)
         .map_err(|_| AudioError::InvalidData("ID3 metadata is too large"))?;
-    body.extend_from_slice(&id);
-    body.extend_from_slice(&[
-        ((size >> 21) & 0x7f) as u8,
-        ((size >> 14) & 0x7f) as u8,
-        ((size >> 7) & 0x7f) as u8,
-        (size & 0x7f) as u8,
-        0,
-        0,
-    ]);
+    let size = payload.len();
+    match version {
+        2 => {
+            if size >= (1 << 24) {
+                return Err(AudioError::InvalidData("ID3v2.2 frame is too large"));
+            }
+            body.extend_from_slice(&id[1..]);
+            body.extend_from_slice(&[(size >> 16) as u8, (size >> 8) as u8, size as u8]);
+        }
+        3 => {
+            let size = u32::try_from(size)
+                .map_err(|_| AudioError::InvalidData("ID3v2.3 frame is too large"))?;
+            body.extend_from_slice(&id);
+            body.extend_from_slice(&size.to_be_bytes());
+            body.extend_from_slice(&[0, 0]);
+        }
+        4 => {
+            let size = u32::try_from(size)
+                .ok()
+                .filter(|&size| size < (1 << 28))
+                .ok_or(AudioError::InvalidData("ID3v2.4 frame is too large"))?;
+            body.extend_from_slice(&id);
+            body.extend_from_slice(&[
+                ((size >> 21) & 0x7f) as u8,
+                ((size >> 14) & 0x7f) as u8,
+                ((size >> 7) & 0x7f) as u8,
+                (size & 0x7f) as u8,
+                0,
+                0,
+            ]);
+        }
+        _ => unreachable!(),
+    }
     body.extend_from_slice(payload);
     if body.len() > MAX_ID3_TAG_BYTES {
         return Err(AudioError::InvalidData(
@@ -541,7 +578,7 @@ fn read_frames(body: &[u8], version: u8, tag_unsynchronized: bool) -> Result<Met
                 }
                 _ => unreachable!(),
             };
-        if !compress_or_encrypt && id[0] == b'T' {
+        if !compress_or_encrypt && (id[0] == b'T' || id == b"APIC" || id == b"PIC") {
             let original_frame = &body[position + header_size..end];
             let decoded_frame =
                 (tag_unsynchronized || frame_unsynchronized).then(|| unsynchronize(original_frame));
@@ -558,7 +595,11 @@ fn read_frames(body: &[u8], version: u8, tag_unsynchronized: bool) -> Result<Met
                 syncsafe(indicator)?;
                 frame = &frame[4..];
             }
-            parse_text_frame(id, frame, version, &mut metadata)?;
+            if id[0] == b'T' {
+                parse_text_frame(id, frame, version, &mut metadata)?;
+            } else if let Some(picture) = parse_picture_frame(id, frame, version) {
+                metadata.add_picture(picture);
+            }
         }
         position = end;
     }
@@ -595,6 +636,168 @@ fn parse_text_frame(
     };
     for value in values {
         insert_nonempty(metadata, key, &value);
+    }
+    Ok(())
+}
+
+fn parse_picture_frame(id: &[u8], frame: &[u8], version: u8) -> Option<Picture> {
+    let (&encoding, frame) = frame.split_first()?;
+    if encoding > if version == 4 { 3 } else { 1 } {
+        return None;
+    }
+    let (media_type, frame) = if id == b"APIC" {
+        let end = frame.iter().position(|&byte| byte == 0)?;
+        let media_type = std::str::from_utf8(&frame[..end]).ok()?;
+        if !media_type.is_ascii() || media_type.is_empty() {
+            return None;
+        }
+        (media_type.to_owned(), &frame[end + 1..])
+    } else {
+        let format = frame.get(..3)?;
+        let media_type = match format {
+            b"PNG" => "image/png",
+            b"JPG" => "image/jpeg",
+            b"-->" => "-->",
+            _ => return None,
+        };
+        (media_type.to_owned(), &frame[3..])
+    };
+    let (&picture_type, frame) = frame.split_first()?;
+    let terminator = if matches!(encoding, 1 | 2) {
+        frame.windows(2).position(|bytes| bytes == [0, 0])?
+    } else {
+        frame.iter().position(|&byte| byte == 0)?
+    };
+    if matches!(encoding, 1 | 2) && terminator % 2 != 0 {
+        return None;
+    }
+    let width = if matches!(encoding, 1 | 2) { 2 } else { 1 };
+    let description = decode_pieces(&[&frame[..terminator]], encoding)
+        .ok()?
+        .into_iter()
+        .next()?;
+    let data = frame.get(terminator + width..)?.to_vec();
+    Some(Picture::new(
+        u32::from(picture_type),
+        media_type,
+        description,
+        0,
+        0,
+        0,
+        0,
+        data,
+    ))
+}
+
+fn parse_picture_with_flags(
+    id: &[u8],
+    original: &[u8],
+    version: u8,
+    format_flags: u8,
+) -> Option<Picture> {
+    let frame_unsynchronized = version == 4 && format_flags & 0x02 != 0;
+    let decoded = frame_unsynchronized.then(|| unsynchronize(original));
+    let mut frame = decoded.as_deref().unwrap_or(original);
+    if (version == 3 && format_flags & 0x20 != 0) || (version == 4 && format_flags & 0x40 != 0) {
+        frame = frame.get(1..)?;
+    }
+    if version == 4 && format_flags & 0x01 != 0 {
+        syncsafe(frame.get(..4)?).ok()?;
+        frame = &frame[4..];
+    }
+    parse_picture_frame(id, frame, version)
+}
+
+fn encode_pictures(body: &mut Vec<u8>, metadata: &Metadata, version: u8) -> Result<(), AudioError> {
+    for picture in metadata.pictures() {
+        if picture.picture_type() > u32::from(u8::MAX)
+            || picture.media_type().is_empty()
+            || picture.media_type().as_bytes().contains(&0)
+            || picture.description().contains('\0')
+        {
+            return Err(AudioError::InvalidData("invalid ID3 picture metadata"));
+        }
+        if picture.dimensions() != (0, 0) || picture.color_depth() != 0 || picture.colors() != 0 {
+            return Err(AudioError::Unsupported(
+                "ID3 picture frames cannot store image dimensions or color details",
+            ));
+        }
+        let (id, format) = if version == 2 {
+            let format = match picture.media_type() {
+                "image/png" => b"PNG".as_slice(),
+                "image/jpeg" | "image/jpg" => b"JPG".as_slice(),
+                "-->" => b"-->".as_slice(),
+                _ => return Err(AudioError::Unsupported("ID3v2.2 picture media type")),
+            };
+            (*b"APIC", format)
+        } else {
+            if !picture.media_type().is_ascii() {
+                return Err(AudioError::InvalidData(
+                    "ID3 picture media type must be ASCII",
+                ));
+            }
+            (*b"APIC", picture.media_type().as_bytes())
+        };
+        let encoding = if version == 4 {
+            3
+        } else if picture
+            .description()
+            .chars()
+            .all(|ch| u32::from(ch) <= 0xff)
+        {
+            0
+        } else {
+            1
+        };
+        let description_size = match encoding {
+            0 => picture.description().chars().count().checked_add(1),
+            1 => picture
+                .description()
+                .encode_utf16()
+                .count()
+                .checked_mul(2)
+                .and_then(|size| size.checked_add(4)),
+            _ => picture.description().len().checked_add(1),
+        }
+        .ok_or(AudioError::InvalidData("ID3 picture frame size overflow"))?;
+        let payload_size = 1_usize
+            .checked_add(format.len())
+            .and_then(|size| size.checked_add(usize::from(version != 2)))
+            .and_then(|size| size.checked_add(1))
+            .and_then(|size| size.checked_add(description_size))
+            .and_then(|size| size.checked_add(picture.data().len()))
+            .filter(|size| {
+                size.checked_add(if version == 2 { 6 } else { 10 })
+                    .is_some_and(|frame| frame <= MAX_ID3_TAG_BYTES.saturating_sub(body.len()))
+            })
+            .ok_or(AudioError::InvalidData(
+                "ID3 metadata exceeds its size limit",
+            ))?;
+        let mut payload = Vec::new();
+        payload
+            .try_reserve_exact(payload_size)
+            .map_err(|_| AudioError::InvalidData("ID3 picture frame is too large"))?;
+        payload.push(encoding);
+        payload.extend_from_slice(format);
+        if version != 2 {
+            payload.push(0);
+        }
+        payload.push(picture.picture_type() as u8);
+        if encoding == 1 {
+            payload.extend_from_slice(&[0xfe, 0xff]);
+            for unit in picture.description().encode_utf16() {
+                payload.extend_from_slice(&unit.to_be_bytes());
+            }
+            payload.extend_from_slice(&[0, 0]);
+        } else if encoding == 0 {
+            payload.extend(picture.description().chars().map(|ch| ch as u8));
+            payload.push(0);
+        } else {
+            payload.extend_from_slice(picture.description().as_bytes());
+            payload.push(0);
+        }
+        payload.extend_from_slice(picture.data());
+        append_frame(body, id, &payload, version)?;
     }
     Ok(())
 }
@@ -730,7 +933,7 @@ fn unsynchronize(bytes: &[u8]) -> Vec<u8> {
 mod tests {
     use std::io::Cursor;
 
-    use zemer_core::Metadata;
+    use zemer_core::{Metadata, Picture};
 
     use super::{MAX_ID3_TAG_BYTES, read_frames, read_tag_at_end, rewrite_metadata_tag};
 
@@ -997,9 +1200,116 @@ mod tests {
     }
 
     #[test]
+    fn reads_and_writes_id3_pictures_in_all_tag_versions() {
+        let mut v22 = Vec::new();
+        v22.extend_from_slice(&[0]);
+        v22.extend_from_slice(b"PNG");
+        v22.extend_from_slice(&[3, b'c', b'o', b'v', b'e', b'r', 0, 0x89, b'P', b'N', b'G']);
+        let mut body = v22_frame(b"PIC", &v22);
+        let picture = Picture::new(
+            3,
+            "image/png",
+            "cover",
+            0,
+            0,
+            0,
+            0,
+            [0x89, b'P', b'N', b'G'],
+        );
+        assert_eq!(parse(2, body, 0).pictures(), std::slice::from_ref(&picture));
+
+        let mut utf16 = vec![1];
+        utf16.extend_from_slice(b"image/jpeg\0");
+        utf16.push(4);
+        utf16.extend_from_slice(&[0xfe, 0xff, 0, b'F', 0, 0xff, 0, 0]);
+        utf16.extend_from_slice(&[0xff, 0xd8, 0xff]);
+        body = frame(3, b"APIC", &utf16);
+        let parsed = parse(3, body, 0);
+        assert_eq!(parsed.pictures()[0].description(), "Fÿ");
+        assert_eq!(parsed.pictures()[0].media_type(), "image/jpeg");
+
+        for (version, frame_body) in [(2, v22_frame(b"PIC", &v22)), (3, frame(3, b"APIC", &utf16))]
+        {
+            let size = frame_body.len();
+            let size_bytes = [
+                ((size >> 21) & 0x7f) as u8,
+                ((size >> 14) & 0x7f) as u8,
+                ((size >> 7) & 0x7f) as u8,
+                (size & 0x7f) as u8,
+            ];
+            let mut tag = vec![b'I', b'D', b'3', version, 0, 0];
+            tag.extend_from_slice(&size_bytes);
+            tag.extend_from_slice(&frame_body);
+            let mut changed = Metadata::default();
+            changed.add_picture(Picture::new(
+                4,
+                "image/jpeg",
+                "back",
+                0,
+                0,
+                0,
+                0,
+                [0xff, 0xd8],
+            ));
+            let rewritten = rewrite_metadata_tag(&tag, &changed).unwrap();
+            let mut reader = Cursor::new(rewritten.clone());
+            assert_eq!(
+                read_tag_at_end(&mut reader, 0, rewritten.len() as u64)
+                    .unwrap()
+                    .0,
+                changed
+            );
+        }
+
+        let mut expected = Metadata::default();
+        expected.add_picture(Picture::new(
+            3,
+            "image/png",
+            "front cover 🐈",
+            0,
+            0,
+            0,
+            0,
+            [0x89, b'P', b'N', b'G'],
+        ));
+        let tag = super::encode_metadata(&expected).unwrap();
+        let mut reader = Cursor::new(tag.clone());
+        assert_eq!(
+            read_tag_at_end(&mut reader, 0, tag.len() as u64).unwrap().0,
+            expected
+        );
+    }
+
+    #[test]
+    fn picture_edits_replace_only_valid_picture_frames() {
+        let mut metadata = Metadata::default();
+        metadata.add_picture(Picture::new(3, "image/png", "cover", 0, 0, 0, 0, [1, 2, 3]));
+        let tag = super::encode_metadata(&metadata).unwrap();
+        let mut edited = Metadata::default();
+        edited.add_picture(Picture::new(4, "image/jpeg", "back", 0, 0, 0, 0, [4, 5, 6]));
+        let rewritten = rewrite_metadata_tag(&tag, &edited).unwrap();
+        let mut reader = Cursor::new(rewritten.clone());
+        assert_eq!(
+            read_tag_at_end(&mut reader, 0, rewritten.len() as u64)
+                .unwrap()
+                .0,
+            edited
+        );
+        let removed = rewrite_metadata_tag(&rewritten, &Metadata::default()).unwrap();
+        assert!(removed.is_empty());
+    }
+
+    #[test]
     fn rejects_nul_in_metadata_values() {
         let mut metadata = Metadata::default();
         metadata.insert("TITLE", "bad\0value");
+        assert!(super::encode_metadata(&metadata).is_err());
+    }
+
+    #[test]
+    fn rejects_picture_fields_id3_cannot_represent() {
+        let mut metadata = Metadata::default();
+        metadata.add_picture(Picture::new(3, "image/png", "cover", 100, 50, 24, 0, [1]));
         assert!(super::encode_metadata(&metadata).is_err());
     }
 }

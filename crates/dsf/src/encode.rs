@@ -2,7 +2,7 @@ use std::io::{Seek, SeekFrom, Write};
 
 use zemer_core::{AudioError, DsdBuffer, DsdEncoder, DsdSpec, Metadata};
 
-use id3::{encode_metadata, parse_id3_tag};
+use id3::{encode_metadata, parse_id3_tag, rewrite_metadata_tag};
 
 const BLOCK_BYTES: usize = 4096;
 const HEADER_BYTES: u64 = 92;
@@ -172,15 +172,21 @@ impl<W: Write + Seek> DsfEncoder<W> {
         }
         self.flush_block()?;
         let data_end = self.writer.stream_position()?;
-        let encoded_tag = if self.id3_tag.is_none() && self.metadata.iter().next().is_some() {
-            Some(encode_metadata(&self.metadata)?)
-        } else {
-            None
+        let encoded_tag = match &self.id3_tag {
+            Some(tag) if parse_id3_tag(tag)? != self.metadata => {
+                Some(rewrite_metadata_tag(tag, &self.metadata)?)
+            }
+            Some(_) => None,
+            None if self.metadata.iter().next().is_some()
+                || !self.metadata.pictures().is_empty() =>
+            {
+                Some(encode_metadata(&self.metadata)?)
+            }
+            None => None,
         };
-        let tag = self
-            .id3_tag
+        let tag = encoded_tag
             .as_deref()
-            .or(encoded_tag.as_deref())
+            .or(self.id3_tag.as_deref())
             .unwrap_or_default();
         self.writer.write_all(tag)?;
         let file_size = self.writer.stream_position()?;
@@ -280,18 +286,8 @@ impl<W: Write + Seek> DsdEncoder for DsfEncoder<W> {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
-        if !metadata.pictures().is_empty() {
-            return Err(AudioError::Unsupported(
-                "DSF writer does not support embedded pictures",
-            ));
-        }
         if self.finished {
             return Err(AudioError::InvalidData("DSF encoder is already finished"));
-        }
-        if self.id3_tag.is_some() && self.metadata != *metadata {
-            return Err(AudioError::Unsupported(
-                "cannot change parsed text while copying an opaque DSF ID3 tag",
-            ));
         }
         self.metadata = metadata.clone();
         Ok(())

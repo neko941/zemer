@@ -7,7 +7,7 @@ use aiff::{
 use g711::{G711Encoding, decode_alaw, decode_mulaw, encode_alaw, encode_mulaw};
 use g726::{G726Decoder, G726Encoder, G726Packing};
 use zemer_core::{
-    AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
+    AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, Picture, SampleFormat, Samples,
 };
 
 fn audio(format: SampleFormat) -> PcmBuffer {
@@ -970,6 +970,50 @@ fn writes_non_native_metadata_to_id3_chunk() {
     assert!(chunk_body(&bytes, b"ID3 ").starts_with(b"ID3\x04"));
     let decoder = AiffDecoder::new(Cursor::new(bytes)).unwrap();
     assert_eq!(decoder.metadata(), &metadata);
+}
+
+#[test]
+fn writes_and_rewrites_embedded_pictures_in_the_id3_chunk() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::U8(vec![128, 129])).unwrap();
+    let mut metadata = Metadata::default();
+    metadata.add_picture(Picture::new(
+        3,
+        "image/png",
+        "cover",
+        0,
+        0,
+        0,
+        0,
+        [0x89, b'P', b'N', b'G'],
+    ));
+    let mut encoder =
+        AiffEncoder::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).unwrap();
+    encoder.write_block(&audio).unwrap();
+    let input = encoder.finish().unwrap().get_ref().clone();
+    assert_eq!(
+        AiffDecoder::new(Cursor::new(input.clone()))
+            .unwrap()
+            .metadata(),
+        &metadata
+    );
+
+    let mut edited = Metadata::default();
+    edited.add_picture(Picture::new(
+        4,
+        "image/jpeg",
+        "back",
+        0,
+        0,
+        0,
+        0,
+        [0xff, 0xd8],
+    ));
+    let mut output = Cursor::new(Vec::new());
+    rewrite_metadata(Cursor::new(input), &mut output, &edited).unwrap();
+    let mut decoder = AiffDecoder::new(Cursor::new(output.into_inner())).unwrap();
+    assert_eq!(decoder.metadata(), &edited);
+    assert_eq!(decoder.read_frames(2).unwrap().unwrap(), audio);
 }
 
 #[test]
