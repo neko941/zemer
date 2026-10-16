@@ -26,4 +26,5 @@ raw-pcm.workspace = true
 g711.workspace = true
 ima-adpcm.workspace = true
 iso9660.workspace = true
+resample.workspace = true
 dsdiff.workspace = true

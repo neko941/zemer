@@ -6,6 +6,8 @@ writers:
 
 * ``zemer-pcm`` defines sample formats, audio specifications, PCM buffers, and
   sample-format conversion.
+* ``zemer-resample`` provides streaming windowed-sinc sample-rate conversion
+  over shared PCM blocks without depending on a file format.
 * ``zemer-metadata`` defines format-independent tags and embedded-picture
   values shared by format crates.
 * ``zemer-id3`` shares bounded ID3v2 text/picture parsing and rewriting between
@@ -38,8 +40,8 @@ and AU, while CUE describes track locations and metadata without decoding audio.
 Sample-format conversion, resampling, channel mixing, and lossy encoding are
 separate operations. Whole-file conversion composes a source decoder, shared
 PCM blocks, and a target encoder. The current ``transcode`` helper copies
-blocks only when input and output sample specifications match; it does not
-change audio values.
+blocks only when input and output sample specifications match; resampling is
+an explicit ``zemer-resample`` stage and channel mixing remains unimplemented.
 
 Each format crate parses metadata from its own container and maps it to the
 shared ``Metadata`` type. Format-specific structures such as FLAC STREAMINFO

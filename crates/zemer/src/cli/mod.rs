@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf, process::ExitCode};
 
-use audio::{DsdReport, OutputFormat, RawPcmOptions};
+use audio::{ConversionOptions, DsdReport, OutputFormat, RawPcmOptions};
 use raw_pcm::RawPcmFormat;
 use report::{
     container_name, conversion_json, dsd_conversion_json, dsd_report_json, iso_report_json,
@@ -295,6 +295,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
     let mut container = None;
     let mut bitrate = None;
     let mut valid_bits = None;
+    let mut output_sample_rate = None;
     let mut raw = RawPcmArgs::default();
     let mut paths = Vec::new();
     let mut index = 1;
@@ -354,6 +355,20 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
                 return Err(usage_error());
             }
             index += 1;
+        } else if args[index] == "--output-sample-rate" {
+            index += 1;
+            let Some(value) = args
+                .get(index)
+                .and_then(|arg| arg.to_str())
+                .and_then(|value| value.parse::<u32>().ok())
+                .filter(|value| *value > 0)
+            else {
+                return Err(usage_error());
+            };
+            if output_sample_rate.replace(value).is_some() {
+                return Err(usage_error());
+            }
+            index += 1;
         } else {
             paths.push(PathBuf::from(&args[index]));
             index += 1;
@@ -394,6 +409,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         ) || container.is_some()
             || bitrate.is_some()
             || valid_bits.is_some()
+            || output_sample_rate.is_some()
         {
             return Err(CliError {
                 kind: "unsupported",
@@ -454,10 +470,13 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         input,
         output.clone(),
         format,
-        container.unwrap_or(WavContainer::Riff),
-        bitrate,
-        valid_bits,
-        raw,
+        ConversionOptions {
+            container: container.unwrap_or(WavContainer::Riff),
+            bitrate_kbps: bitrate,
+            valid_bits,
+            raw,
+            output_sample_rate,
+        },
     )?;
     Ok(CommandReport::Convert(report, output))
 }
@@ -465,7 +484,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] <input> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|raw_u8|raw_s16le|raw_s16be|raw_s24le|raw_s24be|raw_s32le|raw_s32be|raw_f32le|raw_f32be|raw_f64le|raw_f64be|g711_alaw|g711_mulaw|wav_ima_adpcm|wav_ms_adpcm|aiff|aifc|aifc_sowt|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|caf|caf_alaw|caf_mulaw|caf_ima4|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input> <output> | zemer metadata edit ... | zemer cue split/create ... | zemer iso inspect/extract ...".to_owned(),
+        message: "usage: zemer inspect [--json] [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] <input> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|raw_u8|raw_s16le|raw_s16be|raw_s24le|raw_s24be|raw_s32le|raw_s32be|raw_f32le|raw_f32be|raw_f64le|raw_f64be|g711_alaw|g711_mulaw|wav_ima_adpcm|wav_ms_adpcm|aiff|aifc|aifc_sowt|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|caf|caf_alaw|caf_mulaw|caf_ima4|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] [--output-sample-rate <Hz>] [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input> <output> | zemer metadata edit ... | zemer cue split/create ... | zemer iso inspect/extract ...".to_owned(),
     }
 }
 

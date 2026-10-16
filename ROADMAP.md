@@ -60,8 +60,12 @@ identified from file contents.
   retain format-specific fields when they do not fit the shared model.
 - Support metadata inspection and editing, including artwork and chapters when
   a format supports them.
-- Add explicit resampling, channel mixing, and dithering options. Preserve
-  sample rate and channel layout by default; never transform audio implicitly.
+- [x] Add explicit streaming sample-rate conversion. The format-independent
+  ``zemer-resample`` crate uses a windowed-sinc low-pass filter, preserves
+  channels and speaker masks, and rejects ratios above 64:1; the CLI exposes
+  ``--output-sample-rate``. Sample rate remains unchanged unless requested.
+- Add explicit channel mixing and dithering options. Preserve channel layout
+  by default; never transform audio implicitly.
 - Provide seeking, duration estimation, format capability reporting, and clear
   distinctions between lossless and lossy conversions where the format allows.
 - For WavPack hybrid files, report whether output is lossy or losslessly
