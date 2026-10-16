@@ -44,6 +44,8 @@ identified from file contents.
   including broadcast, cue, sampler, and embedded metadata chunks.
 - [x] Read and write the fixed BWF `bext` fields and coding history, preserving
   opaque versioned bytes and enforcing a 16 MiB chunk bound.
+- [x] Replace or add a typed BWF `bext` chunk during metadata rewriting while
+  preserving audio, INFO tags, unknown chunks, and RIFF/RF64 size fields.
 - [x] Read and write typed `cue ` cue-point and `smpl` sample-loop chunks,
   preserving defined fields and bounded sampler-specific data.
 - Improve malformed-file, boundary-size, unusual-header, and G.711 vector

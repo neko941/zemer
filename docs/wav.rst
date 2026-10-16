@@ -174,7 +174,8 @@ RF64 ``ds64`` size fields, including a size-table entry for a rewritten
 sentinel-sized INFO chunk. It accepts a seekable input and output; callers
 should write to a new temporary file and replace the original only after
 success. It rewrites all 23 registered INFO text fields supported by the WAVE
-writer.
+writer. Use ``rewrite_metadata_with_bext`` to update or add a typed ``bext``
+chunk together with INFO tags; audio and other chunks are copied unchanged.
 
 .. code-block:: rust
 
