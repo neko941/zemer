@@ -13,5 +13,5 @@ mod pvq;
 #[allow(dead_code)]
 mod range;
 
-pub use ogg::{OpusHead, OpusHeadError};
+pub use ogg::{OpusHead, OpusHeadError, OpusTags, OpusTagsError};
 pub use packet::{Bandwidth, Mode, OpusPacket, PacketError, Toc};
