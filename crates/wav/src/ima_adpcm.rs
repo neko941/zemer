@@ -146,14 +146,14 @@ mod tests {
     fn decodes_known_mono_and_stereo_nibble_order() {
         assert_eq!(
             decode_block(&[0, 0, 0, 0, 0x21, 0x43, 0x65, 0x87], 1, 9).unwrap(),
-            [0, 2, 6, 12, 19, 31, 52, 95, 89]
+            [0, 1, 4, 8, 15, 27, 47, 88, 82]
         );
         let block = [
             0, 0, 0, 0, 0, 0, 0, 0, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,
         ];
         assert_eq!(
             decode_block(&block, 2, 9).unwrap(),
-            [0, 0, 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14, 16, 16]
+            [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8]
         );
     }
 
@@ -167,8 +167,51 @@ mod tests {
         assert_eq!(
             decode_block(&block, 3, 9).unwrap(),
             [
-                0, 100, -100, 2, 104, -94, 4, 108, -88, 6, 112, -82, 8, 116, -76, 10, 120, -70, 12,
-                124, -64, 14, 128, -58, 16, 132, -52
+                0, 100, -100, 1, 103, -96, 2, 106, -92, 3, 109, -88, 4, 112, -84, 5, 115, -80, 6,
+                118, -76, 7, 121, -72, 8, 124, -68
+            ]
+        );
+    }
+
+    #[test]
+    fn matches_independent_three_channel_ima_wav_decoder_vector() {
+        let block = [
+            0x18, 0xfc, 0x32, 0x00, 0xdc, 0x05, 0x2d, 0x00, 0x0c, 0xfe, 0x39, 0x00, 0x11, 0x11,
+            0x22, 0x31, 0x99, 0xa9, 0x9a, 0xab, 0x00, 0x20, 0x22, 0x44,
+        ];
+        assert_eq!(
+            decode_block(&block, 3, 9).unwrap(),
+            [
+                -1000, 1500, -500, -672, 1296, -287, -374, 1112, -93, -103, 944, 83, 143, 689, 884,
+                516, 458, 1612, 856, 332, 2274, 1040, 65, 3357, 1432, -108, 4668
+            ]
+        );
+    }
+
+    #[test]
+    fn encoder_matches_independent_three_channel_decoder_vector() {
+        let samples: Vec<i16> = (0..9)
+            .flat_map(|frame| {
+                [
+                    frame * 300 - 1000,
+                    1500 - frame * 200,
+                    frame * frame * 80 - 500,
+                ]
+            })
+            .collect();
+        let block = encode_block(&samples, 3).unwrap();
+        assert_eq!(
+            block,
+            [
+                0x18, 0xfc, 0x00, 0x00, 0xdc, 0x05, 0x00, 0x00, 0x0c, 0xfe, 0x00, 0x00, 0x77, 0x77,
+                0x77, 0x05, 0xff, 0xff, 0xff, 0x99, 0x77, 0x77, 0x77, 0x67
+            ]
+        );
+        assert_eq!(
+            decode_block(&block, 3, 9).unwrap(),
+            [
+                -1000, 1500, -500, -989, 1489, -489, -959, 1459, -459, -896, 1396, -396, -760,
+                1260, -260, -467, 967, 33, 164, 336, 664, 1159, 65, 2021, 1291, -181, 4543
             ]
         );
     }
