@@ -2842,6 +2842,60 @@ fn dsd_cli_inspects_and_transcodes_wavpack_and_dsf_without_pcm() {
 }
 
 #[test]
+fn dsf_wavpack_dsd_conversion_preserves_embedded_pictures() {
+    let dsf_input = temporary_path().with_extension("dsf");
+    let wavpack_path = temporary_path().with_extension("wv");
+    let dsf_output = temporary_path().with_extension("dsf");
+    let spec = DsdSpec::new(2_822_400, 1).unwrap();
+    let audio = DsdBuffer::new(spec, vec![0x96, 0x69, 0x33, 0xcc]).unwrap();
+    let picture = Picture::new(3, "image/png", "", 0, 0, 0, 0, [1, 2, 3]);
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "DSD cover test");
+    metadata.add_picture(picture.clone());
+    let mut encoder = DsfEncoder::new(File::create(&dsf_input).unwrap(), spec).unwrap();
+    encoder.set_metadata(&metadata).unwrap();
+    encoder.write_dsd_octets(&audio).unwrap();
+    encoder.finish().unwrap();
+
+    for (source, target, format) in [
+        (&dsf_input, &wavpack_path, "wavpack"),
+        (&wavpack_path, &dsf_output, "dsf"),
+    ] {
+        let converted = Command::new(cli_path())
+            .args(["convert", "--format", format, "--json"])
+            .arg(source)
+            .arg(target)
+            .output()
+            .unwrap();
+        assert!(
+            converted.status.success(),
+            "{}",
+            String::from_utf8_lossy(&converted.stderr)
+        );
+    }
+
+    let mut wavpack_decoder =
+        WavPackDsdDecoder::new_seekable(File::open(&wavpack_path).unwrap()).unwrap();
+    assert_eq!(
+        wavpack_decoder.metadata().values("TITLE"),
+        ["DSD cover test"]
+    );
+    assert_eq!(
+        wavpack_decoder.metadata().pictures(),
+        std::slice::from_ref(&picture)
+    );
+    assert_eq!(dsd_bytes(&mut wavpack_decoder), audio.bytes());
+    let mut dsf_decoder = DsfDecoder::new(File::open(&dsf_output).unwrap()).unwrap();
+    assert_eq!(dsf_decoder.metadata().values("TITLE"), ["DSD cover test"]);
+    assert_eq!(dsf_decoder.metadata().pictures(), [picture]);
+    assert_eq!(dsd_bytes(&mut dsf_decoder), audio.bytes());
+
+    let _ = fs::remove_file(dsf_input);
+    let _ = fs::remove_file(wavpack_path);
+    let _ = fs::remove_file(dsf_output);
+}
+
+#[test]
 fn dsf_cli_transcode_preserves_opaque_id3_frames() {
     let input_path = temporary_path().with_extension("dsf");
     let output_path = temporary_path().with_extension("dsf");

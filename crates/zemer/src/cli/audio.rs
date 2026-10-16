@@ -1088,7 +1088,7 @@ pub(super) fn open_dsd_decoder(path: &Path) -> Result<Option<DsdInput>, CliError
     if !is_wavpack {
         return Ok(None);
     }
-    match WavPackDsdDecoder::new(file) {
+    match WavPackDsdDecoder::new_seekable(file) {
         Ok(decoder) => Ok(Some((Box::new(decoder), "wavpack-dsd", None, None, None))),
         Err(AudioError::Unsupported("WavPack stream is not native DSD")) => Ok(None),
         Err(error) => Err(cli_audio_error(error, path)),
