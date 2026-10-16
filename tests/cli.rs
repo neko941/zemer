@@ -28,6 +28,16 @@ fn cli_path() -> std::ffi::OsString {
     env!("CARGO_BIN_EXE_zemer_test_cli").into()
 }
 
+fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        hex.push(DIGITS[(byte >> 4) as usize] as char);
+        hex.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    hex
+}
+
 fn vorbis_link_comment_packets(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut reader = OggPacketReader::new(Cursor::new(bytes));
     let mut comments = Vec::new();
@@ -874,12 +884,10 @@ fn metadata_edit_adds_bwf_and_sets_binary_fields_from_hex() {
     )
     .unwrap();
     write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
-    let umid_hex = (0..64)
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let reserved_hex = (0..190)
-        .map(|byte| format!("{:02X}", byte % 256))
-        .collect::<String>();
+    let umid_values = (0..64).map(|byte| byte as u8).collect::<Vec<_>>();
+    let reserved_values = (0..190).map(|byte| byte as u8).collect::<Vec<_>>();
+    let umid_hex = hex_encode(&umid_values);
+    let reserved_hex = hex_encode(&reserved_values);
 
     let output = Command::new(cli_path())
         .args(["metadata", "edit", "--bext-umid-hex"])
