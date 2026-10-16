@@ -12,6 +12,7 @@ use aiff::{
     AiffAudioRecording, AiffComment, AiffDecoder, AiffEncoder, AiffInstrument, AiffMarker, G726Rate,
 };
 use au::{AuDecoder, AuEncoder};
+use caf::{CafDecoder, CafEncoder};
 use dsdiff::{DsdiffDecoder, DsdiffEncoder};
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
@@ -167,6 +168,9 @@ enum OutputFormat {
     AuG7233,
     AuG7235,
     AuG711(G711Encoding),
+    Caf,
+    CafG711(G711Encoding),
+    CafIma4,
     AifcG711(G711Encoding),
     AifcIma4,
     AifcG726,
@@ -184,6 +188,7 @@ impl OutputFormat {
             Self::G711(_) => Some(SampleFormat::PcmI16),
             Self::WavImaAdpcm | Self::WavMsAdpcm => Some(SampleFormat::PcmI16),
             Self::AifcG711(_) => Some(SampleFormat::PcmI16),
+            Self::CafG711(_) | Self::CafIma4 => Some(SampleFormat::PcmI16),
             Self::AuG711(_) => Some(SampleFormat::PcmI16),
             Self::AuG721 => Some(SampleFormat::PcmI16),
             Self::AuG7233 | Self::AuG7235 => Some(SampleFormat::PcmI16),
@@ -206,6 +211,7 @@ impl OutputFormat {
             }
             Self::AifcSowt => None,
             Self::Au => None,
+            Self::Caf => None,
             Self::Dsf | Self::Dsdiff | Self::DsdiffDst => None,
         }
     }
@@ -236,6 +242,10 @@ impl OutputFormat {
             Self::AifcIma4 => "aifc_ima4",
             Self::AifcG726 => "aifc_g726",
             Self::AifcDwvw => "aifc_dwvw",
+            Self::Caf => "caf",
+            Self::CafG711(G711Encoding::ALaw) => "caf_alaw",
+            Self::CafG711(G711Encoding::MuLaw) => "caf_mulaw",
+            Self::CafIma4 => "caf_ima4",
             Self::Dsf => "dsf",
             Self::Dsdiff => "dsdiff",
             Self::DsdiffDst => "dsdiff_dst",
@@ -531,10 +541,11 @@ fn edit_audio_metadata(
         && format != "aiff"
         && format != "aifc"
         && format != "au"
+        && format != "caf"
     {
         return Err(CliError {
             kind: "unsupported",
-            message: "metadata editing supports WAVE, AIFF/AIFC, AU, DSF, DSDIFF, native FLAC, Ogg-FLAC, Ogg Vorbis, and WavPack files"
+            message: "metadata editing supports WAVE, AIFF/AIFC, AU, CAF, DSF, DSDIFF, native FLAC, Ogg-FLAC, Ogg Vorbis, and WavPack files"
                 .to_owned(),
         });
     }
@@ -560,6 +571,7 @@ fn edit_audio_metadata(
             "wav" => wav::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
             "aiff" | "aifc" => aiff::rewrite_metadata(input_file, &mut output_file, &metadata),
             "au" => au::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
+            "caf" => caf::rewrite_metadata(input_file, &mut output_file, &metadata),
             "wavpack" => wavpack::rewrite_metadata(input_file, &mut output_file, &metadata),
             _ => unreachable!("format was checked above"),
         }
@@ -791,6 +803,9 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
             | OutputFormat::AifcIma4
             | OutputFormat::AifcG726
             | OutputFormat::AifcDwvw
+            | OutputFormat::Caf
+            | OutputFormat::CafG711(_)
+            | OutputFormat::CafIma4
     ) && container.is_some()
     {
         return Err(usage_error());
@@ -832,6 +847,10 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "wav_ms_adpcm" => Some(OutputFormat::WavMsAdpcm),
         "aifc_alaw" => Some(OutputFormat::AifcG711(G711Encoding::ALaw)),
         "aifc_mulaw" => Some(OutputFormat::AifcG711(G711Encoding::MuLaw)),
+        "caf" => Some(OutputFormat::Caf),
+        "caf_alaw" => Some(OutputFormat::CafG711(G711Encoding::ALaw)),
+        "caf_mulaw" => Some(OutputFormat::CafG711(G711Encoding::MuLaw)),
+        "caf_ima4" => Some(OutputFormat::CafIma4),
         "au_alaw" => Some(OutputFormat::AuG711(G711Encoding::ALaw)),
         "au_mulaw" => Some(OutputFormat::AuG711(G711Encoding::MuLaw)),
         "au_g721" => Some(OutputFormat::AuG721),
@@ -1120,6 +1139,30 @@ fn convert_audio(
                 }
                 Box::new(encoder)
             }
+            OutputFormat::Caf => {
+                let mut encoder = CafEncoder::new(output_file, spec)
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                encoder
+                    .set_metadata(decoder.metadata())
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                Box::new(encoder)
+            }
+            OutputFormat::CafG711(encoding) => {
+                let mut encoder = CafEncoder::new_g711(output_file, spec, encoding)
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                encoder
+                    .set_metadata(decoder.metadata())
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                Box::new(encoder)
+            }
+            OutputFormat::CafIma4 => {
+                let mut encoder = CafEncoder::new_ima4(output_file, spec)
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                encoder
+                    .set_metadata(decoder.metadata())
+                    .map_err(|error| cli_audio_error(error, &output))?;
+                Box::new(encoder)
+            }
             OutputFormat::AuG711(encoding) => {
                 let mut encoder = AuEncoder::new_g711_with_metadata(
                     output_file,
@@ -1374,6 +1417,7 @@ fn convert_audio(
                 OutputFormat::AifcIma4 => "aifc",
                 OutputFormat::AifcG726 => "aifc",
                 OutputFormat::AifcDwvw => "aifc",
+                OutputFormat::Caf | OutputFormat::CafG711(_) | OutputFormat::CafIma4 => "caf",
                 OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::DsdiffDst => {
                     unreachable!("DSD output uses the DSD interface")
                 }
@@ -1397,6 +1441,8 @@ fn convert_audio(
                     | OutputFormat::AifcG726
                     | OutputFormat::AifcDwvw
                     | OutputFormat::AifcSowt
+                    | OutputFormat::CafG711(_)
+                    | OutputFormat::CafIma4
             )
             .then(|| format.name()),
             output_valid_bits: valid_bits,
@@ -1413,6 +1459,9 @@ fn convert_audio(
                     | OutputFormat::AifcIma4
                     | OutputFormat::AifcG726
                     | OutputFormat::AifcDwvw
+                    | OutputFormat::Caf
+                    | OutputFormat::CafG711(_)
+                    | OutputFormat::CafIma4
                     | OutputFormat::Au
                     | OutputFormat::AuG711(_)
                     | OutputFormat::AuG721
@@ -1739,11 +1788,28 @@ fn open_decoder(path: &Path, raw: Option<RawPcmOptions>) -> Result<AudioInput, C
         has_signature(&mut file, b".snd").map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| cli_audio_error(error.into(), path))?;
+    let is_caf =
+        has_signature(&mut file, b"caff").map_err(|error| cli_audio_error(error.into(), path))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| cli_audio_error(error.into(), path))?;
     let is_form =
         has_signature(&mut file, b"FORM").map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
         .map_err(|error| cli_audio_error(error.into(), path))?;
-    if is_au {
+    if is_caf {
+        let decoder = CafDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
+        Ok(AudioInput {
+            decoder: Box::new(decoder),
+            format: "caf",
+            container: None,
+            aiff_comments: None,
+            aiff_markers: None,
+            aiff_instrument: None,
+            aiff_audio_recording: None,
+            aiff_id3_tag: None,
+            au_annotation: None,
+        })
+    } else if is_au {
         let decoder = AuDecoder::new(file).map_err(|error| cli_audio_error(error, path))?;
         let annotation = decoder.annotation().to_vec();
         Ok(AudioInput {
@@ -1938,7 +2004,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] <input> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|raw_u8|raw_s16le|raw_s16be|raw_s24le|raw_s24be|raw_s32le|raw_s32be|raw_f32le|raw_f32be|raw_f64le|raw_f64be|g711_alaw|g711_mulaw|wav_ima_adpcm|wav_ms_adpcm|aiff|aifc|aifc_sowt|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input> <output> | zemer metadata edit ... | zemer cue split/create ... | zemer iso inspect/extract ...".to_owned(),
+        message: "usage: zemer inspect [--json] [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] <input> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|raw_u8|raw_s16le|raw_s16be|raw_s24le|raw_s24be|raw_s32le|raw_s32be|raw_f32le|raw_f32be|raw_f64le|raw_f64be|g711_alaw|g711_mulaw|wav_ima_adpcm|wav_ms_adpcm|aiff|aifc|aifc_sowt|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|caf|caf_alaw|caf_mulaw|caf_ima4|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input> <output> | zemer metadata edit ... | zemer cue split/create ... | zemer iso inspect/extract ...".to_owned(),
     }
 }
 

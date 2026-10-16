@@ -23,6 +23,7 @@ version = "0.7.0"
 dependencies = [
  "zemer-aiff",
  "zemer-au",
+ "zemer-caf",
  "zemer-core",
  "zemer-cue",
  "zemer-dsdiff",
@@ -57,6 +58,15 @@ dependencies = [
  "zemer-core",
  "zemer-g711",
  "zemer-g726",
+]
+
+[[package]]
+name = "zemer-caf"
+version = "0.7.0"
+dependencies = [
+ "zemer-core",
+ "zemer-g711",
+ "zemer-ima-adpcm",
 ]
 
 [[package]]
@@ -172,6 +182,7 @@ version = "0.7.0"
 dependencies = [
  "zemer-aiff",
  "zemer-au",
+ "zemer-caf",
  "zemer-core",
  "zemer-cue",
  "zemer-dsdiff",

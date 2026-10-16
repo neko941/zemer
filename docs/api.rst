@@ -27,7 +27,7 @@ Crate ``zemer-g711``
 --------------------
 
 * ``encode_alaw`` / ``decode_alaw`` and ``encode_mulaw`` / ``decode_mulaw`` —
-  reusable ITU-T G.711 sample conversion shared by WAVE and AIFF-C.
+  reusable ITU-T G.711 sample conversion shared by WAVE, AIFF-C, and CAF.
 
 Crate ``zemer-metadata``
 ------------------------
@@ -111,6 +111,18 @@ Sun/NeXT AU library crate
   annotation bytes, including non-UTF-8 data.
 * ``rewrite_metadata`` — changes the COMMENT annotation without decoding or
   re-encoding audio; an unchanged annotation is copied byte-for-byte.
+
+Rust library crate ``caf`` (Cargo package ``zemer-caf``)
+--------------------------------------------------------
+
+* ``CafDecoder<R>`` — streams CAF v1 signed PCM16/24/32, float32/64, G.711
+  A-law/μ-law, and Apple IMA4 profiles through ``AudioDecoder``.
+* ``CafEncoder<W>`` — writes those profiles through ``AudioEncoder``; use
+  ``new_g711``, ``new_ima4``, or ``new_pcm_with_byte_order`` to select an
+  encoding. Packed and high-aligned unpacked 24-bit PCM are supported.
+* ``CafCodec`` — identifies the decoded CAF codec profile.
+* ``rewrite_metadata`` — replaces the UTF-8 ``info`` chunk while preserving
+  encoded audio and other chunks byte-for-byte.
 
 Crate ``zemer-dsd``
 -------------------
