@@ -172,6 +172,11 @@ impl<'a> RangeDecoder<'a> {
         self.nbits_total * 8 - log_range
     }
 
+    /// Returns the range-coder state used by Opus conformance checks.
+    pub(crate) const fn final_range(&self) -> u32 {
+        self.rng
+    }
+
     fn value(&self, total: u32) -> Result<u32, RangeError> {
         if total == 0 || total > u16::MAX.into() {
             return Err(RangeError::InvalidTotal);
@@ -338,6 +343,18 @@ mod tests {
             assert!(whole_bits * 8 >= fractional_bits);
             assert!(whole_bits * 8 < fractional_bits + 8);
         }
+    }
+
+    #[test]
+    fn final_range_reports_the_current_normalized_coder_state() {
+        let mut decoder = RangeDecoder::new(&[0x5a; 16]);
+        let initial = decoder.final_range();
+        assert_eq!(initial, decoder.rng);
+        decoder.decode_symbol(&[1, 3, 7, 5]).unwrap();
+        let final_range = decoder.final_range();
+        assert_eq!(final_range, decoder.rng);
+        assert_ne!(final_range, initial);
+        assert!(final_range > 1 << 23);
     }
 
     #[test]
