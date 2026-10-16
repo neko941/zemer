@@ -55,6 +55,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-id3`](crates/id3/): bounded ID3v2 text and APIC/PIC picture parsing, encoding, and metadata rewriting shared by DSF and AIFF/AIFC.
 - [`zemer-iso9660`](crates/iso9660/): clean-room ISO 9660 image inspection and safe single-volume extraction, including Joliet names.
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer with page CRC, sequence, and continuation validation.
+- [`zemer-opus`](crates/opus/): clean-room Ogg Opus header parsing, packet framing, granule-aware stream reading, and decoder groundwork.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
 - [`zemer-resample`](crates/resample/): streaming windowed-sinc sample-rate conversion for interleaved PCM with channel and speaker-mask preservation.
 - [`zemer-raw-pcm`](crates/raw-pcm/): headerless PCM reader and writer with explicit format, byte order, and bounded streaming.
@@ -65,6 +66,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-au`](crates/au/) (Rust crate `au`): streaming Sun/NeXT AU signed PCM, float, G.711, and mono 8 kHz G.721 reader/writer with bounded annotation preservation.
 - [`zemer-caf`](crates/caf/) (Rust crate `caf`): CAF v1 PCM/float, G.711, and Apple IMA4 reader/writer with bounded UTF-8 `info` tags and packet-preserving metadata edits.
 - [`zemer-g711`](crates/g711/) (Rust crate `g711`): reusable ITU-T G.711 A-law/μ-law sample conversion used by WAVE, AIFF-C, and CAF.
+- [`zemer-g726`](crates/g726/) (Rust crate `g726`): shared clean-room G.726 ADPCM encoder and decoder for 16/24/32/40 kbit/s profiles.
 - [`zemer-dwvw`](crates/dwvw/): clean-room DWVW channel encoder and decoder used by AIFC.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/native DSD decoding, lossless integer PCM, standard-bitrate integer PCM hybrid `.wv`+`.wvc` encoding, bit-exact float32, raw native DSD encoding, APEv2 text and front/back picture metadata reading and rewriting, and checksum validation.
 - [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion including `wav_ima_adpcm` and `wav_ms_adpcm`, DSF/DSDIFF/native DSD WavPack transcoding, WAVE/AIFF/AU/CAF/DSF/DSDIFF/FLAC/Ogg-FLAC/Ogg Vorbis/WavPack metadata editing, CUE/WAV workflows, and ISO 9660 inspection/extraction. CLI code is organized under `crates/zemer/src/cli/` by audio conversion, metadata editing, and reporting.
