@@ -59,8 +59,11 @@ appear at most once.
 
 The reader also accepts one ``ID3 `` chunk as a compatibility extension. The
 chunk payload is a bounded ID3v2 tag parsed by the reusable ``zemer-id3``
-crate. Common text fields map to ``Metadata``; other frames remain opaque when
-an AIFF/AIFC file is copied or its text tags are edited. The encoder writes an
+crate. Common text fields and APIC/PIC picture frames map to ``Metadata``;
+other frames remain opaque when an AIFF/AIFC file is copied or its metadata is
+edited. ID3 pictures do not carry image dimensions, so those shared fields are
+zero when read from ID3; writing a picture with nonzero dimensions or color
+details is rejected because ID3 cannot represent them. The encoder writes an
 ID3 chunk for metadata fields that have no native AIFF text chunk. ID3-in-AIFF
 is outside the AIFF chunk set described by the McGill specification, so files
 that require strict AIFF interoperability should use the native text chunks.

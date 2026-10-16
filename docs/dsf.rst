@@ -9,8 +9,12 @@ packing. Channel layout masks are checked before writing so the serialized
 channel order remains explicit.
 
 ``DsfDecoder`` implements ``DsdDecoder`` and exposes common ID3v2.2/v2.3/v2.4 text
-tags. ``DsfEncoder`` implements ``DsdEncoder``; it writes ID3v2.4 UTF-8 tags,
-including unknown metadata keys as ``TXXX`` values. Both APIs use
+tags and APIC/PIC embedded pictures. ``DsfEncoder`` implements ``DsdEncoder``;
+it writes ID3v2.4 UTF-8 text tags, including unknown metadata keys as ``TXXX``
+values, and APIC picture frames. ID3 does not carry image dimensions, so the
+shared picture dimensions, color depth, and indexed-color count are zero when
+read from ID3; the writer rejects pictures with nonzero values in those fields.
+Both APIs use
 ``DsdBuffer``'s channel-interleaved octets with most-significant-bit-first bit
 order, converting to/from DSF's on-disk bit order. The encoder defaults to the
 one-bit storage profile; ``DsfEncoder::new_with_bits_per_sample`` selects the
@@ -27,8 +31,8 @@ unrecognized frames. CLI DSF-to-DSF conversion uses this path. Cross-format DSD
 conversion maps common text tags; target formats that cannot represent ID3
 frames cannot preserve artwork or opaque frames.
 
-``dsf::rewrite_metadata`` and ``zemer metadata edit`` replace common text
-frames while retaining artwork and other opaque frames. Rewriting copies the
+``dsf::rewrite_metadata`` and ``zemer metadata edit`` replace common text and
+picture frames while retaining other opaque frames. Rewriting copies the
 DSD data bytes unchanged. Tag-level unsynchronization and extended headers are
 normalized away during edits. ID3v2.2 defines no compression scheme, so a tag
 with its compression flag set is ignored as a whole and preserved byte-for-byte

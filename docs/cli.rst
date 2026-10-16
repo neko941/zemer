@@ -187,7 +187,7 @@ AU maps only COMMENT into its annotation. If the comment stays unchanged, the
 original annotation bytes are retained. CAF edits preserve encoded audio packets and metadata chunks other than the replaced ``info`` chunk. FLAC keys may use printable ASCII other than ``=``; WAVE supports TITLE,
 ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO; AIFF/AIFC native
 chunks support ASCII TITLE, ARTIST, and COMMENT, while the non-standard ID3
-chunk supports common UTF-8 ID3 text. DSF writes ID3v2.4 UTF-8 text. DSDIFF title, artist, and
+chunk supports common UTF-8 ID3 text and APIC/PIC picture mapping. DSF writes ID3v2.4 UTF-8 text and APIC pictures; text edits preserve existing pictures and opaque frames. DSDIFF title, artist, and
 comment text is printable ASCII. WAVE edits preserve unrecognized
 chunks and INFO subchunks. WavPack edits retain binary, external, and reserved
 APEv2 items and any trailing ID3v1 bytes. If editing fails, the partial output

@@ -46,9 +46,11 @@ Crate ``zemer-metadata``
 Crate ``zemer-id3``
 -------------------
 
-* Bounded ID3v2.2/v2.3/v2.4 text parsing and metadata rewriting shared by the
-  DSF and AIFF/AIFC crates; unrecognized frames are retained as opaque data
-  during metadata updates.
+* Bounded ID3v2.2/v2.3/v2.4 text and PIC/APIC picture parsing and metadata
+  rewriting shared by the DSF and AIFF/AIFC crates; unrecognized frames are
+  retained as opaque data during metadata updates. ID3 cannot store image
+  dimensions or color details, so reads return zero values and writes reject
+  pictures with nonzero values in those fields.
 
 Crate ``zemer-ogg``
 -------------------

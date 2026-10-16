@@ -1,7 +1,7 @@
 use std::{fs::File, io::Cursor};
 
 use dsf::{DsfDecoder, DsfEncoder, rewrite_metadata};
-use zemer_core::{DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata};
+use zemer_core::{DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata, Picture};
 
 fn dsf(channels: u32, channel_type: u32, sample_count: u64, data: &[Vec<u8>]) -> Vec<u8> {
     assert_eq!(channels as usize, data.len());
@@ -113,6 +113,7 @@ fn reads_id3v24_text_metadata_from_the_dsf_metadata_pointer() {
     let decoder = DsfDecoder::new(Cursor::new(bytes)).unwrap();
     assert_eq!(decoder.metadata().values("TITLE"), ["Title"]);
     assert_eq!(decoder.metadata().values("ARTIST"), ["Artist"]);
+    assert_eq!(decoder.metadata().pictures()[0].description(), "front");
     assert_eq!(decoder.id3_tag(), Some(tag.as_slice()));
 }
 
@@ -154,6 +155,16 @@ fn rewrites_text_metadata_without_changing_audio_or_opaque_id3_frames() {
     let mut metadata = Metadata::default();
     metadata.insert("TITLE", "Edited title");
     metadata.insert("ALBUM", "New album");
+    metadata.add_picture(Picture::new(
+        3,
+        "image/png",
+        "front",
+        0,
+        0,
+        0,
+        0,
+        [0x89, b'P', b'N', b'G'],
+    ));
     let mut output = Vec::new();
     rewrite_metadata(Cursor::new(&original), &mut output, &metadata).unwrap();
 
@@ -167,7 +178,42 @@ fn rewrites_text_metadata_without_changing_audio_or_opaque_id3_frames() {
     let decoder = DsfDecoder::new(Cursor::new(output)).unwrap();
     assert_eq!(decoder.metadata().values("TITLE"), ["Edited title"]);
     assert_eq!(decoder.metadata().values("ALBUM"), ["New album"]);
+    assert_eq!(decoder.metadata().pictures(), metadata.pictures());
     assert!(decoder.metadata().values("ARTIST").is_empty());
+}
+
+#[test]
+fn encoder_edits_id3_picture_and_keeps_opaque_frames() {
+    let spec = DsdSpec::new(2_822_400, 1).unwrap();
+    let original = with_id3(dsf(1, 1, 8, &[vec![0x55]]));
+    let tag = original[28 + 52 + 12 + 4096..].to_vec();
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "Updated");
+    metadata.add_picture(Picture::new(
+        4,
+        "image/jpeg",
+        "back",
+        0,
+        0,
+        0,
+        0,
+        [0xff, 0xd8],
+    ));
+    let mut encoder = DsfEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    encoder.set_id3_tag(&tag).unwrap();
+    encoder.set_metadata(&metadata).unwrap();
+    encoder
+        .write_dsd_octets(&DsdBuffer::new(spec, vec![0x55]).unwrap())
+        .unwrap();
+    encoder.finish().unwrap();
+    let encoded = encoder.into_inner().into_inner();
+    assert!(
+        encoded
+            .windows(b"opaque frame payload".len())
+            .any(|bytes| bytes == b"opaque frame payload")
+    );
+    let decoder = DsfDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(decoder.metadata(), &metadata);
 }
 
 #[test]
