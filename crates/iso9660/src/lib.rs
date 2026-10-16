@@ -226,44 +226,7 @@ impl<R: Read + Seek> IsoImage<R> {
         if output_dir.exists() {
             return Err(IsoError::Invalid("output directory already exists"));
         }
-        let mut normalized = BTreeMap::<String, bool>::new();
-        let mut output_paths = Vec::with_capacity(self.entries.len());
-        for entry in &self.entries {
-            let mut output = PathBuf::new();
-            let mut key = String::new();
-            for component in &entry.path {
-                validate_output_component(component)?;
-                if !key.is_empty() {
-                    key.push('/');
-                }
-                key.push_str(&component.to_lowercase());
-                output.push(component);
-            }
-            let mut prefix = String::new();
-            let mut components = key.split('/').peekable();
-            while let Some(component) = components.next() {
-                if !prefix.is_empty() {
-                    prefix.push('/');
-                }
-                prefix.push_str(component);
-                if components.peek().is_some() && normalized.get(&prefix) == Some(&false) {
-                    return Err(IsoError::Invalid("a file blocks a child output path"));
-                }
-            }
-            if !entry.directory
-                && normalized
-                    .keys()
-                    .any(|existing| existing.starts_with(&(key.clone() + "/")))
-            {
-                return Err(IsoError::Invalid(
-                    "a file conflicts with a child output path",
-                ));
-            }
-            if normalized.insert(key, entry.directory).is_some() {
-                return Err(IsoError::Invalid("case-insensitive output path collision"));
-            }
-            output_paths.push(output);
-        }
+        let output_paths = validate_output_paths(&self.entries)?;
         fs::create_dir(output_dir)?;
         let result = (|| {
             for (entry, relative) in self.entries.clone().iter().zip(output_paths) {
@@ -392,6 +355,51 @@ impl<R: Read + Seek> IsoImage<R> {
         }
         Ok(result)
     }
+}
+
+fn validate_output_paths(entries: &[IsoEntry]) -> Result<Vec<PathBuf>, IsoError> {
+    let mut normalized = BTreeMap::<String, bool>::new();
+    let mut output_paths = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let mut output = PathBuf::new();
+        let mut key = String::new();
+        for component in &entry.path {
+            validate_output_component(component)?;
+            if !key.is_empty() {
+                key.push('/');
+            }
+            key.push_str(&component.to_lowercase());
+            output.push(component);
+        }
+        let mut prefix = String::new();
+        let mut components = key.split('/').peekable();
+        while let Some(component) = components.next() {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(component);
+            if components.peek().is_some() && normalized.get(&prefix) == Some(&false) {
+                return Err(IsoError::Invalid("a file blocks a child output path"));
+            }
+        }
+        if !entry.directory {
+            let child_prefix = format!("{key}/");
+            if normalized
+                .range(child_prefix.clone()..)
+                .next()
+                .is_some_and(|(existing, _)| existing.starts_with(&child_prefix))
+            {
+                return Err(IsoError::Invalid(
+                    "a file conflicts with a child output path",
+                ));
+            }
+        }
+        if normalized.insert(key, entry.directory).is_some() {
+            return Err(IsoError::Invalid("case-insensitive output path collision"));
+        }
+        output_paths.push(output);
+    }
+    Ok(output_paths)
 }
 
 #[derive(Clone)]
@@ -609,4 +617,54 @@ fn validate_output_component(component: &str) -> Result<(), IsoError> {
         return Err(IsoError::Unsupported("file name is reserved on Windows"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_path_preflight_handles_maximum_flat_directory() {
+        let entries = (0..MAX_ENTRIES)
+            .map(|index| {
+                let name = format!("FILE{index:05}.TXT");
+                IsoEntry {
+                    path: vec![name.clone()],
+                    name,
+                    directory: false,
+                    length: 0,
+                    extents: Vec::new(),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(validate_output_paths(&entries).unwrap().len(), MAX_ENTRIES);
+    }
+
+    #[test]
+    fn output_path_preflight_rejects_a_file_added_after_its_child() {
+        let entries = [
+            IsoEntry {
+                path: vec!["parent".to_owned(), "child".to_owned()],
+                name: "child".to_owned(),
+                directory: false,
+                length: 0,
+                extents: Vec::new(),
+            },
+            IsoEntry {
+                path: vec!["parent".to_owned()],
+                name: "parent".to_owned(),
+                directory: false,
+                length: 0,
+                extents: Vec::new(),
+            },
+        ];
+
+        assert!(matches!(
+            validate_output_paths(&entries),
+            Err(IsoError::Invalid(
+                "a file conflicts with a child output path"
+            ))
+        ));
+    }
 }
