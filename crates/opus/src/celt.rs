@@ -225,6 +225,68 @@ pub(crate) fn decode_fine_energies(
     Ok(energies_q15)
 }
 
+pub(crate) fn decode_band_boosts(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    start_band: u8,
+    end_band: u8,
+    frame_bytes: usize,
+    caps: &[u16; 21],
+) -> Result<([u16; 21], u32), RangeError> {
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    if start_band >= end_band || end_band > 21 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+
+    let total_bits = frame_bytes.saturating_mul(64);
+    let mut total_boost = 0_usize;
+    let mut dynalloc_logp = 6;
+    let mut boosts = [0; 21];
+    for band in start_band..end_band {
+        let width = usize::from(edges[usize::from(band) + 1] - edges[usize::from(band)]);
+        let quanta = (8 * width).min(48_usize.max(width));
+        let mut boost = 0_usize;
+        let mut loop_logp = dynalloc_logp;
+        while boost < usize::from(caps[usize::from(band)]) {
+            let tell = range.tell_frac() as usize;
+            let symbol_cost = usize::from(loop_logp) * 8;
+            if tell.saturating_add(symbol_cost) >= total_bits.saturating_add(total_boost) {
+                break;
+            }
+            if !range.decode_bit_logp(loop_logp)? {
+                break;
+            }
+            boost = boost.saturating_add(quanta);
+            total_boost = total_boost.saturating_add(quanta);
+            loop_logp = 1;
+        }
+        boosts[usize::from(band)] = boost.try_into().map_err(|_| RangeError::CorruptFrame)?;
+        if boost > 0 && dynalloc_logp > 2 {
+            dynalloc_logp -= 1;
+        }
+    }
+    Ok((
+        boosts,
+        total_boost
+            .try_into()
+            .map_err(|_| RangeError::CorruptFrame)?,
+    ))
+}
+
+pub(crate) fn decode_allocation_trim(
+    range: &mut RangeDecoder<'_>,
+    frame_bytes: usize,
+    total_boost: u32,
+) -> Result<u8, RangeError> {
+    let total_bits = frame_bytes.saturating_mul(64);
+    let remaining = total_bits.saturating_sub(total_boost as usize);
+    if (range.tell_frac() as usize).saturating_add(48) <= remaining {
+        Ok(range.decode_symbol(&[2, 2, 5, 10, 22, 46, 22, 10, 5, 2, 2])? as u8)
+    } else {
+        Ok(5)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PostFilter {
     pub(crate) period: u16,
@@ -277,8 +339,9 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 #[cfg(test)]
 mod tests {
     use super::{
-        ENERGY_LAPLACE_MODELS, FrameHeader, band_edges, decode_coarse_energy_residuals,
-        decode_fine_energies, decode_header, predict_coarse_energies,
+        ENERGY_LAPLACE_MODELS, FrameHeader, band_edges, decode_allocation_trim, decode_band_boosts,
+        decode_coarse_energy_residuals, decode_fine_energies, decode_header,
+        predict_coarse_energies,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -461,5 +524,28 @@ mod tests {
             Err(RangeError::InvalidFineEnergyAllocation)
         );
         assert_eq!(range.tell_frac(), before);
+    }
+
+    #[test]
+    fn allocation_controls_obey_caps_and_frame_budget() {
+        let mut caps = [0; 21];
+        caps[0] = 8;
+        let mut boosted = RangeDecoder::new(&[0xff; 8]);
+        let (boosts, total_boost) = decode_band_boosts(&mut boosted, 120, 0, 1, 8, &caps).unwrap();
+        assert_eq!(boosts[0], 8);
+        assert_eq!(total_boost, 8);
+
+        let mut trim = RangeDecoder::new(&[0; 8]);
+        assert_eq!(decode_allocation_trim(&mut trim, 8, 0), Ok(0));
+        assert_eq!(decode_allocation_trim(&mut trim, 0, 0), Ok(5));
+    }
+
+    #[test]
+    fn allocation_controls_reject_invalid_band_ranges() {
+        let mut range = RangeDecoder::new(&[0; 8]);
+        assert_eq!(
+            decode_band_boosts(&mut range, 120, 1, 1, 8, &[0; 21]),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
     }
 }
