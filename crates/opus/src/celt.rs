@@ -1,3 +1,4 @@
+use crate::pvq::{decode_codeword, normalize_pulses, pulses_for_allocation};
 use crate::range::{RangeDecoder, RangeError};
 
 const BAND_WIDTHS_2_5_MS: [u16; 21] = [
@@ -196,6 +197,34 @@ pub(crate) fn band_edges(frame_samples_48k: u16) -> Option<[u16; 22]> {
         edges[index + 1] = edges[index] + width * scale;
     }
     Some(edges)
+}
+
+/// Decodes the mono, unsplit PVQ shape vector for each coded CELT band.
+///
+/// This returns normalized band shapes only. CELT's spreading, recursive
+/// splits, denormalization, and inverse transform are separate stages.
+pub(crate) fn decode_mono_pvq_shapes(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    allocation: FineShapeAllocation,
+) -> Result<[Vec<f32>; 21], RangeError> {
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    let start_band = allocation.start_band;
+    let end_band = allocation.coded_end_band;
+    if start_band >= end_band || end_band > 21 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+
+    let mut shapes = std::array::from_fn(|_| Vec::new());
+    for band in start_band..end_band {
+        let index = usize::from(band);
+        let dimensions = usize::from(edges[index + 1] - edges[index]);
+        let pulse_allocation =
+            pulses_for_allocation(dimensions, allocation.shape_eighth_bits[index])?;
+        let pulses = decode_codeword(range, dimensions, usize::from(pulse_allocation.pulses))?;
+        shapes[index] = normalize_pulses(&pulses)?;
+    }
+    Ok(shapes)
 }
 
 pub(crate) fn static_allocation(
@@ -979,12 +1008,13 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 #[cfg(test)]
 mod tests {
     use super::{
-        AllocationControls, ENERGY_LAPLACE_MODELS, FrameHeader, allocation_caps,
-        allocation_thresholds, allocation_trim_offsets, band_edges, decode_allocation_controls,
-        decode_allocation_trim, decode_band_boosts, decode_coarse_energy_residuals,
-        decode_final_fine_energy, decode_fine_energies, decode_header, predict_coarse_energies,
-        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
-        split_fine_shape_allocation, static_allocation,
+        AllocationControls, ENERGY_LAPLACE_MODELS, FineShapeAllocation, FrameHeader,
+        allocation_caps, allocation_thresholds, allocation_trim_offsets, band_edges,
+        decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
+        decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
+        decode_header, decode_mono_pvq_shapes, predict_coarse_energies, reallocate_skipped_bands,
+        reserve_allocation_bits, select_band_allocation, split_fine_shape_allocation,
+        static_allocation,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -998,6 +1028,57 @@ mod tests {
             assert_eq!(edges, base.map(|edge| edge * scale));
         }
         assert_eq!(band_edges(60), None);
+    }
+
+    #[test]
+    fn mono_shape_decode_uses_frame_scaled_band_dimensions() {
+        for (frame_samples, expected_dimensions) in [(120, 1), (240, 2), (480, 4), (960, 8)] {
+            let allocation = FineShapeAllocation {
+                start_band: 0,
+                coded_end_band: 1,
+                shape_eighth_bits: [64; 21],
+                fine_bits: [0; 21],
+                fine_priority: [false; 21],
+                balance_eighth_bits: 0,
+            };
+            let mut range = RangeDecoder::new(&[0x5a; 32]);
+            let shapes = decode_mono_pvq_shapes(&mut range, frame_samples, allocation).unwrap();
+            assert_eq!(shapes[0].len(), expected_dimensions);
+            assert!(shapes[1..].iter().all(Vec::is_empty));
+            let norm_squared = shapes[0]
+                .iter()
+                .map(|&value| f64::from(value) * f64::from(value))
+                .sum::<f64>();
+            assert!((norm_squared - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn mono_shape_decode_rejects_invalid_frame_layout_before_reading() {
+        let allocation = FineShapeAllocation {
+            start_band: 0,
+            coded_end_band: 1,
+            shape_eighth_bits: [64; 21],
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let mut range = RangeDecoder::new(&[0x5a; 32]);
+        assert_eq!(
+            decode_mono_pvq_shapes(&mut range, 60, allocation),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            decode_mono_pvq_shapes(
+                &mut range,
+                120,
+                FineShapeAllocation {
+                    start_band: 2,
+                    ..allocation
+                }
+            ),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
     }
 
     #[test]
