@@ -5,6 +5,7 @@ pub(crate) enum RangeError {
     InvalidLogProbability,
     InvalidLaplaceModel,
     InvalidCeltEnergyLayout,
+    InvalidCeltQuality,
     InvalidFineEnergyAllocation,
     InvalidTotal,
     CorruptFrame,

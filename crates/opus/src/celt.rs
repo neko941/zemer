@@ -4,6 +4,30 @@ const BAND_WIDTHS_2_5_MS: [u16; 21] = [
     1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 6, 6, 8, 12, 18, 22,
 ];
 
+const STATIC_ALLOCATION: [[u8; 11]; 21] = [
+    [0, 90, 110, 118, 126, 134, 144, 152, 162, 172, 200],
+    [0, 80, 100, 110, 119, 127, 137, 145, 155, 165, 200],
+    [0, 75, 90, 103, 112, 120, 130, 138, 148, 158, 200],
+    [0, 69, 84, 93, 104, 114, 124, 132, 142, 152, 200],
+    [0, 63, 78, 86, 95, 103, 113, 123, 133, 143, 200],
+    [0, 56, 71, 80, 89, 97, 107, 117, 127, 137, 200],
+    [0, 49, 65, 75, 83, 91, 101, 111, 121, 131, 200],
+    [0, 40, 58, 70, 78, 85, 95, 105, 115, 125, 200],
+    [0, 34, 51, 65, 72, 78, 88, 98, 108, 118, 198],
+    [0, 29, 45, 59, 66, 72, 82, 92, 102, 112, 193],
+    [0, 20, 39, 53, 60, 66, 76, 86, 96, 106, 188],
+    [0, 18, 32, 47, 54, 60, 70, 80, 90, 100, 183],
+    [0, 10, 26, 40, 47, 54, 64, 74, 84, 94, 178],
+    [0, 0, 20, 31, 39, 47, 57, 67, 77, 87, 173],
+    [0, 0, 12, 23, 32, 41, 51, 61, 71, 81, 168],
+    [0, 0, 0, 15, 25, 35, 45, 55, 65, 75, 163],
+    [0, 0, 0, 4, 17, 29, 39, 49, 59, 69, 158],
+    [0, 0, 0, 0, 12, 23, 33, 43, 53, 63, 153],
+    [0, 0, 0, 0, 1, 16, 26, 36, 46, 56, 148],
+    [0, 0, 0, 0, 0, 10, 15, 20, 30, 45, 129],
+    [0, 0, 0, 0, 0, 1, 1, 1, 1, 20, 104],
+];
+
 const ENERGY_LAPLACE_MODELS: [[[u8; 42]; 2]; 4] = [
     [
         [
@@ -76,6 +100,33 @@ pub(crate) fn band_edges(frame_samples_48k: u16) -> Option<[u16; 22]> {
         edges[index + 1] = edges[index] + width * scale;
     }
     Some(edges)
+}
+
+pub(crate) fn static_allocation(
+    frame_samples_48k: u16,
+    band: u8,
+    channels: u8,
+    quality_q64: u16,
+) -> Result<u32, RangeError> {
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    if band >= 21 || !(1..=2).contains(&channels) {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    if quality_q64 > 640 {
+        return Err(RangeError::InvalidCeltQuality);
+    }
+    let column = usize::from((quality_q64 / 64).min(9));
+    let fraction = if quality_q64 == 640 {
+        64
+    } else {
+        u32::from(quality_q64 % 64)
+    };
+    let row = STATIC_ALLOCATION[usize::from(band)];
+    let interpolated_q64 =
+        u32::from(row[column]) * (64 - fraction) + u32::from(row[column + 1]) * fraction;
+    let width = u32::from(edges[usize::from(band) + 1] - edges[usize::from(band)]);
+    let lm = u32::from(frame_samples_48k / 120).trailing_zeros();
+    Ok(u32::from(channels) * width * interpolated_q64 * (1 << lm) / 256)
 }
 
 pub(crate) fn decode_coarse_energy_residuals(
@@ -341,7 +392,7 @@ mod tests {
     use super::{
         ENERGY_LAPLACE_MODELS, FrameHeader, band_edges, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_fine_energies, decode_header,
-        predict_coarse_energies,
+        predict_coarse_energies, static_allocation,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -355,6 +406,35 @@ mod tests {
             assert_eq!(edges, base.map(|edge| edge * scale));
         }
         assert_eq!(band_edges(60), None);
+    }
+
+    #[test]
+    fn static_allocation_interpolates_quality_and_scales_frame_geometry() {
+        assert_eq!(static_allocation(120, 0, 1, 0), Ok(0));
+        assert_eq!(static_allocation(120, 0, 1, 64), Ok(22));
+        assert_eq!(static_allocation(120, 0, 1, 640), Ok(50));
+        assert_eq!(static_allocation(240, 0, 1, 640), Ok(200));
+        assert_eq!(static_allocation(120, 20, 2, 640), Ok(1_144));
+    }
+
+    #[test]
+    fn static_allocation_rejects_invalid_inputs() {
+        assert_eq!(
+            static_allocation(60, 0, 1, 0),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            static_allocation(120, 21, 1, 0),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            static_allocation(120, 0, 3, 0),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            static_allocation(120, 0, 1, 641),
+            Err(RangeError::InvalidCeltQuality)
+        );
     }
 
     #[test]
