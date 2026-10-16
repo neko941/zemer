@@ -203,6 +203,41 @@ pub(crate) fn decode_split_angle(
     })
 }
 
+/// Decodes one recursive split angle and charges its measured range-coded cost.
+///
+/// `available_eighth_bits` is the current node's allocation. Measuring the
+/// range decoder before and after the symbol accounts for uniform, triangular,
+/// and zero-bit angle cases with the same fractional precision used by CELT.
+pub(crate) fn decode_recursive_pvq_split(
+    range: &mut RangeDecoder<'_>,
+    dimensions: usize,
+    available_eighth_bits: u32,
+    pulse_cap_eighth_bits: u32,
+    offset_eighth_bits: i32,
+    time_split: bool,
+) -> Result<RecursivePvqSplit, RangeError> {
+    let before = range.tell_frac();
+    let angle = decode_split_angle(
+        range,
+        dimensions,
+        available_eighth_bits,
+        pulse_cap_eighth_bits,
+        offset_eighth_bits,
+        time_split,
+    )?;
+    let coded_eighth_bits = range
+        .tell_frac()
+        .checked_sub(before)
+        .ok_or(RangeError::CorruptFrame)?;
+    let remaining_eighth_bits = available_eighth_bits
+        .checked_sub(coded_eighth_bits)
+        .ok_or(RangeError::CorruptFrame)?;
+    Ok(RecursivePvqSplit {
+        angle,
+        remaining_eighth_bits,
+    })
+}
+
 fn split_gains(angle_q14: u16) -> Result<(f32, f32), RangeError> {
     if angle_q14 > 16_384 {
         return Err(RangeError::InvalidPvqLayout);
@@ -725,9 +760,9 @@ mod tests {
 
     use super::{
         RecursivePvqSplit, SplitAngle, codebook_size, combine_mid_side_shapes,
-        combine_split_shapes, decode_codeword, decode_recursive_pvq_shape, decode_split_angle,
-        normalize_pulses, pulses_for_allocation, split_shape_budget, split_stereo_shape_budget,
-        spread_shape, unrank_codeword,
+        combine_split_shapes, decode_codeword, decode_recursive_pvq_shape,
+        decode_recursive_pvq_split, decode_split_angle, normalize_pulses, pulses_for_allocation,
+        split_shape_budget, split_stereo_shape_budget, spread_shape, unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1023,6 +1058,38 @@ mod tests {
             frequency_range.decode_uint(19),
             expected_frequency_range.decode_uint(19)
         );
+    }
+
+    #[test]
+    fn recursive_split_charges_the_range_coder_fractional_symbol_cost() {
+        let bytes = [0x5a; 32];
+        for time_split in [false, true] {
+            let mut actual_range = RangeDecoder::new(&bytes);
+            let before = actual_range.tell_frac();
+            let split =
+                decode_recursive_pvq_split(&mut actual_range, 4, 80, 16, 64, time_split).unwrap();
+
+            let mut expected_range = RangeDecoder::new(&bytes);
+            let angle = decode_split_angle(&mut expected_range, 4, 80, 16, 64, time_split).unwrap();
+            let coded_eighth_bits = expected_range.tell_frac() - before;
+            assert_eq!(split.angle, angle);
+            assert_eq!(split.remaining_eighth_bits, 80 - coded_eighth_bits);
+            assert_eq!(
+                actual_range.decode_uint(19),
+                expected_range.decode_uint(19),
+                "time split: {time_split}"
+            );
+        }
+    }
+
+    #[test]
+    fn recursive_split_with_single_angle_value_consumes_no_budget() {
+        let mut range = RangeDecoder::new(&[0x5a; 8]);
+        let before = range.tell_frac();
+        let split = decode_recursive_pvq_split(&mut range, 4, 35, 16, 64, false).unwrap();
+        assert_eq!(split.angle.resolution, 1);
+        assert_eq!(split.remaining_eighth_bits, 35);
+        assert_eq!(range.tell_frac(), before);
     }
 
     #[test]
