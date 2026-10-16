@@ -4,6 +4,7 @@ use std::{
     fs::{self, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 pub const LOGICAL_BLOCK_SIZE: u64 = 2048;
@@ -54,6 +55,7 @@ struct Extent {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IsoEntry {
+    image_identity: Arc<()>,
     path: Vec<String>,
     name: String,
     directory: bool,
@@ -85,6 +87,7 @@ impl IsoEntry {
 
 pub struct IsoImage<R> {
     reader: R,
+    identity: Arc<()>,
     volume_blocks: u32,
     volume_id: String,
     joliet: bool,
@@ -172,9 +175,11 @@ impl<R: Read + Seek> IsoImage<R> {
         if !root_record.directory || root_record.name != "." {
             return Err(IsoError::Invalid("root record is not a directory"));
         }
-        let root = root_record.into_entry(Vec::new())?;
+        let identity = Arc::new(());
+        let root = root_record.into_entry(Vec::new(), Arc::clone(&identity))?;
         let mut image = Self {
             reader,
+            identity,
             volume_blocks,
             volume_id,
             joliet: joliet.is_some(),
@@ -197,7 +202,7 @@ impl<R: Read + Seek> IsoImage<R> {
         if entry.directory {
             return Err(IsoError::Invalid("cannot copy a directory as a file"));
         }
-        if !self.entries.contains(entry) {
+        if !Arc::ptr_eq(&self.identity, &entry.image_identity) {
             return Err(IsoError::Invalid("entry does not belong to this image"));
         }
         self.copy_file_contents(entry, &mut output)
@@ -350,13 +355,17 @@ impl<R: Read + Seek> IsoImage<R> {
                     pending = Some((record, extents));
                 } else {
                     let path = append_path(parent, &record.name);
-                    result.push(record.into_entry_with_extents(path, extents)?);
+                    result.push(record.into_entry_with_extents(
+                        path,
+                        extents,
+                        Arc::clone(&self.identity),
+                    )?);
                 }
             } else if record.multi_extent {
                 pending = Some((record.clone(), record.extents.clone()));
             } else {
                 let path = append_path(parent, &record.name);
-                result.push(record.into_entry(path)?);
+                result.push(record.into_entry(path, Arc::clone(&self.identity))?);
             }
         }
         if pending.is_some() {
@@ -421,15 +430,20 @@ struct Record {
 }
 
 impl Record {
-    fn into_entry(self, path: Vec<String>) -> Result<IsoEntry, IsoError> {
-        let extents = self.extents.clone();
-        self.into_entry_with_extents(path, extents)
+    fn into_entry(
+        mut self,
+        path: Vec<String>,
+        image_identity: Arc<()>,
+    ) -> Result<IsoEntry, IsoError> {
+        let extents = std::mem::take(&mut self.extents);
+        self.into_entry_with_extents(path, extents, image_identity)
     }
 
     fn into_entry_with_extents(
         self,
         path: Vec<String>,
         extents: Vec<Extent>,
+        image_identity: Arc<()>,
     ) -> Result<IsoEntry, IsoError> {
         let length = extents
             .iter()
@@ -438,6 +452,7 @@ impl Record {
             })
             .ok_or(IsoError::Invalid("file length overflow"))?;
         Ok(IsoEntry {
+            image_identity,
             name: self.name,
             path,
             directory: self.directory,
@@ -634,10 +649,12 @@ mod tests {
 
     #[test]
     fn output_path_preflight_handles_maximum_flat_directory() {
+        let image_identity = Arc::new(());
         let entries = (0..MAX_ENTRIES)
             .map(|index| {
                 let name = format!("FILE{index:05}.TXT");
                 IsoEntry {
+                    image_identity: Arc::clone(&image_identity),
                     path: vec![name.clone()],
                     name,
                     directory: false,
@@ -652,8 +669,10 @@ mod tests {
 
     #[test]
     fn output_path_preflight_rejects_a_file_added_after_its_child() {
+        let image_identity = Arc::new(());
         let entries = [
             IsoEntry {
+                image_identity: Arc::clone(&image_identity),
                 path: vec!["parent".to_owned(), "child".to_owned()],
                 name: "child".to_owned(),
                 directory: false,
@@ -661,6 +680,7 @@ mod tests {
                 extents: Vec::new(),
             },
             IsoEntry {
+                image_identity: Arc::clone(&image_identity),
                 path: vec!["parent".to_owned()],
                 name: "parent".to_owned(),
                 directory: false,
