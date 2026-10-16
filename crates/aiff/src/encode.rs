@@ -1274,7 +1274,7 @@ mod tests {
 
     #[test]
     fn aifc_dwvw_decodes_independent_16_bit_payload() {
-        let file = aifc_dwvw_file(1, 9, &INDEPENDENT_DWVW_16);
+        let file = aifc_dwvw_file(1, 9, 16, &INDEPENDENT_DWVW_16);
 
         let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
         assert_eq!(decoder.spec().sample_format(), SampleFormat::PcmI16);
@@ -1294,7 +1294,7 @@ mod tests {
             for _ in 0..channels {
                 payload.extend_from_slice(channel_payload);
             }
-            let file = aifc_dwvw_file(channels, 9, &payload);
+            let file = aifc_dwvw_file(channels, 9, 16, &payload);
             let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
             let expected: Vec<_> = expected_channel
                 .into_iter()
@@ -1309,13 +1309,25 @@ mod tests {
         }
     }
 
-    fn aifc_dwvw_file(channels: u16, frame_count: u32, payload: &[u8]) -> Vec<u8> {
+    #[test]
+    fn aifc_dwvw_decodes_published_12_bit_minimum_delta_in_stereo() {
+        // The published Typhoon vector encodes -2048 in 15 bits, then pads to a word.
+        let file = aifc_dwvw_file(2, 1, 12, &[0x7f, 0xfe, 0x7f, 0xfe]);
+        let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
+        assert_eq!(
+            decoder.read_frames(1).unwrap().unwrap().samples(),
+            &Samples::I16(vec![i16::MIN, i16::MIN])
+        );
+        assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    fn aifc_dwvw_file(channels: u16, frame_count: u32, bit_depth: u16, payload: &[u8]) -> Vec<u8> {
         let mut file = b"FORM\0\0\0\0AIFC".to_vec();
         file.extend_from_slice(b"FVER\0\0\0\x04\xa2\x80\x51\x40");
         file.extend_from_slice(b"COMM\0\0\0\x1c");
         file.extend_from_slice(&channels.to_be_bytes());
         file.extend_from_slice(&frame_count.to_be_bytes());
-        file.extend_from_slice(&16_u16.to_be_bytes());
+        file.extend_from_slice(&bit_depth.to_be_bytes());
         file.extend_from_slice(&extended_rate(44_100).unwrap());
         file.extend_from_slice(b"DWVW\x04DWVW");
         file.push(0);
