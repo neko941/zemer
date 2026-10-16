@@ -28,6 +28,16 @@ fn cli_path() -> std::ffi::OsString {
     env!("CARGO_BIN_EXE_zemer_test_cli").into()
 }
 
+fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        hex.push(DIGITS[(byte >> 4) as usize] as char);
+        hex.push(DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    hex
+}
+
 fn vorbis_link_comment_packets(bytes: &[u8]) -> Vec<Vec<u8>> {
     let mut reader = OggPacketReader::new(Cursor::new(bytes));
     let mut comments = Vec::new();
@@ -861,6 +871,54 @@ fn metadata_edit_rejects_invalid_bwf_field_width() {
     assert!(!output.status.success());
     assert!(!output_path.exists());
     let _ = fs::remove_file(input_path);
+}
+
+#[test]
+fn metadata_edit_adds_bwf_and_sets_binary_fields_from_hex() {
+    let input_path = temporary_path().with_extension("wav");
+    let output_path = temporary_path().with_extension("wav");
+    let invalid_output_path = temporary_path().with_extension("wav");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap(),
+        Samples::U8(vec![128]),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+    let umid_values = (0..64).map(|byte| byte as u8).collect::<Vec<_>>();
+    let reserved_values = (0..190).map(|byte| byte as u8).collect::<Vec<_>>();
+    let umid_hex = hex_encode(&umid_values);
+    let reserved_hex = hex_encode(&reserved_values);
+
+    let output = Command::new(cli_path())
+        .args(["metadata", "edit", "--bext-umid-hex"])
+        .arg(&umid_hex)
+        .arg("--bext-reserved-hex")
+        .arg(&reserved_hex)
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    let bext = decoder.bext().unwrap();
+    assert_eq!(bext.umid, std::array::from_fn(|i| i as u8));
+    assert_eq!(bext.reserved, std::array::from_fn(|i| i as u8));
+    assert_eq!(decoder.read_frames(1).unwrap().unwrap(), audio);
+
+    let invalid = Command::new(cli_path())
+        .args(["metadata", "edit", "--bext-umid-hex", "00"])
+        .arg(&input_path)
+        .arg(&invalid_output_path)
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(!invalid_output_path.exists());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
 }
 
 #[test]

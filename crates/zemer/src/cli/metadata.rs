@@ -66,6 +66,8 @@ pub(super) fn metadata_args(args: &[std::ffi::OsString]) -> Result<MetadataEditR
                 BextField::Version => {
                     bext.version = Some(value.parse().map_err(|_| invalid_bext_value(flag))?)
                 }
+                BextField::UmidHex => bext.umid = Some(parse_hex(value, flag)?),
+                BextField::ReservedHex => bext.reserved = Some(parse_hex(value, flag)?),
                 BextField::CodingHistory => {
                     if !value.is_ascii() {
                         return Err(invalid_bext_value(flag));
@@ -104,6 +106,8 @@ struct BextOptions {
     origination_time: Option<[u8; 8]>,
     time_reference: Option<u64>,
     version: Option<u16>,
+    umid: Option<[u8; 64]>,
+    reserved: Option<[u8; 190]>,
     coding_history: Option<Vec<u8>>,
 }
 
@@ -116,6 +120,8 @@ impl BextOptions {
             && self.origination_time.is_none()
             && self.time_reference.is_none()
             && self.version.is_none()
+            && self.umid.is_none()
+            && self.reserved.is_none()
             && self.coding_history.is_none()
     }
 
@@ -141,6 +147,12 @@ impl BextOptions {
         if let Some(value) = self.version {
             bext.version = value;
         }
+        if let Some(value) = self.umid {
+            bext.umid = value;
+        }
+        if let Some(value) = self.reserved {
+            bext.reserved = value;
+        }
         if let Some(value) = &self.coding_history {
             bext.coding_history.clone_from(value);
         }
@@ -156,6 +168,8 @@ impl BextOptions {
             self.origination_time.is_some(),
             self.time_reference.is_some(),
             self.version.is_some(),
+            self.umid.is_some(),
+            self.reserved.is_some(),
             self.coding_history.is_some(),
         ]
         .into_iter()
@@ -173,6 +187,8 @@ enum BextField {
     OriginationTime,
     TimeReference,
     Version,
+    UmidHex,
+    ReservedHex,
     CodingHistory,
 }
 
@@ -188,6 +204,8 @@ fn bext_flag(arg: &std::ffi::OsStr) -> Option<(&'static str, BextField)> {
         "--bext-origination-time" => ("--bext-origination-time", BextField::OriginationTime),
         "--bext-time-reference" => ("--bext-time-reference", BextField::TimeReference),
         "--bext-version" => ("--bext-version", BextField::Version),
+        "--bext-umid-hex" => ("--bext-umid-hex", BextField::UmidHex),
+        "--bext-reserved-hex" => ("--bext-reserved-hex", BextField::ReservedHex),
         "--bext-coding-history" => ("--bext-coding-history", BextField::CodingHistory),
         _ => return None,
     })
@@ -200,6 +218,28 @@ fn fixed_ascii<const N: usize>(value: &str, flag: &str) -> Result<[u8; N], CliEr
     let mut field = [0; N];
     field[..value.len()].copy_from_slice(value.as_bytes());
     Ok(field)
+}
+
+fn parse_hex<const N: usize>(value: &str, flag: &str) -> Result<[u8; N], CliError> {
+    if value.len() != N * 2 || !value.is_ascii() {
+        return Err(invalid_bext_value(flag));
+    }
+    let mut bytes = [0; N];
+    for (byte, pair) in bytes.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+        let high = hex_nibble(pair[0]).ok_or_else(|| invalid_bext_value(flag))?;
+        let low = hex_nibble(pair[1]).ok_or_else(|| invalid_bext_value(flag))?;
+        *byte = (high << 4) | low;
+    }
+    Ok(bytes)
+}
+
+fn hex_nibble(value: u8) -> Option<u8> {
+    match value {
+        b'0'..=b'9' => Some(value - b'0'),
+        b'a'..=b'f' => Some(value - b'a' + 10),
+        b'A'..=b'F' => Some(value - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn invalid_bext_value(flag: &str) -> CliError {
