@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use ogg::{OggPacket, OggPacketReader, PAGE_FLAG_BOS};
+use ogg::{OggPacket, OggPacketInfo, OggPacketReader, PAGE_FLAG_BOS};
 use zemer_core::AudioError;
 
 use crate::{OpusHead, OpusTags};
@@ -23,12 +23,13 @@ pub struct OpusStreamReader<R> {
 impl<R: Read> OpusStreamReader<R> {
     pub fn new(reader: R) -> Result<Self, AudioError> {
         let mut packets = OggPacketReader::new(reader);
-        let (head_packet, head_owns_granule) = next_packet(&mut packets)?;
+        let head_info = next_packet(&mut packets)?;
+        let head_packet = &head_info.packet;
         if !head_packet.page_is_first
             || !head_packet.starts_page
             || !head_packet.ends_page
             || head_packet.page_flags & PAGE_FLAG_BOS == 0
-            || !head_owns_granule
+            || !head_info.owns_granule
             || head_packet.page_granule_position != 0
         {
             return Err(AudioError::InvalidFormat(
@@ -38,12 +39,13 @@ impl<R: Read> OpusStreamReader<R> {
         let head = OpusHead::parse(&head_packet.bytes)
             .map_err(|_| AudioError::InvalidFormat("invalid OpusHead packet"))?;
 
-        let (tags_packet, tags_owns_granule) = next_packet(&mut packets)?;
+        let tags_info = next_packet(&mut packets)?;
+        let tags_packet = &tags_info.packet;
         if tags_packet.page_flags & PAGE_FLAG_BOS != 0
-            || tags_packet.start_page_sequence != 1
+            || tags_info.start_page_sequence != 1
             || !tags_packet.starts_page
             || !tags_packet.ends_page
-            || !tags_owns_granule
+            || !tags_info.owns_granule
             || tags_packet.page_granule_position != 0
         {
             return Err(AudioError::InvalidFormat(
@@ -69,22 +71,22 @@ impl<R: Read> OpusStreamReader<R> {
 
     /// Returns the next non-empty Ogg audio packet without decoding its payload.
     pub fn next_audio_packet(&mut self) -> Result<Option<OpusAudioPacket>, AudioError> {
-        let Some((packet, owns_granule)) = self.packets.next_packet_with_granule()? else {
+        let Some(info) = self.packets.next_packet_info()? else {
             return Ok(None);
         };
-        if packet.bytes.is_empty() {
+        if info.packet.bytes.is_empty() {
             return Err(AudioError::InvalidFormat("empty Opus audio packet"));
         }
         Ok(Some(OpusAudioPacket {
-            packet,
-            owns_granule,
+            packet: info.packet,
+            owns_granule: info.owns_granule,
         }))
     }
 }
 
-fn next_packet<R: Read>(packets: &mut OggPacketReader<R>) -> Result<(OggPacket, bool), AudioError> {
+fn next_packet<R: Read>(packets: &mut OggPacketReader<R>) -> Result<OggPacketInfo, AudioError> {
     packets
-        .next_packet_with_granule()?
+        .next_packet_info()?
         .ok_or(AudioError::InvalidFormat("missing Opus header packet"))
 }
 

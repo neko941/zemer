@@ -20,8 +20,6 @@ pub const NO_GRANULE_POSITION: u64 = u64::MAX;
 pub struct OggPacket {
     pub bytes: Vec<u8>,
     pub page_sequence: u32,
-    /// Sequence number of the page where this packet begins.
-    pub start_page_sequence: u32,
     /// Codec-defined position stored in this packet's page. `u64::MAX` is
     /// Ogg's `-1` sentinel for pages with no completed packets.
     pub page_granule_position: u64,
@@ -31,6 +29,16 @@ pub struct OggPacket {
     /// Whether the packet's first segment begins a page, even if it continues later.
     pub starts_page: bool,
     pub ends_page: bool,
+}
+
+/// Ogg packet details that codecs use to interpret page granules and packet placement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OggPacketInfo {
+    pub packet: OggPacket,
+    /// Sequence number of the page where this packet begins.
+    pub start_page_sequence: u32,
+    /// Whether this packet owns its page's granule position.
+    pub owns_granule: bool,
 }
 
 /// Reads one Ogg logical stream as packets, validating page framing and CRCs.
@@ -45,7 +53,7 @@ pub struct OggPacketReader<R> {
     first_page: bool,
     ended: bool,
     eos_granule_position: Option<u64>,
-    pending: VecDeque<(OggPacket, bool)>,
+    pending: VecDeque<OggPacketInfo>,
     chained_serials: HashSet<u32>,
 }
 
@@ -96,6 +104,12 @@ impl<R: Read> OggPacketReader<R> {
     ///
     /// Ogg stores one granule per page, assigned to the last packet completed on that page.
     pub fn next_packet_with_granule(&mut self) -> io::Result<Option<(OggPacket, bool)>> {
+        self.next_packet_info()
+            .map(|info| info.map(|info| (info.packet, info.owns_granule)))
+    }
+
+    /// Returns packet placement, start-page sequence, and granule ownership details.
+    pub fn next_packet_info(&mut self) -> io::Result<Option<OggPacketInfo>> {
         loop {
             if let Some(packet) = self.pending.pop_front() {
                 return Ok(Some(packet));
@@ -245,11 +259,10 @@ impl<R: Read> OggPacketReader<R> {
             self.partial.extend_from_slice(&body[cursor..cursor + len]);
             cursor += len;
             if lace < 255 {
-                self.pending.push_back((
-                    OggPacket {
+                self.pending.push_back(OggPacketInfo {
+                    packet: OggPacket {
                         bytes: std::mem::take(&mut self.partial),
                         page_sequence: sequence,
-                        start_page_sequence: self.partial_start_sequence,
                         page_granule_position: granule_position,
                         page_flags: flags,
                         page_segment_count: segment_count,
@@ -257,8 +270,9 @@ impl<R: Read> OggPacketReader<R> {
                         starts_page: self.partial_starts_page,
                         ends_page: index + 1 == lacing.len(),
                     },
-                    last_complete_segment == Some(index),
-                ));
+                    start_page_sequence: self.partial_start_sequence,
+                    owns_granule: last_complete_segment == Some(index),
+                });
                 packet_starts_page = false;
             }
         }
@@ -403,21 +417,23 @@ mod tests {
         let mut input = page(&first, &[255], 2, 0, u64::MAX);
         input.extend(page(&second, &[1, 2], 5, 1, 257));
         let mut reader = OggPacketReader::new(Cursor::new(input));
-        let packet = reader.next_packet().unwrap().unwrap();
+        let info = reader.next_packet_info().unwrap().unwrap();
+        let packet = info.packet;
         assert_eq!(packet.bytes.len(), 256);
         assert_eq!(&packet.bytes[..255], first);
         assert_eq!(packet.bytes[255], 0xa5);
         assert_eq!(packet.page_sequence, 1);
-        assert_eq!(packet.start_page_sequence, 0);
+        assert_eq!(info.start_page_sequence, 0);
         assert_eq!(packet.page_granule_position, 257);
         assert!(!packet.page_is_first);
         assert!(packet.starts_page);
         assert!(!packet.ends_page);
 
-        let packet = reader.next_packet().unwrap().unwrap();
+        let info = reader.next_packet_info().unwrap().unwrap();
+        let packet = info.packet;
         assert_eq!(packet.bytes, b"bc");
         assert_eq!(packet.page_granule_position, 257);
-        assert_eq!(packet.start_page_sequence, 1);
+        assert_eq!(info.start_page_sequence, 1);
         assert!(!packet.starts_page);
         assert!(packet.ends_page);
     }
@@ -428,15 +444,18 @@ mod tests {
         input.extend(page(b"c", &[1], 4, 1, 2));
         let mut reader = OggPacketReader::new(Cursor::new(input));
 
-        let first = reader.next_packet().unwrap().unwrap();
-        let second = reader.next_packet().unwrap().unwrap();
-        let third = reader.next_packet().unwrap().unwrap();
-        assert_eq!(first.page_granule_position, 0);
+        let first = reader.next_packet_info().unwrap().unwrap();
+        let second = reader.next_packet_info().unwrap().unwrap();
+        let third = reader.next_packet_info().unwrap().unwrap();
         assert_eq!(first.start_page_sequence, 0);
-        assert_eq!(second.page_granule_position, 0);
         assert_eq!(second.start_page_sequence, 0);
-        assert_eq!(third.page_granule_position, 2);
         assert_eq!(third.start_page_sequence, 1);
+        let first = first.packet;
+        let second = second.packet;
+        let third = third.packet;
+        assert_eq!(first.page_granule_position, 0);
+        assert_eq!(second.page_granule_position, 0);
+        assert_eq!(third.page_granule_position, 2);
         assert!(first.starts_page);
         assert!(!second.starts_page);
         assert!(third.starts_page);
