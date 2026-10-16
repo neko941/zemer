@@ -158,6 +158,22 @@ mod tests {
     }
 
     #[test]
+    fn decodes_multichannel_ima_groups_in_channel_order() {
+        let mut block = vec![0, 0, 0, 0, 100, 0, 0, 0, 156, 255, 0, 0];
+        block.extend_from_slice(&[0x11; 4]);
+        block.extend_from_slice(&[0x22; 4]);
+        block.extend_from_slice(&[0x33; 4]);
+
+        assert_eq!(
+            decode_block(&block, 3, 9).unwrap(),
+            [
+                0, 100, -100, 2, 104, -94, 4, 108, -88, 6, 112, -82, 8, 116, -76, 10, 120, -70, 12,
+                124, -64, 14, 128, -58, 16, 132, -52
+            ]
+        );
+    }
+
+    #[test]
     fn encoder_blocks_decode_and_partial_frames_are_counted() {
         let source: Vec<i16> = (0..18).map(|i| i * 200 - 1600).collect();
         let encoded = encode_block(&source, 2).unwrap();
