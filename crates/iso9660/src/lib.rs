@@ -200,6 +200,14 @@ impl<R: Read + Seek> IsoImage<R> {
         if !self.entries.contains(entry) {
             return Err(IsoError::Invalid("entry does not belong to this image"));
         }
+        self.copy_file_contents(entry, &mut output)
+    }
+
+    fn copy_file_contents<W: Write>(
+        &mut self,
+        entry: &IsoEntry,
+        output: &mut W,
+    ) -> Result<(), IsoError> {
         let mut remaining = entry.length;
         let mut buffer = [0_u8; 64 * 1024];
         for extent in &entry.extents {
@@ -229,7 +237,8 @@ impl<R: Read + Seek> IsoImage<R> {
         let output_paths = validate_output_paths(&self.entries)?;
         fs::create_dir(output_dir)?;
         let result = (|| {
-            for (entry, relative) in self.entries.clone().iter().zip(output_paths) {
+            for (index, relative) in output_paths.into_iter().enumerate() {
+                let entry = self.entries[index].clone();
                 let path = output_dir.join(relative);
                 if entry.directory {
                     fs::create_dir_all(&path)?;
@@ -237,11 +246,11 @@ impl<R: Read + Seek> IsoImage<R> {
                     if let Some(parent) = path.parent() {
                         fs::create_dir_all(parent)?;
                     }
-                    let file = OpenOptions::new()
+                    let mut file = OpenOptions::new()
                         .write(true)
                         .create_new(true)
                         .open(&path)?;
-                    self.copy_file(entry, file)?;
+                    self.copy_file_contents(&entry, &mut file)?;
                 }
             }
             Ok(())

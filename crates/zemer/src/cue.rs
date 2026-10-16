@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
@@ -59,21 +60,23 @@ fn split(cue_path: &Path, output_dir: &Path) -> Result<CueReport, String> {
     }
     let sheet = parse_wav(&bytes)?;
     let parent = cue_path.parent().unwrap_or_else(|| Path::new("."));
-    let mut file_info = Vec::with_capacity(sheet.files.len());
-    for name in &sheet.files {
-        let path = parent.join(name.replace('\\', "/"));
-        let (spec, frames, _) = wav_info(&path)?;
-        file_info.push((path, spec, frames));
+    let file_info = collect_file_info(&sheet.files, parent, |path| {
+        let (spec, frames, _) = wav_info(path)?;
+        Ok((spec, frames))
+    })?;
+
+    let mut tracks_by_file = vec![Vec::new(); sheet.files.len()];
+    for (file_id, track) in &sheet.tracks {
+        let Some(tracks) = tracks_by_file.get_mut(*file_id) else {
+            return Err("CUE track references a missing FILE entry".to_owned());
+        };
+        tracks.push(track);
     }
 
     let mut ranges = Vec::with_capacity(sheet.tracks.len());
     let mut number = 0;
     for (file_id, (_, spec, file_frames)) in file_info.iter().enumerate() {
-        let tracks = sheet
-            .tracks
-            .iter()
-            .filter_map(|(track_file_id, track)| (*track_file_id == file_id).then_some(track))
-            .collect::<Vec<_>>();
+        let tracks = &tracks_by_file[file_id];
         for (position, track) in tracks.iter().enumerate() {
             number += 1;
             let start_cue_frame = if position == 0 {
@@ -301,6 +304,29 @@ fn wav_info(path: &Path) -> Result<(AudioSpec, u64, Metadata), String> {
     Ok((spec, frames, metadata))
 }
 
+fn collect_file_info(
+    files: &[String],
+    parent: &Path,
+    mut inspect: impl FnMut(&Path) -> Result<(AudioSpec, u64), String>,
+) -> Result<Vec<(PathBuf, AudioSpec, u64)>, String> {
+    let mut scanned = HashMap::new();
+    let mut result = Vec::with_capacity(files.len());
+    for name in files {
+        let path = parent.join(name.replace('\\', "/"));
+        let key =
+            fs::canonicalize(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        let info = if let Some(info) = scanned.get(&key) {
+            *info
+        } else {
+            let info = inspect(&path)?;
+            scanned.insert(key, info);
+            info
+        };
+        result.push((path, info.0, info.1));
+    }
+    Ok(result)
+}
+
 fn wav_metadata(path: &Path) -> Result<(AudioSpec, Metadata), String> {
     let file = File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
     let decoder = WavDecoder::new(file).map_err(|error| audio_error(error, path))?;
@@ -460,7 +486,44 @@ fn audio_error(error: AudioError, path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_FILENAME_TITLE_BYTES, safe_filename};
+    use super::{MAX_FILENAME_TITLE_BYTES, collect_file_info, safe_filename};
+    use std::{
+        cell::Cell,
+        fs,
+        path::Path,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+    use zemer_core::{AudioSpec, SampleFormat};
+
+    static NEXT_CACHE_PATH: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn scans_duplicate_cue_file_paths_once() {
+        let directory = std::env::temp_dir().join(format!(
+            "zemer-cue-cache-{}-{}",
+            std::process::id(),
+            NEXT_CACHE_PATH.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        fs::write(directory.join("track.wav"), b"").unwrap();
+
+        let inspected = Cell::new(0);
+        let spec = AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap();
+        let files = ["track.wav".to_owned(), "./track.wav".to_owned()];
+        let info = collect_file_info(&files, &directory, |path: &Path| {
+            assert_eq!(path.file_name().unwrap(), "track.wav");
+            inspected.set(inspected.get() + 1);
+            Ok((spec, 100))
+        })
+        .unwrap();
+
+        assert_eq!(inspected.get(), 1);
+        assert_eq!(info.len(), 2);
+        assert_eq!(info[0].1, info[1].1);
+        assert_eq!(info[0].2, 100);
+        assert_eq!(info[1].2, 100);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn safe_filename_truncates_at_a_utf8_boundary() {
