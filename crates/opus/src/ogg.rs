@@ -133,6 +133,9 @@ impl OpusTags {
     }
 
     pub fn to_packet(&self) -> Result<Vec<u8>, OpusTagsError> {
+        if self.comments.len() > MAX_OPUS_TAGS_COMMENTS {
+            return Err(OpusTagsError::TooLarge);
+        }
         let comment_count =
             u32::try_from(self.comments.len()).map_err(|_| OpusTagsError::TooLarge)?;
         let packet_bytes = self
@@ -407,6 +410,15 @@ mod tests {
         assert_eq!(
             OpusTags::parse(&invalid_utf8).unwrap_err(),
             OpusTagsError::InvalidUtf8
+        );
+    }
+
+    #[test]
+    fn refuses_to_write_more_comments_than_the_parser_accepts() {
+        let comments = std::iter::repeat_n(String::new(), 1_000_001).collect();
+        assert_eq!(
+            OpusTags::new("test", comments).to_packet().unwrap_err(),
+            OpusTagsError::TooLarge
         );
     }
 }
