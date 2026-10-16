@@ -1,7 +1,8 @@
 use crate::postfilter::PostFilter;
 use crate::pvq::{
     RecursivePvqAngleContext, SplitAngle, combine_mid_side_shapes, decode_codeword,
-    normalize_pulses, pulses_for_allocation, split_stereo_shape_budget, spread_shape,
+    normalize_pulses, pulses_for_allocation, pvq_allocation_requires_split,
+    split_stereo_shape_budget, spread_shape,
 };
 use crate::range::{RangeDecoder, RangeError};
 
@@ -698,6 +699,9 @@ pub(crate) fn decode_mono_pvq_shapes(
             shapes[index] = vec![if sign == 0 { 1.0 } else { -1.0 }];
             pulse_counts[index] = 1;
         } else {
+            if pvq_allocation_requires_split(dimensions, budget)? {
+                return Err(RangeError::UnsupportedCeltMode);
+            }
             let pulse_allocation = pulses_for_allocation(dimensions, budget)?;
             pulse_counts[index] = pulse_allocation.pulses;
             let pulses = if pulse_allocation.pulses == 0 {
@@ -2058,6 +2062,27 @@ mod tests {
                 .sum::<f64>();
             assert!((norm_squared - 1.0).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn mono_shape_decode_rejects_recursive_codebooks_before_consuming_residuals() {
+        let mut shape_eighth_bits = [0; 21];
+        shape_eighth_bits[17] = 8_000;
+        let allocation = FineShapeAllocation {
+            start_band: 17,
+            coded_end_band: 18,
+            shape_eighth_bits,
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let mut range = RangeDecoder::new(&[0x5a; 32]);
+        let before = range.final_range();
+        assert_eq!(
+            decode_mono_pvq_shapes(&mut range, 960, allocation, 0, 1, &[0; 21]),
+            Err(RangeError::UnsupportedCeltMode)
+        );
+        assert_eq!(range.final_range(), before);
     }
 
     #[test]
