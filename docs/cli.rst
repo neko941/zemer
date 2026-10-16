@@ -191,8 +191,9 @@ be set with ``--bext-description`` (256 ASCII bytes), ``--bext-originator`` and
 ``--bext-originator-reference`` (32 bytes each), ``--bext-origination-date``
 (10 bytes), ``--bext-origination-time`` (8 bytes), ``--bext-time-reference``
 (unsigned 64-bit sample count), ``--bext-version`` (unsigned 16-bit value),
-and ``--bext-coding-history`` (ASCII). Unspecified fields and opaque UMID and
-reserved bytes are preserved; if the input has no ``bext`` chunk, one is added.
+``--bext-coding-history`` (ASCII), ``--bext-umid-hex`` (128 hex digits), and
+``--bext-reserved-hex`` (380 hex digits). Unspecified fields are preserved;
+if the input has no ``bext`` chunk, one is added.
 AIFF/AIFC native
 chunks support ASCII TITLE, ARTIST, and COMMENT, while the non-standard ID3
 chunk supports common UTF-8 ID3 text and APIC/PIC picture mapping. DSF writes ID3v2.4 UTF-8 text and APIC pictures; text edits preserve existing pictures and opaque frames. DSDIFF title, artist, and

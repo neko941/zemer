@@ -864,6 +864,56 @@ fn metadata_edit_rejects_invalid_bwf_field_width() {
 }
 
 #[test]
+fn metadata_edit_adds_bwf_and_sets_binary_fields_from_hex() {
+    let input_path = temporary_path().with_extension("wav");
+    let output_path = temporary_path().with_extension("wav");
+    let invalid_output_path = temporary_path().with_extension("wav");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap(),
+        Samples::U8(vec![128]),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+    let umid_hex = (0..64)
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let reserved_hex = (0..190)
+        .map(|byte| format!("{:02X}", byte % 256))
+        .collect::<String>();
+
+    let output = Command::new(cli_path())
+        .args(["metadata", "edit", "--bext-umid-hex"])
+        .arg(&umid_hex)
+        .arg("--bext-reserved-hex")
+        .arg(&reserved_hex)
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    let bext = decoder.bext().unwrap();
+    assert_eq!(bext.umid, std::array::from_fn(|i| i as u8));
+    assert_eq!(bext.reserved, std::array::from_fn(|i| i as u8));
+    assert_eq!(decoder.read_frames(1).unwrap().unwrap(), audio);
+
+    let invalid = Command::new(cli_path())
+        .args(["metadata", "edit", "--bext-umid-hex", "00"])
+        .arg(&input_path)
+        .arg(&invalid_output_path)
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
+    assert!(!invalid_output_path.exists());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
 fn inspect_json_reports_extensible_speaker_mask() {
     let path = temporary_path();
     let converted_path = temporary_path();

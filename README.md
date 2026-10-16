@@ -140,6 +140,8 @@ cargo run -p zemer -- convert --format wavpack input.dsf output.wv
 Edit RIFF INFO and BWF `bext` fields in WAVE, AIFF/AIFC text chunks, native/Ogg-FLAC/Ogg Vorbis comments,
 or WavPack APEv2 text tags while keeping unmentioned tags. Repeated `--set` values for the same key create repeated
 fields; `--remove` removes all values for a key. The output path must be new.
+WAVE BWF edits also accept UMID and reserved fields as fixed-length hexadecimal
+values through `--bext-umid-hex` and `--bext-reserved-hex`.
 Metadata editing preserves encoded audio without decoding or re-encoding it:
 
 ```sh
