@@ -2,6 +2,13 @@ use crate::range::{RangeDecoder, RangeError};
 
 const MAX_PVQ_DIMENSIONS: usize = 176;
 const MAX_PVQ_PULSES: usize = 1024;
+const MAX_PVQ_PSEUDO_PULSES: u16 = 255;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PulseAllocation {
+    pub(crate) pulses: u16,
+    pub(crate) codebook_eighth_bits: u16,
+}
 
 pub(crate) fn codebook_size(dimensions: usize, pulses: usize) -> Result<u32, RangeError> {
     let counts = codebook_counts(dimensions, pulses)?;
@@ -98,6 +105,69 @@ pub(crate) fn normalize_pulses(pulses: &[i32]) -> Result<Vec<f32>, RangeError> {
         .collect())
 }
 
+pub(crate) fn pulses_for_allocation(
+    dimensions: usize,
+    available_eighth_bits: u32,
+) -> Result<PulseAllocation, RangeError> {
+    if dimensions == 0 || dimensions > MAX_PVQ_DIMENSIONS {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+
+    let mut low = 0_usize;
+    let mut high = MAX_PVQ_PULSES;
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        match codebook_size(dimensions, middle) {
+            Ok(_) => low = middle,
+            Err(RangeError::PvqCodebookTooLarge) => high = middle - 1,
+            Err(error) => return Err(error),
+        }
+    }
+    let counts = codebook_counts(dimensions, low)?;
+
+    let mut best = PulseAllocation {
+        pulses: 0,
+        codebook_eighth_bits: 0,
+    };
+    let mut best_distance = available_eighth_bits;
+    for pseudo in 1..=MAX_PVQ_PSEUDO_PULSES {
+        let Some(pulses) = pseudo_pulse_count(pseudo) else {
+            break;
+        };
+        if pulses > low {
+            break;
+        }
+        let cost = u32::from(conservative_log2_eighths(counts[dimensions][pulses]));
+        if cost > available_eighth_bits {
+            continue;
+        }
+        let distance = available_eighth_bits - cost;
+        if distance < best_distance {
+            best = PulseAllocation {
+                pulses: pulses as u16,
+                codebook_eighth_bits: cost as u16,
+            };
+            best_distance = distance;
+        }
+    }
+    Ok(best)
+}
+
+fn pseudo_pulse_count(index: u16) -> Option<usize> {
+    if index < 8 {
+        return Some(usize::from(index));
+    }
+    let shift = u32::from(index / 8 - 1);
+    usize::from(8 + (index & 7)).checked_shl(shift)
+}
+
+fn conservative_log2_eighths(value: u32) -> u16 {
+    if value <= 1 {
+        return 0;
+    }
+    (f64::from(value).log2() * 8.0).ceil() as u16
+}
+
 fn codebook_counts(dimensions: usize, pulses: usize) -> Result<Vec<Vec<u32>>, RangeError> {
     if dimensions == 0 || dimensions > MAX_PVQ_DIMENSIONS || pulses > MAX_PVQ_PULSES {
         return Err(RangeError::InvalidPvqLayout);
@@ -121,7 +191,9 @@ fn codebook_counts(dimensions: usize, pulses: usize) -> Result<Vec<Vec<u32>>, Ra
 mod tests {
     use std::collections::HashSet;
 
-    use super::{codebook_size, decode_codeword, normalize_pulses, unrank_codeword};
+    use super::{
+        codebook_size, decode_codeword, normalize_pulses, pulses_for_allocation, unrank_codeword,
+    };
     use crate::range::{RangeDecoder, RangeError};
 
     #[test]
@@ -182,5 +254,37 @@ mod tests {
         assert!((norm_squared - 1.0).abs() < 1e-7);
         assert_eq!(normalize_pulses(&[0, 0]), Ok(vec![0.0, 0.0]));
         assert_eq!(normalize_pulses(&[]), Err(RangeError::InvalidPvqLayout));
+    }
+
+    #[test]
+    fn allocation_selects_the_nearest_fitting_pseudo_pulse_count() {
+        assert_eq!(
+            pulses_for_allocation(2, 20),
+            Ok(super::PulseAllocation {
+                pulses: 1,
+                codebook_eighth_bits: 16,
+            })
+        );
+        assert_eq!(
+            pulses_for_allocation(2, 28),
+            Ok(super::PulseAllocation {
+                pulses: 2,
+                codebook_eighth_bits: 24,
+            })
+        );
+        assert_eq!(
+            pulses_for_allocation(2, 32),
+            Ok(super::PulseAllocation {
+                pulses: 4,
+                codebook_eighth_bits: 32,
+            })
+        );
+        assert_eq!(
+            pulses_for_allocation(1, 8),
+            Ok(super::PulseAllocation {
+                pulses: 1,
+                codebook_eighth_bits: 8,
+            })
+        );
     }
 }
