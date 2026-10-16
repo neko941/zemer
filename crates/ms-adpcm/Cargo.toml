@@ -1,0 +1,10 @@
+[package]
+name = "zemer-ms-adpcm"
+description = "Microsoft ADPCM block codec for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+zemer-core.workspace = true

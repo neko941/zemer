@@ -67,6 +67,34 @@ fn temporary_path() -> PathBuf {
     ))
 }
 
+#[test]
+fn cli_converts_pcm_to_ms_adpcm_wave() {
+    let input_path = temporary_path();
+    let output_path = temporary_path();
+    let spec = AudioSpec::new(32_000, 1, SampleFormat::PcmI16).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![1_000; 257])).unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+    let output = Command::new(cli_path())
+        .args(["convert", "--format", "wav_ms_adpcm", "--json"])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    let mut frames = 0;
+    while let Some(block) = decoder.read_frames(19).unwrap() {
+        frames += block.frames();
+    }
+    assert_eq!(frames, audio.frames());
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
 fn id3_private_tag() -> Vec<u8> {
     let payload = b"org.example\0opaque";
     let mut frame = Vec::from(&b"PRIV"[..]);

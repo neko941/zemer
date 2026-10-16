@@ -76,6 +76,7 @@ enum OutputFormat {
     Samples(SampleFormat),
     G711(G711Encoding),
     WavImaAdpcm,
+    WavMsAdpcm,
     Flac,
     OggFlac,
     Vorbis,
@@ -102,7 +103,7 @@ impl OutputFormat {
         match self {
             Self::Samples(format) => Some(format),
             Self::G711(_) => Some(SampleFormat::PcmI16),
-            Self::WavImaAdpcm => Some(SampleFormat::PcmI16),
+            Self::WavImaAdpcm | Self::WavMsAdpcm => Some(SampleFormat::PcmI16),
             Self::AifcG711(_) => Some(SampleFormat::PcmI16),
             Self::AuG711(_) => Some(SampleFormat::PcmI16),
             Self::AuG721 => Some(SampleFormat::PcmI16),
@@ -136,6 +137,7 @@ impl OutputFormat {
             Self::G711(G711Encoding::ALaw) => "g711_alaw",
             Self::G711(G711Encoding::MuLaw) => "g711_mulaw",
             Self::WavImaAdpcm => "wav_ima_adpcm",
+            Self::WavMsAdpcm => "wav_ms_adpcm",
             Self::Flac => "flac",
             Self::OggFlac => "ogg_flac",
             Self::Vorbis => "vorbis",
@@ -723,6 +725,7 @@ fn parse_output_format(value: &str) -> Option<OutputFormat> {
         "g711_alaw" => Some(OutputFormat::G711(G711Encoding::ALaw)),
         "g711_mulaw" => Some(OutputFormat::G711(G711Encoding::MuLaw)),
         "wav_ima_adpcm" => Some(OutputFormat::WavImaAdpcm),
+        "wav_ms_adpcm" => Some(OutputFormat::WavMsAdpcm),
         "aifc_alaw" => Some(OutputFormat::AifcG711(G711Encoding::ALaw)),
         "aifc_mulaw" => Some(OutputFormat::AifcG711(G711Encoding::MuLaw)),
         "au_alaw" => Some(OutputFormat::AuG711(G711Encoding::ALaw)),
@@ -837,6 +840,15 @@ fn convert_audio(
             ),
             OutputFormat::WavImaAdpcm => Box::new(
                 WavWriter::new_ima_adpcm_with_metadata_and_container(
+                    output_file,
+                    spec,
+                    &wave_metadata(decoder.metadata()),
+                    container,
+                )
+                .map_err(|error| cli_audio_error(error, &output))?,
+            ),
+            OutputFormat::WavMsAdpcm => Box::new(
+                WavWriter::new_ms_adpcm_with_metadata_and_container(
                     output_file,
                     spec,
                     &wave_metadata(decoder.metadata()),
@@ -1257,6 +1269,7 @@ fn convert_audio(
                 format,
                 OutputFormat::G711(_)
                     | OutputFormat::WavImaAdpcm
+                    | OutputFormat::WavMsAdpcm
                     | OutputFormat::AuG711(_)
                     | OutputFormat::AuG721
                     | OutputFormat::AuG7233
@@ -1791,7 +1804,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|wav_ima_adpcm|aiff|aifc|aifc_sowt|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>... | zemer iso inspect [--json] <image.iso> | zemer iso extract [--json] <image.iso> <new-output-dir>".to_owned(),
+        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|wav_ima_adpcm|wav_ms_adpcm|aiff|aifc|aifc_sowt|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>... | zemer iso inspect [--json] <image.iso> | zemer iso extract [--json] <image.iso> <new-output-dir>".to_owned(),
     }
 }
 
@@ -2024,7 +2037,8 @@ mod tests {
     use std::io::{self, Cursor, Read};
 
     use super::{
-        AudioSpec, SampleFormat, Samples, has_signature, json_string, vorbis_channel_order,
+        AudioSpec, OutputFormat, SampleFormat, Samples, has_signature, json_string,
+        parse_output_format, vorbis_channel_order,
     };
 
     struct OneByteAtATime<R>(R);
@@ -2054,6 +2068,18 @@ mod tests {
     fn treats_truncated_signature_as_non_match() {
         let mut reader = OneByteAtATime(Cursor::new(b"fLa"));
         assert!(!has_signature(&mut reader, b"fLaC").unwrap());
+    }
+
+    #[test]
+    fn exposes_microsoft_adpcm_as_a_wav_output_format() {
+        assert!(matches!(
+            parse_output_format("wav_ms_adpcm"),
+            Some(OutputFormat::WavMsAdpcm)
+        ));
+        assert!(matches!(
+            OutputFormat::WavMsAdpcm.input_sample_format(SampleFormat::PcmI24),
+            Some(SampleFormat::PcmI16)
+        ));
     }
 
     #[test]

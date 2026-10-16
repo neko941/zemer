@@ -144,6 +144,13 @@ name = "zemer-metadata"
 version = "0.7.0"
 
 [[package]]
+name = "zemer-ms-adpcm"
+version = "0.7.0"
+dependencies = [
+ "zemer-core",
+]
+
+[[package]]
 name = "zemer-ogg"
 version = "0.7.0"
 
@@ -188,6 +195,7 @@ dependencies = [
  "zemer-core",
  "zemer-g711",
  "zemer-ima-adpcm",
+ "zemer-ms-adpcm",
 ]
 
 [[package]]
