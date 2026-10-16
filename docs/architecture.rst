@@ -6,7 +6,8 @@ writers:
 
 * ``zemer-pcm`` defines sample formats, audio specifications, PCM buffers, and
   sample-format conversion.
-* ``zemer-metadata`` defines format-independent tags shared by format crates.
+* ``zemer-metadata`` defines format-independent tags and embedded-picture
+  values shared by format crates.
 * ``zemer-id3`` shares bounded ID3v2 text parsing and rewriting between DSF and
   AIFF/AIFC containers.
 * ``zemer-core`` defines streaming decoder/encoder traits and re-exports the

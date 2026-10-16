@@ -6,6 +6,7 @@ use crate::{
     bitstream::{crc8_update, crc16_update},
     frame::fixed_prediction,
     md5::Md5,
+    metadata::{encode_picture, validate_picture},
     rewrite::{DEFAULT_VENDOR, encode_comments, write_block},
 };
 
@@ -44,6 +45,9 @@ impl<W: Write + Seek> FlacEncoder<W> {
         spec: AudioSpec,
         metadata: &Metadata,
     ) -> Result<Self, AudioError> {
+        for picture in metadata.pictures() {
+            validate_picture(picture)?;
+        }
         let bits_per_sample = match spec.sample_format() {
             SampleFormat::PcmU8 => 8,
             SampleFormat::PcmI16 => 16,
@@ -96,12 +100,17 @@ impl<W: Write + Seek> FlacEncoder<W> {
             metadata.insert("WAVEFORMATEXTENSIBLE_CHANNEL_MASK", format!("0x{mask:x}"));
         }
         let comments = encode_comments(&metadata, DEFAULT_VENDOR)?;
+        let pictures = metadata.pictures();
         self.writer.seek(SeekFrom::Start(self.start))?;
         self.writer.write_all(b"fLaC")?;
         self.writer.write_all(&[0, 0, 0, 34])?;
         self.stream_info_offset = Some(self.writer.stream_position()?);
         self.writer.write_all(&[0; 34])?;
-        write_block(&mut self.writer, 4, &comments, true)?;
+        write_block(&mut self.writer, 4, &comments, pictures.is_empty())?;
+        for (index, picture) in pictures.iter().enumerate() {
+            let encoded = encode_picture(picture)?;
+            write_block(&mut self.writer, 6, &encoded, index + 1 == pictures.len())?;
+        }
         Ok(())
     }
 
@@ -225,6 +234,9 @@ impl<W: Write + Seek> AudioEncoder for FlacEncoder<W> {
             return Err(AudioError::InvalidData(
                 "FLAC metadata cannot change after audio output starts",
             ));
+        }
+        for picture in metadata.pictures() {
+            validate_picture(picture)?;
         }
         self.metadata = metadata.clone();
         Ok(())
@@ -475,7 +487,9 @@ impl BitWriter {
 mod tests {
     use std::io::Cursor;
 
-    use zemer_core::{AudioDecoder, AudioEncoder, AudioSpec, PcmBuffer, SampleFormat, Samples};
+    use zemer_core::{
+        AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, Picture, SampleFormat, Samples,
+    };
 
     use crate::{FlacDecoder, FlacEncoder};
 
@@ -510,6 +524,53 @@ mod tests {
             assert_eq!(decoded, input);
             assert!(decoder.read_frames(16).unwrap().is_none());
         }
+    }
+
+    #[test]
+    fn round_trips_shared_picture_metadata_as_flac_picture_blocks() {
+        let spec = AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap();
+        let audio = PcmBuffer::new(spec, Samples::I16(vec![1, -2, 3])).unwrap();
+        let picture = Picture::new(
+            3,
+            "image/png",
+            "front cover",
+            600,
+            600,
+            24,
+            0,
+            b"PNG!".to_vec(),
+        );
+        let mut metadata = Metadata::default();
+        metadata.add_picture(picture.clone());
+        let mut encoder =
+            FlacEncoder::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).unwrap();
+        encoder.write_block(&audio).unwrap();
+        encoder.finish().unwrap();
+
+        let decoder = FlacDecoder::new(Cursor::new(encoder.writer.into_inner())).unwrap();
+        assert_eq!(
+            decoder.metadata().pictures(),
+            std::slice::from_ref(&picture)
+        );
+        let picture_block = decoder
+            .metadata_blocks()
+            .iter()
+            .find(|block| block.kind() == 6)
+            .expect("FLAC picture metadata block");
+        let decoded_picture = picture_block.picture().unwrap().unwrap();
+        assert_eq!(decoded_picture.picture_type, 3);
+        assert_eq!(decoded_picture.media_type, "image/png");
+        assert_eq!(decoded_picture.description, "front cover");
+        assert_eq!((decoded_picture.width, decoded_picture.height), (600, 600));
+        assert_eq!(decoded_picture.data, b"PNG!");
+    }
+
+    #[test]
+    fn rejects_non_ascii_flac_picture_media_type_before_encoding() {
+        let spec = AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap();
+        let mut metadata = Metadata::default();
+        metadata.add_picture(Picture::new(3, "图片/png", "cover", 0, 0, 0, 0, Vec::new()));
+        assert!(FlacEncoder::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).is_err());
     }
 
     #[test]

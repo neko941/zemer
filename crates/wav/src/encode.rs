@@ -861,6 +861,11 @@ pub(super) fn metadata_chunk_size_for_code_page(
 }
 
 fn writer_metadata_size(metadata: &Metadata) -> Result<u64, AudioError> {
+    if !metadata.pictures().is_empty() {
+        return Err(AudioError::Unsupported(
+            "WAVE writer does not support embedded pictures",
+        ));
+    }
     let size = metadata_chunk_size(metadata)?;
     if size == 0 {
         Ok(0)
@@ -991,11 +996,19 @@ mod tests {
     };
 
     use zemer_core::{
-        AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
+        AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, Picture, SampleFormat, Samples,
     };
 
     use super::{G711Encoding, WavContainer, WavWriter};
     use g711::{encode_alaw, encode_mulaw};
+
+    #[test]
+    fn constructor_rejects_pictures_it_cannot_store() {
+        let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+        let mut metadata = Metadata::default();
+        metadata.add_picture(Picture::new(3, "image/png", "cover", 0, 0, 0, 0, [1]));
+        assert!(WavWriter::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).is_err());
+    }
 
     #[derive(Default)]
     struct SparseWriter {

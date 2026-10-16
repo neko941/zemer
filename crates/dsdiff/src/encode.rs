@@ -319,6 +319,11 @@ impl<W: Write + Seek> DsdEncoder for DsdiffEncoder<W> {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
+        if !metadata.pictures().is_empty() {
+            return Err(AudioError::Unsupported(
+                "DSDIFF writer does not support embedded pictures",
+            ));
+        }
         if self.finished || self.poisoned {
             return Err(AudioError::InvalidData(
                 "DSDIFF encoder is finished or unusable",

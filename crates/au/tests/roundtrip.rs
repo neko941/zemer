@@ -3,8 +3,16 @@ use std::io::Cursor;
 use au::{AuDecoder, AuEncoder, G711Encoding, rewrite_metadata};
 use g726::{G726Decoder, G726Rate};
 use zemer_core::{
-    AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
+    AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, Picture, SampleFormat, Samples,
 };
+
+#[test]
+fn constructor_rejects_pictures_it_cannot_store() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+    let mut metadata = Metadata::default();
+    metadata.add_picture(Picture::new(3, "image/png", "cover", 0, 0, 0, 0, [1]));
+    assert!(AuEncoder::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).is_err());
+}
 
 fn round_trip(spec: AudioSpec, samples: Samples, code: u32) {
     let audio = PcmBuffer::new(spec, samples).unwrap();

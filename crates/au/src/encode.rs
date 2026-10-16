@@ -379,6 +379,11 @@ impl<W: Write + Seek> AudioEncoder for AuEncoder<W> {
 }
 
 fn annotation_from_metadata(metadata: &Metadata) -> Result<Vec<u8>, AudioError> {
+    if !metadata.pictures().is_empty() {
+        return Err(AudioError::Unsupported(
+            "AU writer does not support embedded pictures",
+        ));
+    }
     for (key, values) in metadata.iter() {
         if key != "COMMENT" {
             return Err(AudioError::Unsupported(

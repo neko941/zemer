@@ -1,6 +1,6 @@
 use std::io::Read;
 
-use zemer_core::{AudioError, Metadata};
+use zemer_core::{AudioError, Metadata, Picture};
 
 pub(crate) const MAX_METADATA_BYTES: usize = 128 * 1024 * 1024;
 
@@ -439,6 +439,56 @@ pub(crate) fn read_metadata<R: Read>(
     stream_info
         .map(|info| (info, metadata, blocks))
         .ok_or(AudioError::InvalidFormat("missing FLAC STREAMINFO block"))
+}
+
+pub(crate) fn encode_picture(picture: &Picture) -> Result<Vec<u8>, AudioError> {
+    let size = validate_picture(picture)?;
+    let media_type_length = u32::try_from(picture.media_type().len())
+        .map_err(|_| AudioError::InvalidData("FLAC picture media type is too large"))?;
+    let description_length = u32::try_from(picture.description().len())
+        .map_err(|_| AudioError::InvalidData("FLAC picture description is too large"))?;
+    let data_length = u32::try_from(picture.data().len())
+        .map_err(|_| AudioError::InvalidData("FLAC picture data is too large"))?;
+    let mut encoded = Vec::new();
+    encoded
+        .try_reserve_exact(size)
+        .map_err(|_| AudioError::InvalidData("FLAC picture allocation failed"))?;
+    encoded.extend_from_slice(&picture.picture_type().to_be_bytes());
+    encoded.extend_from_slice(&media_type_length.to_be_bytes());
+    encoded.extend_from_slice(picture.media_type().as_bytes());
+    encoded.extend_from_slice(&description_length.to_be_bytes());
+    encoded.extend_from_slice(picture.description().as_bytes());
+    for value in [
+        picture.dimensions().0,
+        picture.dimensions().1,
+        picture.color_depth(),
+        picture.colors(),
+        data_length,
+    ] {
+        encoded.extend_from_slice(&value.to_be_bytes());
+    }
+    encoded.extend_from_slice(picture.data());
+    Ok(encoded)
+}
+
+pub(crate) fn validate_picture(picture: &Picture) -> Result<usize, AudioError> {
+    if !picture.media_type().is_ascii() {
+        return Err(AudioError::InvalidData(
+            "FLAC picture media type must be ASCII",
+        ));
+    }
+    u32::try_from(picture.media_type().len())
+        .map_err(|_| AudioError::InvalidData("FLAC picture media type is too large"))?;
+    u32::try_from(picture.description().len())
+        .map_err(|_| AudioError::InvalidData("FLAC picture description is too large"))?;
+    u32::try_from(picture.data().len())
+        .map_err(|_| AudioError::InvalidData("FLAC picture data is too large"))?;
+    32_usize
+        .checked_add(picture.media_type().len())
+        .and_then(|size| size.checked_add(picture.description().len()))
+        .and_then(|size| size.checked_add(picture.data().len()))
+        .filter(|&size| size <= 0x00ff_ffff)
+        .ok_or(AudioError::InvalidData("FLAC picture block is too large"))
 }
 
 pub(crate) fn checked_metadata_size(current: usize, next: usize) -> Result<usize, AudioError> {
