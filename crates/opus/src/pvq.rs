@@ -126,7 +126,7 @@ pub(crate) fn split_shape_budget(
     child_dimensions: usize,
     angle_q14: u16,
 ) -> Result<(u32, u32), RangeError> {
-    if !(2..=MAX_PVQ_DIMENSIONS).contains(&child_dimensions) || angle_q14 > 16_384 {
+    if !(1..=MAX_PVQ_DIMENSIONS / 2).contains(&child_dimensions) || angle_q14 > 16_384 {
         return Err(RangeError::InvalidPvqLayout);
     }
     if angle_q14 == 0 {
@@ -679,8 +679,14 @@ mod tests {
 
     #[test]
     fn split_shape_budget_rejects_invalid_dimensions_and_angles() {
+        assert_eq!(split_shape_budget(101, 1, 8_192), Ok((51, 50)));
+        assert_eq!(split_shape_budget(101, 88, 8_192), Ok((51, 50)));
         assert_eq!(
-            split_shape_budget(101, 1, 8_192),
+            split_shape_budget(101, 0, 8_192),
+            Err(RangeError::InvalidPvqLayout)
+        );
+        assert_eq!(
+            split_shape_budget(101, 89, 8_192),
             Err(RangeError::InvalidPvqLayout)
         );
         assert_eq!(
