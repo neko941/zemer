@@ -1,7 +1,7 @@
 use crate::postfilter::PostFilter;
 use crate::pvq::{
-    SplitAngle, combine_mid_side_shapes, decode_codeword, normalize_pulses, pulses_for_allocation,
-    split_stereo_shape_budget, spread_shape,
+    RecursivePvqAngleContext, SplitAngle, combine_mid_side_shapes, decode_codeword,
+    normalize_pulses, pulses_for_allocation, split_stereo_shape_budget, spread_shape,
 };
 use crate::range::{RangeDecoder, RangeError};
 
@@ -450,6 +450,36 @@ fn frame_lm(frame_samples_48k: u16) -> Option<u32> {
         120 | 240 | 480 | 960 => Some(u32::from(frame_samples_48k / 120).trailing_zeros()),
         _ => None,
     }
+}
+
+/// Derives the angle quantizer context for a recursive mono band split.
+///
+/// `depth` counts already-applied parent splits. The angle for the next split
+/// uses the remaining transform depth after the parent dimensions are halved.
+/// CELT's base-band log widths are stored in eighth-bit units, matching the
+/// allocation arithmetic used by the recursive PVQ decoder.
+pub(crate) fn recursive_pvq_angle_context(
+    frame_samples_48k: u16,
+    band: u8,
+    depth: u8,
+) -> Result<RecursivePvqAngleContext, RangeError> {
+    let lm = frame_lm(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    if band >= BAND_LOG2_EIGHTHS.len() as u8 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let remaining_lm =
+        i32::try_from(lm).map_err(|_| RangeError::InvalidCeltEnergyLayout)? - i32::from(depth) - 1;
+    let pulse_cap = i32::from(BAND_LOG2_EIGHTHS[usize::from(band)]) + remaining_lm * 8;
+    if pulse_cap < 0 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let pulse_cap_eighth_bits = pulse_cap as u32;
+    let offset_eighth_bits = (pulse_cap_eighth_bits / 2) as i32 - 4;
+    Ok(RecursivePvqAngleContext {
+        pulse_cap_eighth_bits,
+        offset_eighth_bits,
+        time_split: false,
+    })
 }
 
 fn tf_adjustment(lm: u32, transient: bool, select: bool, change: bool) -> i8 {
@@ -1569,10 +1599,48 @@ mod tests {
         decode_final_fine_energy, decode_fine_energies, decode_header, decode_mid_side_pvq_band,
         decode_mono_pvq_shapes, decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes,
         hadamard_tf_axis, hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
-        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
-        split_fine_shape_allocation, static_allocation, tf_adjustment,
+        reallocate_skipped_bands, recursive_pvq_angle_context, reserve_allocation_bits,
+        select_band_allocation, split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
+
+    #[test]
+    fn recursive_split_angle_context_tracks_band_width_and_remaining_lm() {
+        assert_eq!(
+            recursive_pvq_angle_context(120, 12, 0),
+            Ok(crate::pvq::RecursivePvqAngleContext {
+                pulse_cap_eighth_bits: 8,
+                offset_eighth_bits: 0,
+                time_split: false,
+            })
+        );
+        for (depth, pulse_cap, offset) in [(0, 32, 12), (1, 24, 8), (2, 16, 4)] {
+            assert_eq!(
+                recursive_pvq_angle_context(960, 12, depth),
+                Ok(crate::pvq::RecursivePvqAngleContext {
+                    pulse_cap_eighth_bits: pulse_cap,
+                    offset_eighth_bits: offset,
+                    time_split: false,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn recursive_split_angle_context_rejects_invalid_band_or_impossible_depth() {
+        assert_eq!(
+            recursive_pvq_angle_context(120, 21, 0),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            recursive_pvq_angle_context(120, 0, 0),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            recursive_pvq_angle_context(60, 12, 0),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+    }
 
     #[test]
     fn low_overlap_window_has_power_complementary_edges_at_all_celt_sizes() {
