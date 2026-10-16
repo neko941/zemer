@@ -8,4 +8,4 @@ mod packet;
 #[allow(dead_code)]
 mod range;
 
-pub use packet::{OpusPacket, PacketError, Toc};
+pub use packet::{Bandwidth, Mode, OpusPacket, PacketError, Toc};

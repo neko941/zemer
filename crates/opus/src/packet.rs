@@ -11,6 +11,22 @@ pub struct Toc {
     pub frame_samples_48k: u16,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Mode {
+    Silk,
+    Hybrid,
+    Celt,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Bandwidth {
+    Narrow,
+    Medium,
+    Wide,
+    Superwide,
+    Full,
+}
+
 impl Toc {
     fn parse(byte: u8) -> Self {
         let configuration = byte >> 3;
@@ -25,6 +41,24 @@ impl Toc {
             stereo: byte & 0x04 != 0,
             frame_code: byte & 0x03,
             frame_samples_48k,
+        }
+    }
+
+    pub const fn mode(self) -> Mode {
+        match self.configuration {
+            0..=11 => Mode::Silk,
+            12..=15 => Mode::Hybrid,
+            _ => Mode::Celt,
+        }
+    }
+
+    pub const fn bandwidth(self) -> Bandwidth {
+        match self.configuration {
+            0..=3 | 16..=19 => Bandwidth::Narrow,
+            4..=7 => Bandwidth::Medium,
+            8..=11 | 20..=23 => Bandwidth::Wide,
+            12..=13 | 24..=27 => Bandwidth::Superwide,
+            _ => Bandwidth::Full,
         }
     }
 }
@@ -239,7 +273,28 @@ impl std::error::Error for PacketError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{OpusPacket, PacketError, Toc};
+    use super::{Bandwidth, Mode, OpusPacket, PacketError, Toc};
+
+    #[test]
+    fn toc_configurations_select_mode_and_bandwidth() {
+        let ranges = [
+            (0..=3, Mode::Silk, Bandwidth::Narrow),
+            (4..=7, Mode::Silk, Bandwidth::Medium),
+            (8..=11, Mode::Silk, Bandwidth::Wide),
+            (12..=13, Mode::Hybrid, Bandwidth::Superwide),
+            (14..=15, Mode::Hybrid, Bandwidth::Full),
+            (16..=19, Mode::Celt, Bandwidth::Narrow),
+            (20..=23, Mode::Celt, Bandwidth::Wide),
+            (24..=27, Mode::Celt, Bandwidth::Superwide),
+            (28..=31, Mode::Celt, Bandwidth::Full),
+        ];
+        for (configurations, mode, bandwidth) in ranges {
+            for configuration in configurations {
+                let toc = Toc::parse(configuration << 3);
+                assert_eq!((toc.mode(), toc.bandwidth()), (mode, bandwidth));
+            }
+        }
+    }
 
     #[test]
     fn toc_configuration_maps_all_32_frame_durations() {
