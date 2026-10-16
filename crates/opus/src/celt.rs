@@ -170,7 +170,7 @@ pub(crate) fn decode_tf_resolution(
 /// changes use natural row ordering. Axis grouping remains the caller's job.
 pub(crate) fn hadamard_tf_vector(values: &mut [f32], sequency: bool) -> Result<(), RangeError> {
     if values.len() < 2
-        || values.len() > 176
+        || values.len() > 128
         || !values.len().is_power_of_two()
         || values.iter().any(|value| !value.is_finite())
     {
@@ -192,7 +192,8 @@ pub(crate) fn hadamard_tf_vector(values: &mut [f32], sequency: bool) -> Result<(
 
     if sequency {
         let bits = values.len().trailing_zeros();
-        let natural = values.to_vec();
+        let mut natural = [0.0; 128];
+        natural[..values.len()].copy_from_slice(values);
         for (index, value) in values.iter_mut().enumerate() {
             let gray = index ^ (index >> 1);
             let natural_row = gray.reverse_bits() >> (usize::BITS - bits);
@@ -202,6 +203,43 @@ pub(crate) fn hadamard_tf_vector(values: &mut [f32], sequency: bool) -> Result<(
 
     if values.iter().any(|value| !value.is_finite()) {
         return Err(RangeError::CorruptFrame);
+    }
+    Ok(())
+}
+
+/// Applies a Hadamard transform to repeated strided CELT TF axes.
+pub(crate) fn hadamard_tf_axis(
+    values: &mut [f32],
+    axis_length: usize,
+    stride: usize,
+    sequency: bool,
+) -> Result<(), RangeError> {
+    let axis_span = axis_length
+        .checked_mul(stride)
+        .ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    if values.is_empty()
+        || values.len() > 176
+        || !(2..=128).contains(&axis_length)
+        || !axis_length.is_power_of_two()
+        || stride == 0
+        || axis_span > values.len()
+        || values.len() % axis_span != 0
+    {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+
+    let mut axis_storage = [0.0; 128];
+    let axis = &mut axis_storage[..axis_length];
+    for outer in (0..values.len()).step_by(axis_span) {
+        for lane in 0..stride {
+            for (index, value) in axis.iter_mut().enumerate() {
+                *value = values[outer + index * stride + lane];
+            }
+            hadamard_tf_vector(axis, sequency)?;
+            for (index, &value) in axis.iter().enumerate() {
+                values[outer + index * stride + lane] = value;
+            }
+        }
     }
     Ok(())
 }
@@ -1201,7 +1239,7 @@ mod tests {
         decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
         decode_header, decode_mono_pvq_shapes, decode_spread, decode_tf_resolution,
-        denormalize_mono_pvq_shapes, hadamard_tf_vector, predict_coarse_energies,
+        denormalize_mono_pvq_shapes, hadamard_tf_axis, hadamard_tf_vector, predict_coarse_energies,
         reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
         split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
@@ -1459,6 +1497,32 @@ mod tests {
             hadamard_tf_vector(&mut [f32::NAN, 0.0], true),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
+    }
+
+    #[test]
+    fn hadamard_tf_axis_transforms_strided_axes_independently() {
+        let mut interleaved = [1.0, 2.0, 3.0, 4.0];
+        hadamard_tf_axis(&mut interleaved, 2, 2, false).unwrap();
+        let expected = [
+            8.0_f32.sqrt(),
+            18.0_f32.sqrt(),
+            -2.0_f32.sqrt(),
+            -2.0_f32.sqrt(),
+        ];
+        for (actual, expected) in interleaved.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn hadamard_tf_axis_rejects_invalid_geometry() {
+        for (axis_length, stride) in [(1, 1), (3, 1), (2, 0), (4, 2)] {
+            let mut values = [1.0, 2.0, 3.0, 4.0];
+            assert_eq!(
+                hadamard_tf_axis(&mut values, axis_length, stride, false),
+                Err(RangeError::InvalidCeltEnergyLayout)
+            );
+        }
     }
 
     #[test]
