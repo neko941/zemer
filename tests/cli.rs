@@ -19,7 +19,7 @@ use wav::{write_wav, write_wav_with_metadata};
 use wavpack::{WavPackDecoder, WavPackDsdDecoder};
 use zemer_core::{
     AudioDecoder, AudioEncoder, AudioSpec, DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata,
-    PcmBuffer, SampleFormat, Samples,
+    PcmBuffer, Picture, SampleFormat, Samples,
 };
 
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
@@ -2412,8 +2412,17 @@ fn vorbis_cli_metadata_edit_preserves_unmodified_comments() {
     metadata.insert("COMPOSER", "Composer name");
     metadata.insert("LYRICS", "Keep these lyrics");
     metadata.insert("MUSICBRAINZ_ALBUMID", "album-id");
-    let cover_art = "AAAAAwAAAAMtLT4AAAAAAAAAAAAAAAAAAAAAAAAAAAAAACFodHRwczovL2V4YW1wbGUuaW52YWxpZC9jb3Zlci5qcGc=";
-    metadata.insert("METADATA_BLOCK_PICTURE", cover_art);
+    let cover_art = Picture::new(
+        3,
+        "-->",
+        "",
+        0,
+        0,
+        0,
+        0,
+        b"https://example.invalid/cover.jpg".to_vec(),
+    );
+    metadata.add_picture(cover_art.clone());
     let mut first_link = Vec::new();
     {
         let mut encoder = vorbis::VorbisEncoder::new(&mut first_link, spec).unwrap();
@@ -2465,10 +2474,7 @@ fn vorbis_cli_metadata_edit_preserves_unmodified_comments() {
         decoder.metadata().values("MUSICBRAINZ_ALBUMID"),
         ["album-id"]
     );
-    assert_eq!(
-        decoder.metadata().values("METADATA_BLOCK_PICTURE"),
-        [cover_art]
-    );
+    assert_eq!(decoder.metadata().pictures(), [cover_art]);
     let edited_bytes = fs::read(&output_path).unwrap();
     let edited_comments = vorbis_link_comment_packets(&edited_bytes);
     assert_eq!(edited_comments.len(), 2);

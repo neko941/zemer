@@ -21,6 +21,11 @@ PCM streams for mono through 7.1 profiles at sample rates from 8 to 96 kHz.
 During audio decoding, a comment header truncated at end-of-packet is treated
 as non-fatal and yields no comment metadata, as specified by Vorbis I. Direct
 comment parsing and metadata rewriting remain strict.
+Vorbis ``METADATA_BLOCK_PICTURE`` comments map to shared ``Metadata`` picture
+values. The encoder and metadata rewriter emit Base64-encoded FLAC picture
+blocks under that comment key; malformed Base64 or picture fields are rejected
+within the 16 MiB comment-header bound. This follows the
+`Xiph Vorbis Comment guidance <https://wiki.xiph.org/VorbisComment>`_.
 The implementation exercises Vorbis I's 255-channel upper bound with a
 synthetic decoder stream and a one-frame fixed-encoder round trip; these
 boundary checks are not claims of high-channel interoperability coverage. The
