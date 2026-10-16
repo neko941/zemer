@@ -79,7 +79,10 @@ pub(super) fn validate_saxel_markers(
         .try_reserve(markers.len())
         .map_err(|_| AudioError::InvalidData("AIFF SAXL marker index is too large"))?;
     marker_ids.extend(markers.iter().map(|marker| marker.id));
-    if saxels.iter().any(|saxel| !marker_ids.contains(&saxel.marker_id)) {
+    if saxels
+        .iter()
+        .any(|saxel| !marker_ids.contains(&saxel.marker_id))
+    {
         return Err(AudioError::InvalidData(
             "AIFF SAXL record references a missing marker",
         ));
