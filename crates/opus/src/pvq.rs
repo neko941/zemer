@@ -114,6 +114,38 @@ pub(crate) fn combine_split_shapes(
     Ok(shape)
 }
 
+/// Splits a remaining shape budget between equal-dimension PVQ children.
+///
+/// The budget is measured after coding the split angle, in 1/8-bit units.
+/// `child_dimensions` is the dimension of either child. CELT uses the same
+/// energy-angle allocation as mid/side stereo: the left child's share is
+/// `(budget - (N - 1) * log2(tan(theta))) / 2`.
+/// The result is rounded to the nearest eighth-bit, with ties assigned left.
+pub(crate) fn split_shape_budget(
+    remaining_eighth_bits: u32,
+    child_dimensions: usize,
+    angle_q14: u16,
+) -> Result<(u32, u32), RangeError> {
+    if !(2..=MAX_PVQ_DIMENSIONS).contains(&child_dimensions) || angle_q14 > 16_384 {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+    if angle_q14 == 0 {
+        return Ok((remaining_eighth_bits, 0));
+    }
+    if angle_q14 == 16_384 {
+        return Ok((0, remaining_eighth_bits));
+    }
+
+    let theta = f64::from(angle_q14) * (std::f64::consts::FRAC_PI_2 / 16_384.0);
+    let log2_tangent = theta.tan().ln() / std::f64::consts::LN_2;
+    let dimension_cost = (child_dimensions - 1) as f64 * 8.0 * log2_tangent;
+    let left_exact = (f64::from(remaining_eighth_bits) - dimension_cost) * 0.5;
+    let left = (left_exact + 0.5)
+        .floor()
+        .clamp(0.0, f64::from(remaining_eighth_bits)) as u32;
+    Ok((left, remaining_eighth_bits - left))
+}
+
 pub(crate) fn codebook_size(dimensions: usize, pulses: usize) -> Result<u32, RangeError> {
     let counts = codebook_counts(dimensions, pulses)?;
     Ok(counts[dimensions][pulses])
@@ -414,7 +446,7 @@ mod tests {
 
     use super::{
         codebook_size, decode_codeword, decode_split_angle, normalize_pulses,
-        pulses_for_allocation, spread_shape, unrank_codeword,
+        pulses_for_allocation, split_shape_budget, spread_shape, unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -629,6 +661,36 @@ mod tests {
         assert_eq!(combined.len(), 4);
         assert!(super::combine_split_shapes(&left[..1], &right, split).is_err());
         assert!(super::combine_split_shapes(&left, &[f32::NAN, 1.0], split).is_err());
+    }
+
+    #[test]
+    fn split_shape_budget_tracks_energy_angle_and_preserves_total() {
+        assert_eq!(split_shape_budget(160, 4, 8_192), Ok((80, 80)));
+        assert_eq!(split_shape_budget(160, 4, 4_096), Ok((95, 65)));
+        assert_eq!(split_shape_budget(160, 4, 12_288), Ok((65, 95)));
+        assert_eq!(split_shape_budget(101, 4, 8_192), Ok((51, 50)));
+    }
+
+    #[test]
+    fn split_shape_budget_handles_zero_energy_endpoints() {
+        assert_eq!(split_shape_budget(101, 4, 0), Ok((101, 0)));
+        assert_eq!(split_shape_budget(101, 4, 16_384), Ok((0, 101)));
+    }
+
+    #[test]
+    fn split_shape_budget_rejects_invalid_dimensions_and_angles() {
+        assert_eq!(
+            split_shape_budget(101, 1, 8_192),
+            Err(RangeError::InvalidPvqLayout)
+        );
+        assert_eq!(
+            split_shape_budget(101, 178, 8_192),
+            Err(RangeError::InvalidPvqLayout)
+        );
+        assert_eq!(
+            split_shape_budget(101, 4, 16_385),
+            Err(RangeError::InvalidPvqLayout)
+        );
     }
 
     #[test]
