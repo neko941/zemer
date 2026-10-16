@@ -714,7 +714,7 @@ fn allows_zero_frame_file_without_an_ssnd_chunk() {
 }
 
 #[test]
-fn validates_aifc_version_code_and_ssnd_block_size() {
+fn validates_aifc_version_and_decodes_ssnd_alignment_blocks() {
     let mut invalid_version = aifc(b"NONE", 16, &[0, 0]);
     invalid_version[23] = 0;
     assert!(AiffDecoder::new(Cursor::new(invalid_version)).is_err());
@@ -723,9 +723,31 @@ fn validates_aifc_version_code_and_ssnd_block_size() {
     unsupported[50..54].copy_from_slice(b"MACE");
     assert!(AiffDecoder::new(Cursor::new(unsupported)).is_err());
 
-    let mut blocked = aiff16(16, &[0, 0]);
-    blocked[50..54].copy_from_slice(&1_u32.to_be_bytes());
-    assert!(AiffDecoder::new(Cursor::new(blocked)).is_err());
+    for mut aligned in [aiff16(16, &[0x12, 0x34]), aifc(b"NONE", 16, &[0x12, 0x34])] {
+        let ssnd = aligned
+            .windows(4)
+            .position(|window| window == b"SSND")
+            .unwrap();
+        let body = ssnd + 8;
+        let data_start = body + 8;
+        let block_size = 16_usize;
+        let offset = (block_size - data_start % block_size) % block_size;
+        aligned[body..body + 4].copy_from_slice(&u32::try_from(offset).unwrap().to_be_bytes());
+        aligned[body + 4..body + 8]
+            .copy_from_slice(&u32::try_from(block_size).unwrap().to_be_bytes());
+        aligned.splice(body + 8..body + 8, std::iter::repeat_n(0x55, offset));
+        let ssnd_size = u32::from_be_bytes(aligned[ssnd + 4..ssnd + 8].try_into().unwrap());
+        aligned[ssnd + 4..ssnd + 8]
+            .copy_from_slice(&(ssnd_size + u32::try_from(offset).unwrap()).to_be_bytes());
+        let form_size = u32::from_be_bytes(aligned[4..8].try_into().unwrap());
+        aligned[4..8].copy_from_slice(&(form_size + u32::try_from(offset).unwrap()).to_be_bytes());
+
+        let mut decoder = AiffDecoder::new(Cursor::new(aligned)).unwrap();
+        assert_eq!(
+            decoder.read_frames(1).unwrap().unwrap().samples(),
+            &Samples::I16(vec![0x1234])
+        );
+    }
 }
 
 #[test]

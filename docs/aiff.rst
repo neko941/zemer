@@ -117,7 +117,9 @@ continues parsing after those out-of-bound fields. Other incomplete AIFC
 ``COMM`` sizes remain invalid.
 
 Chunk bounds, odd-size padding, the AIFC version, the extended sample rate,
-SSND offsets, COMM frame counts, and metadata size are checked. ``SSND`` is
+SSND offsets and nonzero block-alignment sizes, COMM frame counts, and metadata
+size are checked. The offset locates the first sample frame; the block size is
+accepted as alignment information. ``SSND`` is
 required for non-empty audio and may be omitted when ``COMM`` declares zero
 frames. Unknown chunks are skipped while decoding. AIFC MACE and other
 compression codes are not implemented. A new encode cannot carry unknown chunks
