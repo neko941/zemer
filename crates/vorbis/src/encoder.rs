@@ -333,11 +333,6 @@ impl<W: Write> AudioEncoder for VorbisEncoder<W> {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
-        if !metadata.pictures().is_empty() {
-            return Err(AudioError::Unsupported(
-                "Vorbis encoder does not support embedded pictures",
-            ));
-        }
         if self.finished || self.failed || self.initialized {
             return Err(AudioError::InvalidData(
                 "Vorbis metadata must be set before audio encoding starts",
@@ -973,7 +968,7 @@ mod tests {
 
     use ogg::{OggPacketReader, OggPacketWriter};
     use zemer_core::{
-        AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
+        AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, Picture, SampleFormat, Samples,
     };
 
     use crate::rate_control::QUANTIZER_BITS;
@@ -1319,11 +1314,13 @@ mod tests {
                 [(phase.sin() * 0.7) as f32, (phase.cos() * 0.3) as f32]
             })
             .collect();
+        let picture = Picture::new(3, "image/jpeg", "front", 1, 1, 24, 0, [1, 2, 3]);
         let mut output = Vec::new();
         {
             let mut encoder = VorbisEncoder::new(&mut output, spec).unwrap();
             let mut metadata = Metadata::default();
             metadata.insert("title", "Encoder regression");
+            metadata.add_picture(picture.clone());
             encoder.set_metadata(&metadata).unwrap();
             for chunk in input.chunks(2 * 1703) {
                 let chunk = PcmBuffer::new(spec, Samples::F32(chunk.to_vec())).unwrap();
@@ -1332,8 +1329,12 @@ mod tests {
             encoder.finish().unwrap();
         }
 
-        let mut decoder = VorbisDecoder::new(Cursor::new(output)).unwrap();
+        let mut decoder = VorbisDecoder::new(Cursor::new(output.clone())).unwrap();
         assert_eq!(decoder.metadata().values("title"), ["Encoder regression"]);
+        assert_eq!(
+            decoder.metadata().pictures(),
+            std::slice::from_ref(&picture)
+        );
         let mut decoded = Vec::new();
         while let Some(block) = decoder.read_frames(997).unwrap() {
             let Samples::F32(samples) = block.samples() else {
@@ -1357,6 +1358,18 @@ mod tests {
             &input[..input.len().min(16)],
             &decoded[..decoded.len().min(16)]
         );
+
+        let mut rewritten = Vec::new();
+        let mut replacement = Metadata::default();
+        replacement.insert("title", "Rewritten with picture");
+        replacement.add_picture(picture.clone());
+        crate::rewrite_metadata(Cursor::new(output), &mut rewritten, &replacement).unwrap();
+        let decoder = VorbisDecoder::new(Cursor::new(rewritten)).unwrap();
+        assert_eq!(
+            decoder.metadata().values("title"),
+            ["Rewritten with picture"]
+        );
+        assert_eq!(decoder.metadata().pictures(), [picture]);
     }
 
     #[test]
