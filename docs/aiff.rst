@@ -80,6 +80,15 @@ padding, IDs, positions, and duplicate chunks. CLI conversion to AIFF or AIFC
 carries typed comments and markers to the output; metadata edits preserve the
 original COMT and MARK chunks byte-for-byte.
 
+The AIFC ``SAXL`` API exposes each sound-accelerator record as an
+``AiffSaxel`` containing its positive marker ID and opaque codec-specific bytes.
+The decoder accepts multiple ``SAXL`` chunks and validates record sizes,
+padding, and marker references. ``AiffEncoder::set_saxels`` writes the records
+as one chunk. The payload remains uninterpreted; Zemer does not use saxels to
+seek or initialize codec state. Audio conversion omits saxels because their
+payload describes the original compressed stream, while ``rewrite_metadata``
+retains the source chunk unchanged.
+
 The typed ``AiffInstrument`` API reads and writes the standard 20-byte
 ``INST`` chunk. It exposes MIDI note and velocity ranges, signed cents detune,
 gain in decibels, and optional forward or forward/backward sustain and release
@@ -107,13 +116,14 @@ continues parsing after those out-of-bound fields. Other incomplete AIFC
 Chunk bounds, odd-size padding, the AIFC version, the extended sample rate,
 SSND offsets, COMM frame counts, and metadata size are checked. ``SSND`` is
 required for non-empty audio and may be omitted when ``COMM`` declares zero
-frames. Unknown chunks are skipped. AIFC MACE and other compression codes are
-not implemented; the writer does not preserve unknown chunks from a source
-file.
+frames. Unknown chunks are skipped while decoding. AIFC MACE and other
+compression codes are not implemented. A new encode cannot carry unknown chunks
+from a source file; ``rewrite_metadata`` does preserve them.
 ``rewrite_metadata`` replaces the supported text chunks while copying the
 audio bytes and unrecognized chunks without decoding them. It updates a
 present ID3 chunk while retaining opaque frames, or adds one for non-native
-metadata. It also retains bytes after the FORM boundary.
+metadata. It also retains bytes after the FORM boundary. Audio conversion
+decodes and writes a new file, so source-only unknown chunks are not retained.
 
 The optional ignored ``decodes_external_12_bit_aiff_and_aifc_against_pcm_oracles``
 test compares McGill/AFsp 12-bit AIFF and AIFC sample files with separate FFmpeg

@@ -83,6 +83,10 @@ Rust library crate ``aiff`` (Cargo package ``zemer-aiff``)
 * ``AiffMarker`` — typed ``MARK`` record with unique positive ID, sample-frame
   position, and raw Pascal-string name bytes; ``AiffDecoder::markers()`` reads
   records and ``AiffEncoder::set_markers()`` writes them.
+* ``AiffSaxel`` — opaque codec-specific AIFC ``SAXL`` payload associated with a
+  marker; ``AiffDecoder::saxels()`` reads multiple chunks and
+  ``AiffEncoder::set_saxels()`` writes them. Zemer preserves but does not apply
+  the payload to codec seeking or decoder state.
 * ``rewrite_metadata`` — replaces TITLE/ARTIST/COMMENT chunks while preserving
   encoded audio, unknown chunks, ID3 opaque frames, and trailing bytes.
 

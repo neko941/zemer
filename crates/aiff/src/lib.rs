@@ -7,6 +7,7 @@ mod ima4;
 mod instrument;
 mod marker;
 mod rewrite;
+mod saxel;
 
 pub use audio_recording::AiffAudioRecording;
 pub use comment::AiffComment;
@@ -16,3 +17,4 @@ pub use g726::G726Rate;
 pub use instrument::{AiffInstrument, AiffLoop, AiffLoopMode};
 pub use marker::AiffMarker;
 pub use rewrite::rewrite_metadata;
+pub use saxel::AiffSaxel;

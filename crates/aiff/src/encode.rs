@@ -13,6 +13,7 @@ use crate::instrument::{
     AiffInstrument, validate_instrument, validate_instrument_markers, write_instrument_chunk,
 };
 use crate::marker::{AiffMarker, validate_markers, write_markers_chunk};
+use crate::saxel::{AiffSaxel, validate_saxel_markers, validate_saxels, write_saxels_chunk};
 
 pub struct AiffEncoder<W> {
     writer: W,
@@ -28,6 +29,7 @@ pub struct AiffEncoder<W> {
     id3_tag: Option<Vec<u8>>,
     comments: Vec<AiffComment>,
     markers: Vec<AiffMarker>,
+    saxels: Vec<AiffSaxel>,
     instrument: Option<AiffInstrument>,
     audio_recording: Option<AiffAudioRecording>,
     g711: Option<G711Encoding>,
@@ -494,6 +496,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             id3_tag: None,
             comments: Vec::new(),
             markers: Vec::new(),
+            saxels: Vec::new(),
             instrument: None,
             audio_recording: None,
             g711,
@@ -551,6 +554,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             &self.metadata,
             comments,
             &self.markers,
+            &self.saxels,
             self.instrument.as_ref(),
             self.audio_recording.as_ref(),
         )?;
@@ -570,10 +574,12 @@ impl<W: Write + Seek> AiffEncoder<W> {
             ));
         }
         validate_markers(markers)?;
+        validate_saxel_markers(&self.saxels, markers)?;
         validate_combined_metadata(
             &self.metadata,
             &self.comments,
             markers,
+            &self.saxels,
             self.instrument.as_ref(),
             self.audio_recording.as_ref(),
         )?;
@@ -583,6 +589,38 @@ impl<W: Write + Seek> AiffEncoder<W> {
             .map_err(|_| AudioError::InvalidData("AIFF MARK is too large"))?;
         copied.extend_from_slice(markers);
         self.markers = copied;
+        Ok(())
+    }
+
+    pub fn set_saxels(&mut self, saxels: &[AiffSaxel]) -> Result<(), AudioError> {
+        if self.kind != AiffKind::Aifc {
+            return Err(AudioError::Unsupported(
+                "AIFF SAXL sound-accelerator metadata requires AIFC",
+            ));
+        }
+        if self.frames != 0 || self.finished {
+            return Err(AudioError::InvalidData(
+                "AIFF SAXL metadata must be set before audio samples",
+            ));
+        }
+        validate_saxels(saxels)?;
+        if !self.markers.is_empty() {
+            validate_saxel_markers(saxels, &self.markers)?;
+        }
+        validate_combined_metadata(
+            &self.metadata,
+            &self.comments,
+            &self.markers,
+            saxels,
+            self.instrument.as_ref(),
+            self.audio_recording.as_ref(),
+        )?;
+        let mut copied = Vec::new();
+        copied
+            .try_reserve_exact(saxels.len())
+            .map_err(|_| AudioError::InvalidData("AIFF SAXL is too large"))?;
+        copied.extend_from_slice(saxels);
+        self.saxels = copied;
         Ok(())
     }
 
@@ -597,6 +635,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             &self.metadata,
             &self.comments,
             &self.markers,
+            &self.saxels,
             Some(instrument),
             self.audio_recording.as_ref(),
         )?;
@@ -622,6 +661,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             &self.metadata,
             &self.comments,
             &self.markers,
+            &self.saxels,
             self.instrument.as_ref(),
             Some(recording),
         )?;
@@ -888,6 +928,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
             &metadata,
             &self.comments,
             &self.markers,
+            &self.saxels,
             self.instrument.as_ref(),
             self.audio_recording.as_ref(),
         )?;
@@ -938,6 +979,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 "AIFF marker position exceeds the sample-frame count",
             ));
         }
+        validate_saxel_markers(&self.saxels, &self.markers)?;
         if let Some(instrument) = &self.instrument {
             validate_instrument_markers(instrument, &self.markers)?;
         }
@@ -950,6 +992,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
                 &self.metadata,
                 &self.comments,
                 &self.markers,
+                &self.saxels,
                 self.instrument.as_ref(),
                 self.audio_recording.as_ref(),
             )?,
@@ -976,6 +1019,7 @@ impl<W: Write + Seek> AiffEncoder<W> {
         }
         write_comments_chunk(&mut self.writer, &self.comments)?;
         write_markers_chunk(&mut self.writer, &self.markers)?;
+        write_saxels_chunk(&mut self.writer, &self.saxels)?;
         if let Some(instrument) = &self.instrument {
             write_instrument_chunk(&mut self.writer, instrument)?;
         }
@@ -1095,6 +1139,7 @@ impl<W: Write + Seek> AudioEncoder for AiffEncoder<W> {
             metadata,
             &self.comments,
             &self.markers,
+            &self.saxels,
             self.instrument.as_ref(),
             self.audio_recording.as_ref(),
         )?;
@@ -1158,6 +1203,7 @@ fn validate_combined_metadata(
     metadata: &Metadata,
     comments: &[AiffComment],
     markers: &[AiffMarker],
+    saxels: &[AiffSaxel],
     instrument: Option<&AiffInstrument>,
     audio_recording: Option<&AiffAudioRecording>,
 ) -> Result<u64, AudioError> {
@@ -1176,6 +1222,7 @@ fn validate_combined_metadata(
         .ok_or(AudioError::InvalidData("AIFF metadata size overflow"))?;
     let comment_size = validate_comments(comments)?;
     let marker_size = validate_markers(markers)?;
+    let saxel_size = validate_saxels(saxels)?;
     if let Some(instrument) = instrument {
         validate_instrument(instrument)?;
     }
@@ -1194,6 +1241,7 @@ fn validate_combined_metadata(
         })
         .and_then(|size| size.checked_add(if instrument.is_some() { 28 } else { 0 }))
         .and_then(|size| size.checked_add(if audio_recording.is_some() { 32 } else { 0 }))
+        .and_then(|size| size.checked_add(if saxels.is_empty() { 0 } else { saxel_size + 8 }))
         .ok_or(AudioError::InvalidData("AIFF metadata size overflow"))?;
     if total_size > 16 * 1024 * 1024 {
         return Err(AudioError::Unsupported("AIFF metadata exceeds 16 MiB"));

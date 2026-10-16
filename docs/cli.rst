@@ -154,7 +154,8 @@ for one key replace its existing
 values with the provided repeated values. ``--remove`` removes all values for a
 key. The output file must not already exist. Metadata edits do not decode or
 re-encode audio; Ogg-FLAC packets are repaginated while their encoded packet
-bytes stay identical.
+bytes stay identical. AIFF/AIFC metadata edits retain unknown chunks, while
+audio conversion writes a new container and omits source-only unknown chunks.
 
 .. code-block:: console
 

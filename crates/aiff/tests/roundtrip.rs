@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use aiff::{
-    AiffAudioRecording, AiffComment, AiffDecoder, AiffEncoder, AiffMarker, G726Rate,
+    AiffAudioRecording, AiffComment, AiffDecoder, AiffEncoder, AiffMarker, AiffSaxel, G726Rate,
     rewrite_metadata,
 };
 use g711::{G711Encoding, decode_alaw, decode_mulaw, encode_alaw, encode_mulaw};
@@ -513,6 +513,115 @@ fn rejects_malformed_and_duplicate_comment_chunks() {
         &[0, 1, 0, 0, 0, 42, 0xff, 0xff, 0, 0],
     );
     assert!(AiffDecoder::new(Cursor::new(negative_marker)).is_err());
+}
+
+#[test]
+fn aifc_saxels_round_trip_as_opaque_data_across_multiple_chunks() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap();
+    let samples = PcmBuffer::new(spec, Samples::U8(vec![128, 129])).unwrap();
+    let mut encoder = AiffEncoder::new_aifc(Cursor::new(Vec::new()), spec).unwrap();
+    encoder
+        .set_markers(&[
+            AiffMarker {
+                id: 1,
+                position: 0,
+                name: b"start".to_vec(),
+            },
+            AiffMarker {
+                id: 2,
+                position: 1,
+                name: b"next".to_vec(),
+            },
+        ])
+        .unwrap();
+    let saxels = [
+        AiffSaxel {
+            marker_id: 1,
+            data: vec![0x10],
+        },
+        AiffSaxel {
+            marker_id: 2,
+            data: vec![0x20, 0x30],
+        },
+    ];
+    encoder.set_saxels(&saxels).unwrap();
+    encoder.write_block(&samples).unwrap();
+    let mut encoded = encoder.finish().unwrap().get_ref().clone();
+    assert_eq!(
+        chunk_body(&encoded, b"SAXL"),
+        &[0, 2, 0, 1, 0, 1, 0x10, 0, 0, 2, 0, 2, 0x20, 0x30]
+    );
+
+    append_form_chunk(&mut encoded, b"SAXL", &[0, 1, 0, 1, 0, 1, 0x40, 0]);
+    let rewrite_input = encoded.clone();
+    let mut decoder = AiffDecoder::new(Cursor::new(encoded)).unwrap();
+    assert_eq!(
+        decoder.saxels(),
+        &[
+            saxels[0].clone(),
+            saxels[1].clone(),
+            AiffSaxel {
+                marker_id: 1,
+                data: vec![0x40],
+            }
+        ]
+    );
+    assert_eq!(decoder.read_frames(2).unwrap().unwrap(), samples);
+
+    let mut edited = Metadata::default();
+    edited.insert("title", "Edited");
+    let mut rewritten = Cursor::new(Vec::new());
+    rewrite_metadata(Cursor::new(rewrite_input), &mut rewritten, &edited).unwrap();
+    let rewritten = AiffDecoder::new(Cursor::new(rewritten.into_inner())).unwrap();
+    assert_eq!(
+        rewritten.saxels(),
+        &[
+            saxels[0].clone(),
+            saxels[1].clone(),
+            AiffSaxel {
+                marker_id: 1,
+                data: vec![0x40],
+            }
+        ]
+    );
+}
+
+#[test]
+fn rejects_malformed_saxel_chunks_and_aiff_saxel_writes() {
+    let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap();
+    let saxel = AiffSaxel {
+        marker_id: 1,
+        data: vec![1],
+    };
+    let mut aiff_encoder = AiffEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    assert!(
+        aiff_encoder
+            .set_saxels(std::slice::from_ref(&saxel))
+            .is_err()
+    );
+
+    let mut encoder = AiffEncoder::new_aifc(Cursor::new(Vec::new()), spec).unwrap();
+    encoder
+        .write_block(&PcmBuffer::new(spec, Samples::U8(vec![128])).unwrap())
+        .unwrap();
+    let original = encoder.finish().unwrap().get_ref().clone();
+    for payload in [
+        &[][..],
+        &[0, 1][..],
+        &[0, 1, 0, 1, 0][..],
+        &[0, 1, 0, 1, 0, 1][..],
+    ] {
+        let mut malformed = original.clone();
+        append_form_chunk(&mut malformed, b"SAXL", payload);
+        assert!(AiffDecoder::new(Cursor::new(malformed)).is_err());
+    }
+    let mut bad_id = original.clone();
+    append_form_chunk(&mut bad_id, b"SAXL", &[0, 1, 0, 0, 0, 0]);
+    assert!(AiffDecoder::new(Cursor::new(bad_id)).is_err());
+
+    let mut missing_marker = original;
+    append_form_chunk(&mut missing_marker, b"SAXL", &[0, 1, 0, 3, 0, 0]);
+    assert!(AiffDecoder::new(Cursor::new(missing_marker)).is_err());
 }
 
 #[test]
