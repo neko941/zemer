@@ -206,6 +206,7 @@ dependencies = [
  "zemer-ima-adpcm",
  "zemer-iso9660",
  "zemer-ogg",
+ "zemer-opus",
  "zemer-raw-pcm",
  "zemer-resample",
  "zemer-vorbis",

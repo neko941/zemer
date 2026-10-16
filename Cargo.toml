@@ -45,6 +45,7 @@ path = "crates/zemer/src/main.rs"
 [dependencies]
 zemer-core.workspace = true
 ogg.workspace = true
+opus.workspace = true
 vorbis.workspace = true
 dsf.workspace = true
 wav.workspace = true
@@ -95,4 +96,5 @@ ms-adpcm = { package = "zemer-ms-adpcm", path = "crates/ms-adpcm", version = "0.
 resample = { package = "zemer-resample", path = "crates/resample", version = "0.7.0" }
 iso9660 = { package = "zemer-iso9660", path = "crates/iso9660", version = "0.7.0" }
 vorbis = { package = "zemer-vorbis", path = "crates/vorbis", version = "0.7.0" }
+opus = { package = "zemer-opus", path = "crates/opus", version = "0.7.0" }
 encoding_rs = "=0.8.35"
