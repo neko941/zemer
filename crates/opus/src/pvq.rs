@@ -3,11 +3,77 @@ use crate::range::{RangeDecoder, RangeError};
 const MAX_PVQ_DIMENSIONS: usize = 176;
 const MAX_PVQ_PULSES: usize = 1024;
 const MAX_PVQ_PSEUDO_PULSES: u16 = 255;
+const MAX_SPLIT_ANGLE_RESOLUTION: usize = 256;
+const SPLIT_ANGLE_EXP2_Q14: [u16; 8] = [
+    16_384, 17_866, 19_483, 21_247, 23_170, 25_267, 27_554, 30_048,
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PulseAllocation {
     pub(crate) pulses: u16,
     pub(crate) codebook_eighth_bits: u16,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SplitAngle {
+    pub(crate) resolution: u16,
+    pub(crate) index: u16,
+    pub(crate) angle_q14: u16,
+}
+
+pub(crate) fn decode_split_angle(
+    range: &mut RangeDecoder<'_>,
+    dimensions: usize,
+    allocation_eighth_bits: u32,
+    pulse_cap_eighth_bits: u32,
+    offset_eighth_bits: i32,
+    time_split: bool,
+) -> Result<SplitAngle, RangeError> {
+    if !(2..=MAX_PVQ_DIMENSIONS).contains(&dimensions) {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+
+    let split_dimensions = (2 * dimensions - 1) as i64;
+    let allocation = i64::from(allocation_eighth_bits);
+    let pulse_cap = i64::from(pulse_cap_eighth_bits);
+    let offset = i64::from(offset_eighth_bits);
+    let resolution_bits = (allocation - pulse_cap - 32)
+        .min((allocation + split_dimensions * offset) / split_dimensions)
+        .min(64);
+    let resolution = if resolution_bits < 4 {
+        1
+    } else {
+        let exponent = (resolution_bits / 8) as u32;
+        let fraction = (resolution_bits % 8) as usize;
+        let approximate = u32::from(SPLIT_ANGLE_EXP2_Q14[fraction]) >> (14 - exponent);
+        ((approximate + 1) >> 1 << 1) as u16
+    };
+    let index = if resolution == 1 {
+        0
+    } else if time_split {
+        range.decode_uint(u32::from(resolution) + 1)? as u16
+    } else {
+        let resolution = usize::from(resolution);
+        let half = resolution / 2;
+        let mut frequencies = [0_u16; MAX_SPLIT_ANGLE_RESOLUTION + 1];
+        for (value, frequency) in frequencies[..=resolution].iter_mut().enumerate() {
+            *frequency = (value.min(resolution - value) + 1) as u16;
+        }
+        debug_assert_eq!(
+            frequencies[..=resolution]
+                .iter()
+                .map(|&value| usize::from(value))
+                .sum::<usize>(),
+            (half + 1) * (half + 1)
+        );
+        range.decode_symbol(&frequencies[..=resolution])? as u16
+    };
+    let angle_q14 = (u32::from(index) * 16_384 / u32::from(resolution)) as u16;
+    Ok(SplitAngle {
+        resolution,
+        index,
+        angle_q14,
+    })
 }
 
 pub(crate) fn codebook_size(dimensions: usize, pulses: usize) -> Result<u32, RangeError> {
@@ -309,8 +375,8 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        codebook_size, decode_codeword, normalize_pulses, pulses_for_allocation, spread_shape,
-        unrank_codeword,
+        codebook_size, decode_codeword, decode_split_angle, normalize_pulses,
+        pulses_for_allocation, spread_shape, unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -403,6 +469,84 @@ mod tests {
                 pulses: 1,
                 codebook_eighth_bits: 8,
             })
+        );
+    }
+
+    #[test]
+    fn split_angle_resolution_tracks_available_eighth_bits() {
+        for (resolution_bits, expected_resolution) in [
+            (3, 1),
+            (4, 2),
+            (8, 2),
+            (16, 4),
+            (32, 16),
+            (63, 234),
+            (64, 256),
+        ] {
+            let allocation = 48 + resolution_bits;
+            let mut range = RangeDecoder::new(&[0; 32]);
+            let angle = decode_split_angle(&mut range, 4, allocation, 16, 64, true).unwrap();
+            assert_eq!(angle.resolution, expected_resolution, "{resolution_bits}");
+            assert_eq!(angle.index, 0);
+            assert_eq!(angle.angle_q14, 0);
+        }
+
+        let mut previous_resolution = 1;
+        for resolution_bits in 4..=64 {
+            let allocation = 48 + resolution_bits;
+            let mut range = RangeDecoder::new(&[0; 32]);
+            let angle = decode_split_angle(&mut range, 4, allocation, 16, 64, false).unwrap();
+            assert!(angle.resolution >= previous_resolution);
+            assert_eq!(angle.resolution % 2, 0);
+            previous_resolution = angle.resolution;
+        }
+    }
+
+    #[test]
+    fn split_angle_uses_uniform_time_and_triangular_frequency_models() {
+        let bytes = [0x5a; 32];
+        let mut time_range = RangeDecoder::new(&bytes);
+        let time = decode_split_angle(&mut time_range, 4, 80, 16, 64, true).unwrap();
+        let mut expected_time_range = RangeDecoder::new(&bytes);
+        let expected_time = expected_time_range.decode_uint(17).unwrap() as u16;
+        assert_eq!(time.resolution, 16);
+        assert_eq!(time.index, expected_time);
+        assert_eq!(
+            time.angle_q14,
+            (u32::from(expected_time) * 16_384 / 16) as u16
+        );
+        assert_eq!(
+            time_range.decode_uint(19),
+            expected_time_range.decode_uint(19)
+        );
+
+        let mut frequency_range = RangeDecoder::new(&bytes);
+        let frequency = decode_split_angle(&mut frequency_range, 4, 80, 16, 64, false).unwrap();
+        let frequencies: Vec<u16> = (0..=16)
+            .map(|value| (value.min(16 - value) + 1) as u16)
+            .collect();
+        let mut expected_frequency_range = RangeDecoder::new(&bytes);
+        let expected_frequency = expected_frequency_range
+            .decode_symbol(&frequencies)
+            .unwrap() as u16;
+        assert_eq!(frequency.resolution, 16);
+        assert_eq!(frequency.index, expected_frequency);
+        assert_eq!(
+            frequency_range.decode_uint(19),
+            expected_frequency_range.decode_uint(19)
+        );
+    }
+
+    #[test]
+    fn split_angle_rejects_dimensions_outside_pvq_bounds() {
+        let mut range = RangeDecoder::new(&[0]);
+        assert_eq!(
+            decode_split_angle(&mut range, 1, 64, 16, 0, false),
+            Err(RangeError::InvalidPvqLayout)
+        );
+        assert_eq!(
+            decode_split_angle(&mut range, 177, 64, 16, 0, false),
+            Err(RangeError::InvalidPvqLayout)
         );
     }
 
