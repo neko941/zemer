@@ -1048,6 +1048,39 @@ fn rewrites_tags_without_changing_audio_unknown_chunks_or_trailing_data() {
 }
 
 #[test]
+fn rewrites_aifc_tags_without_changing_audio_or_unknown_chunks() {
+    let original = PcmBuffer::new(
+        AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(vec![-12_345, 0, 23_456]),
+    )
+    .unwrap();
+    let mut old_tags = Metadata::default();
+    old_tags.insert("title", "Old title");
+    let mut encoder = AiffEncoder::new_aifc_sowt_with_metadata(
+        Cursor::new(Vec::new()),
+        original.spec(),
+        &old_tags,
+    )
+    .unwrap();
+    encoder.write_block(&original).unwrap();
+    let mut input = encoder.finish().unwrap().get_ref().clone();
+    append_form_chunk(&mut input, b"TEST", &[1, 2, 3]);
+    let original_audio = chunk_body(&input, b"SSND")[8..].to_vec();
+
+    let mut new_tags = Metadata::default();
+    new_tags.insert("title", "New title");
+    new_tags.insert("album", "New album");
+    let mut output = Cursor::new(Vec::new());
+    rewrite_metadata(Cursor::new(input), &mut output, &new_tags).unwrap();
+    let output = output.into_inner();
+    assert_eq!(chunk_body(&output, b"TEST"), [1, 2, 3]);
+    assert_eq!(chunk_body(&output, b"SSND")[8..], original_audio);
+    let mut decoder = AiffDecoder::new(Cursor::new(output)).unwrap();
+    assert_eq!(decoder.metadata(), &new_tags);
+    assert_eq!(decoder.read_frames(3).unwrap().unwrap(), original);
+}
+
+#[test]
 fn copyright_chunk_round_trips_and_rewrites_without_changing_audio() {
     let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
     let audio = PcmBuffer::new(spec, Samples::I16(vec![-123, 456])).unwrap();
