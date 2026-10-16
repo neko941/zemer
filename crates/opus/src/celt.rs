@@ -164,6 +164,48 @@ pub(crate) fn decode_tf_resolution(
     })
 }
 
+/// Applies an orthonormal Walsh-Hadamard transform to a CELT TF vector.
+///
+/// Time-resolution changes use sequency row ordering; frequency-resolution
+/// changes use natural row ordering. Axis grouping remains the caller's job.
+pub(crate) fn hadamard_tf_vector(values: &mut [f32], sequency: bool) -> Result<(), RangeError> {
+    if values.len() < 2
+        || values.len() > 176
+        || !values.len().is_power_of_two()
+        || values.iter().any(|value| !value.is_finite())
+    {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+
+    let mut group_width = 1;
+    while group_width < values.len() {
+        for group in values.chunks_exact_mut(group_width * 2) {
+            for index in 0..group_width {
+                let left = group[index];
+                let right = group[index + group_width];
+                group[index] = (left + right) * std::f32::consts::FRAC_1_SQRT_2;
+                group[index + group_width] = (left - right) * std::f32::consts::FRAC_1_SQRT_2;
+            }
+        }
+        group_width *= 2;
+    }
+
+    if sequency {
+        let bits = values.len().trailing_zeros();
+        let natural = values.to_vec();
+        for (index, value) in values.iter_mut().enumerate() {
+            let gray = index ^ (index >> 1);
+            let natural_row = gray.reverse_bits() >> (usize::BITS - bits);
+            *value = natural[natural_row];
+        }
+    }
+
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(RangeError::CorruptFrame);
+    }
+    Ok(())
+}
+
 fn frame_lm(frame_samples_48k: u16) -> Option<u32> {
     match frame_samples_48k {
         120 | 240 | 480 | 960 => Some(u32::from(frame_samples_48k / 120).trailing_zeros()),
@@ -1159,9 +1201,9 @@ mod tests {
         decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
         decode_header, decode_mono_pvq_shapes, decode_spread, decode_tf_resolution,
-        denormalize_mono_pvq_shapes, predict_coarse_energies, reallocate_skipped_bands,
-        reserve_allocation_bits, select_band_allocation, split_fine_shape_allocation,
-        static_allocation, tf_adjustment,
+        denormalize_mono_pvq_shapes, hadamard_tf_vector, predict_coarse_energies,
+        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
+        split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1384,6 +1426,39 @@ mod tests {
         assert_eq!(decoded.changes, [false; 5]);
         assert_eq!(decoded.adjustments, [2; 5]);
         assert!(!decoded.selected_table);
+    }
+
+    #[test]
+    fn hadamard_tf_vectors_use_orthonormal_natural_and_sequency_rows() {
+        let mut natural = [1.0, 2.0, 3.0, 4.0];
+        hadamard_tf_vector(&mut natural, false).unwrap();
+        for (actual, expected) in natural.into_iter().zip([5.0, -1.0, -2.0, 0.0]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+
+        let mut sequency = [1.0, 2.0, 3.0, 4.0];
+        hadamard_tf_vector(&mut sequency, true).unwrap();
+        for (actual, expected) in sequency.into_iter().zip([5.0, -2.0, 0.0, -1.0]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        let energy = sequency.iter().map(|value| value * value).sum::<f32>();
+        assert_eq!(energy, 30.0);
+    }
+
+    #[test]
+    fn hadamard_tf_vector_rejects_invalid_inputs() {
+        assert_eq!(
+            hadamard_tf_vector(&mut [], false),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            hadamard_tf_vector(&mut [1.0, 2.0, 3.0], false),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            hadamard_tf_vector(&mut [f32::NAN, 0.0], true),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
     }
 
     #[test]
