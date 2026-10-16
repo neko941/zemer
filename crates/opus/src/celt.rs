@@ -1,5 +1,24 @@
 use crate::range::{RangeDecoder, RangeError};
 
+const BAND_WIDTHS_2_5_MS: [u16; 21] = [
+    1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 6, 6, 8, 12, 18, 22,
+];
+
+pub(crate) fn band_edges(frame_samples_48k: u16) -> Option<[u16; 22]> {
+    let scale = match frame_samples_48k {
+        120 => 1,
+        240 => 2,
+        480 => 4,
+        960 => 8,
+        _ => return None,
+    };
+    let mut edges = [0; 22];
+    for (index, width) in BAND_WIDTHS_2_5_MS.into_iter().enumerate() {
+        edges[index + 1] = edges[index] + width * scale;
+    }
+    Some(edges)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PostFilter {
     pub(crate) period: u16,
@@ -51,8 +70,20 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 
 #[cfg(test)]
 mod tests {
-    use super::{FrameHeader, decode_header};
+    use super::{FrameHeader, band_edges, decode_header};
     use crate::range::RangeDecoder;
+
+    #[test]
+    fn band_edges_scale_for_all_celt_frame_durations() {
+        let base = [
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 20, 24, 28, 34, 40, 48, 60, 78, 100,
+        ];
+        for (frame_samples, scale) in [(120, 1), (240, 2), (480, 4), (960, 8)] {
+            let edges = band_edges(frame_samples).unwrap();
+            assert_eq!(edges, base.map(|edge| edge * scale));
+        }
+        assert_eq!(band_edges(60), None);
+    }
 
     #[test]
     fn zero_range_stream_decodes_regular_short_frame_header() {
