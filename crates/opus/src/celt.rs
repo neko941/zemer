@@ -76,6 +76,59 @@ const BAND_LOG2_EIGHTHS: [u8; 21] = [
 ];
 const MAX_FINE_ENERGY_BITS: u8 = 8;
 const FINE_ENERGY_OFFSET_EIGHTHS: i64 = 21;
+const CELT_OVERLAP_SAMPLES: usize = 120;
+
+/// Builds the CELT low-overlap window for one long or short inverse MDCT.
+///
+/// The basic 240-sample Vorbis-derived window is zero-padded at both ends,
+/// then extended with a flat center. This keeps the 120-sample overlap
+/// power-complementary at the transform hop for every CELT frame size.
+fn celt_low_overlap_window(transform_bins: usize) -> Result<Vec<f64>, RangeError> {
+    if ![120, 240, 480, 960].contains(&transform_bins) {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+
+    let output_len = transform_bins
+        .checked_mul(2)
+        .ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    let side_padding = (transform_bins - CELT_OVERLAP_SAMPLES) / 2;
+    let flat_len = transform_bins - CELT_OVERLAP_SAMPLES;
+    let mut window = vec![0.0; output_len];
+    window[side_padding + CELT_OVERLAP_SAMPLES..side_padding + CELT_OVERLAP_SAMPLES + flat_len]
+        .fill(1.0);
+    for index in 0..CELT_OVERLAP_SAMPLES {
+        let inner_angle =
+            std::f64::consts::FRAC_PI_2 * (index as f64 + 0.5) / CELT_OVERLAP_SAMPLES as f64;
+        let inner_sine = inner_angle.sin();
+        let value = (std::f64::consts::FRAC_PI_2 * inner_sine * inner_sine).sin();
+        window[side_padding + index] = value;
+        window[output_len - side_padding - index - 1] = value;
+    }
+    Ok(window)
+}
+
+/// Applies CELT's half-scaled inverse MDCT and low-overlap window.
+fn inverse_mdct_windowed(spectrum: &[f32]) -> Result<Vec<f32>, RangeError> {
+    if spectrum.iter().any(|value| !value.is_finite()) {
+        return Err(RangeError::CorruptFrame);
+    }
+    let window = celt_low_overlap_window(spectrum.len())?;
+    let spectrum = spectrum
+        .iter()
+        .map(|&value| f64::from(value))
+        .collect::<Vec<_>>();
+    let unwindowed = zemer_core::transform::inverse_mdct(&spectrum)
+        .map_err(|_| RangeError::InvalidCeltEnergyLayout)?;
+    let output: Vec<_> = unwindowed
+        .into_iter()
+        .zip(window)
+        .map(|(sample, window)| (sample * 0.5 * window) as f32)
+        .collect();
+    if output.iter().any(|value| !value.is_finite()) {
+        return Err(RangeError::CorruptFrame);
+    }
+    Ok(output)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AllocationReservations {
@@ -1411,14 +1464,87 @@ mod tests {
     use super::{
         AllocationControls, ENERGY_LAPLACE_MODELS, FineShapeAllocation, FrameHeader, MonoPvqShapes,
         allocation_caps, allocation_thresholds, allocation_trim_offsets, apply_tf_adjustment,
-        band_edges, decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
-        decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
-        decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes, decode_spread,
-        decode_tf_resolution, denormalize_mono_pvq_shapes, hadamard_tf_axis, hadamard_tf_vector,
-        predict_coarse_energies, reallocate_skipped_bands, reserve_allocation_bits,
-        select_band_allocation, split_fine_shape_allocation, static_allocation, tf_adjustment,
+        band_edges, celt_low_overlap_window, decode_allocation_controls, decode_allocation_trim,
+        decode_band_boosts, decode_coarse_energy_residuals, decode_final_fine_energy,
+        decode_fine_energies, decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes,
+        decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes, hadamard_tf_axis,
+        hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
+        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
+        split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
+
+    #[test]
+    fn low_overlap_window_has_power_complementary_edges_at_all_celt_sizes() {
+        for transform_bins in [120, 240, 480, 960] {
+            let window = celt_low_overlap_window(transform_bins).unwrap();
+            assert_eq!(window.len(), transform_bins * 2);
+            for index in 0..transform_bins {
+                let paired = window[index + transform_bins];
+                let energy = window[index] * window[index] + paired * paired;
+                assert!(
+                    (energy - 1.0).abs() < 1e-12,
+                    "bins={transform_bins}, index={index}"
+                );
+            }
+            let side_padding = (transform_bins - 120) / 2;
+            let flat_start = side_padding + 120;
+            let flat_end = flat_start + transform_bins - 120;
+            assert!(window[..side_padding].iter().all(|&value| value == 0.0));
+            assert!(
+                window[flat_start..flat_end]
+                    .iter()
+                    .all(|&value| value == 1.0)
+            );
+            assert!(
+                window[2 * transform_bins - side_padding..]
+                    .iter()
+                    .all(|&value| value == 0.0)
+            );
+            if side_padding == 0 {
+                assert!(window[0] < 0.0001);
+                assert!(window[119] > 0.9999);
+            }
+        }
+    }
+
+    #[test]
+    fn inverse_mdct_window_applies_half_scale_and_celt_lapping_shape() {
+        for transform_bins in [120, 240, 480, 960] {
+            let spectrum: Vec<f32> = (0..transform_bins)
+                .map(|index| ((index * 19 % 41) as f32 - 20.0) / 29.0)
+                .collect();
+            let actual = inverse_mdct_windowed(&spectrum).unwrap();
+            let spectrum_f64: Vec<_> = spectrum.iter().map(|&value| f64::from(value)).collect();
+            let unwindowed = zemer_core::transform::inverse_mdct(&spectrum_f64).unwrap();
+            let window = celt_low_overlap_window(transform_bins).unwrap();
+            assert_eq!(actual.len(), transform_bins * 2);
+            for ((&sample, &raw), &weight) in actual.iter().zip(&unwindowed).zip(&window) {
+                let expected = (raw * 0.5 * weight) as f32;
+                assert!((sample - expected).abs() < 1e-6);
+            }
+        }
+    }
+
+    #[test]
+    fn low_overlap_window_and_inverse_mdct_reject_invalid_inputs() {
+        assert_eq!(
+            celt_low_overlap_window(60),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            celt_low_overlap_window(1920),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            inverse_mdct_windowed(&[f32::NAN; 120]),
+            Err(RangeError::CorruptFrame)
+        );
+        assert_eq!(
+            inverse_mdct_windowed(&[0.0; 60]),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+    }
 
     #[test]
     fn band_edges_scale_for_all_celt_frame_durations() {
