@@ -3,6 +3,7 @@ pub(crate) enum RangeError {
     InvalidFrequencyTable,
     InvalidInverseCdf,
     InvalidLogProbability,
+    InvalidLaplaceModel,
     InvalidTotal,
     CorruptFrame,
     RawBitsTooWide,
@@ -111,6 +112,17 @@ impl<'a> RangeDecoder<'a> {
         Ok(value)
     }
 
+    pub(crate) fn decode_laplace(
+        &mut self,
+        zero_frequency: u16,
+        decay: u16,
+    ) -> Result<i32, RangeError> {
+        let value = self.value(1 << 15)?;
+        let (symbol, low, high) = laplace_interval(value, zero_frequency, decay)?;
+        self.update(low, high, 1 << 15)?;
+        Ok(symbol)
+    }
+
     pub(crate) fn read_raw_bits(&mut self, count: u8) -> Result<u32, RangeError> {
         if count > u32::BITS as u8 {
             return Err(RangeError::RawBitsTooWide);
@@ -203,9 +215,53 @@ impl<'a> RangeDecoder<'a> {
     }
 }
 
+fn laplace_interval(
+    value: u32,
+    zero_frequency: u16,
+    decay: u16,
+) -> Result<(i32, u32, u32), RangeError> {
+    let zero_frequency = u32::from(zero_frequency);
+    let decay = u32::from(decay);
+    if value >= 1 << 15
+        || zero_frequency == 0
+        || zero_frequency > (1 << 15) - 32
+        || decay >= 1 << 14
+    {
+        return Err(RangeError::InvalidLaplaceModel);
+    }
+    if value < zero_frequency {
+        return Ok((0, 0, zero_frequency));
+    }
+
+    let mut low = zero_frequency;
+    let mut side_frequency = ((((1 << 15) - 32 - zero_frequency) * ((1 << 14) - decay)) >> 15) + 1;
+    let mut magnitude = 1_i32;
+    while side_frequency > 1 && value >= low + 2 * side_frequency {
+        low += 2 * side_frequency;
+        magnitude += 1;
+        side_frequency = (((2 * side_frequency - 2) * decay) >> 15) + 1;
+    }
+    if side_frequency == 1 {
+        let tail_index = (value - low) / 2;
+        magnitude += tail_index as i32;
+        low += 2 * tail_index;
+    }
+    let high = if value < low + side_frequency {
+        -magnitude
+    } else {
+        low += side_frequency;
+        magnitude
+    };
+    let upper = low + side_frequency;
+    if upper > 1 << 15 {
+        return Err(RangeError::InvalidLaplaceModel);
+    }
+    Ok((high, low, upper))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{RangeDecoder, RangeError};
+    use super::{RangeDecoder, RangeError, laplace_interval};
 
     #[test]
     fn decodes_symbol_interval_edges() {
@@ -298,6 +354,63 @@ mod tests {
         assert_eq!(
             RangeDecoder::new(&[0]).decode_bit_logp(0),
             Err(RangeError::InvalidLogProbability)
+        );
+    }
+
+    #[test]
+    fn laplace_context_partitions_zero_signed_and_tail_values() {
+        let zero_frequency = 72_u16 << 7;
+        let zero_frequency_32 = u32::from(zero_frequency);
+        let decay = 127_u16 << 6;
+        let first_side_frequency =
+            ((((1 << 15) - 32 - zero_frequency_32) * ((1 << 14) - u32::from(decay))) >> 15) + 1;
+        assert_eq!(
+            laplace_interval(0, zero_frequency, decay),
+            Ok((0, 0, zero_frequency_32))
+        );
+        assert_eq!(
+            laplace_interval(zero_frequency_32, zero_frequency, decay),
+            Ok((
+                -1,
+                zero_frequency_32,
+                zero_frequency_32 + first_side_frequency
+            ))
+        );
+        assert_eq!(
+            laplace_interval(
+                zero_frequency_32 + first_side_frequency,
+                zero_frequency,
+                decay
+            ),
+            Ok((
+                1,
+                zero_frequency_32 + first_side_frequency,
+                zero_frequency_32 + 2 * first_side_frequency
+            ))
+        );
+        for value in 0..1 << 15 {
+            let (_, low, high) = laplace_interval(value, zero_frequency, decay).unwrap();
+            assert!(low <= value && value < high && high <= 1 << 15);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_laplace_models_and_cumulative_values() {
+        assert_eq!(
+            laplace_interval(0, 0, 100),
+            Err(RangeError::InvalidLaplaceModel)
+        );
+        assert_eq!(
+            laplace_interval(0, 32_737, 100),
+            Err(RangeError::InvalidLaplaceModel)
+        );
+        assert_eq!(
+            laplace_interval(0, 1, 16_384),
+            Err(RangeError::InvalidLaplaceModel)
+        );
+        assert_eq!(
+            laplace_interval(32_768, 100, 100),
+            Err(RangeError::InvalidLaplaceModel)
         );
     }
 }
