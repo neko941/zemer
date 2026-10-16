@@ -45,6 +45,7 @@ vectors pass bit-exactly at DSD64/128/256.
    wav
    aiff
    au
+   raw-pcm
    flac
    wavpack
    dsf

@@ -21,6 +21,7 @@ vorbis.workspace = true
 wavpack.workspace = true
 aiff.workspace = true
 au.workspace = true
+raw-pcm.workspace = true
 g711.workspace = true
 ima-adpcm.workspace = true
 iso9660.workspace = true

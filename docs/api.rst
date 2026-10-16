@@ -13,6 +13,16 @@ Format-independent PCM types and sample-format conversion:
 * ``convert_sample_format`` — conversion between integer PCM and IEEE float
   sample formats without resampling or channel remixing.
 
+Crate ``zemer-raw-pcm``
+-----------------------
+
+* ``RawPcmFormat`` — explicit unsigned 8-bit, signed 16/24/32-bit, or IEEE
+  float32/64 sample storage with a selected byte order.
+* ``RawPcmDecoder<R>`` — implements ``AudioDecoder`` for headerless streams;
+  callers supply sample rate, channel count, and sample format.
+* ``RawPcmEncoder<W>`` — implements ``AudioEncoder`` and writes matching raw
+  sample bytes without adding a header or metadata.
+
 Crate ``zemer-g711``
 --------------------
 

@@ -17,6 +17,7 @@ use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
 use g711::G711Encoding;
 use ogg::OggPacketReader;
+use raw_pcm::{RawPcmDecoder, RawPcmEncoder, RawPcmFormat};
 use vorbis::{VorbisDecoder, VorbisEncoder};
 use wav::{WavContainer, WavDecoder, WavWriter};
 use wavpack::{
@@ -55,6 +56,82 @@ struct AudioInput {
     au_annotation: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Copy)]
+struct RawPcmOptions {
+    format: RawPcmFormat,
+    sample_rate: u32,
+    channels: u16,
+}
+
+#[derive(Default)]
+struct RawPcmArgs {
+    format: Option<RawPcmFormat>,
+    sample_rate: Option<u32>,
+    channels: Option<u16>,
+}
+
+impl RawPcmArgs {
+    fn parse_at(
+        &mut self,
+        args: &[std::ffi::OsString],
+        index: &mut usize,
+    ) -> Result<bool, CliError> {
+        let name = match args.get(*index).and_then(|arg| arg.to_str()) {
+            Some("--input-format") => "format",
+            Some("--sample-rate") => "sample_rate",
+            Some("--channels") => "channels",
+            _ => return Ok(false),
+        };
+        *index += 1;
+        let value = args
+            .get(*index)
+            .and_then(|arg| arg.to_str())
+            .ok_or_else(usage_error)?;
+        match name {
+            "format" => {
+                let format = RawPcmFormat::parse(value).ok_or_else(usage_error)?;
+                if self.format.replace(format).is_some() {
+                    return Err(usage_error());
+                }
+            }
+            "sample_rate" => {
+                let rate = value
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|rate| *rate > 0)
+                    .ok_or_else(usage_error)?;
+                if self.sample_rate.replace(rate).is_some() {
+                    return Err(usage_error());
+                }
+            }
+            _ => {
+                let channels = value
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|channels| *channels > 0)
+                    .ok_or_else(usage_error)?;
+                if self.channels.replace(channels).is_some() {
+                    return Err(usage_error());
+                }
+            }
+        }
+        *index += 1;
+        Ok(true)
+    }
+
+    fn finish(self) -> Result<Option<RawPcmOptions>, CliError> {
+        match (self.format, self.sample_rate, self.channels) {
+            (None, None, None) => Ok(None),
+            (Some(format), Some(sample_rate), Some(channels)) => Ok(Some(RawPcmOptions {
+                format,
+                sample_rate,
+                channels,
+            })),
+            _ => Err(usage_error()),
+        }
+    }
+}
+
 type DsdInput = (
     Box<dyn DsdDecoder>,
     &'static str,
@@ -73,6 +150,7 @@ struct DsdReport {
 
 #[derive(Clone, Copy)]
 enum OutputFormat {
+    RawPcm(RawPcmFormat),
     Samples(SampleFormat),
     G711(G711Encoding),
     WavImaAdpcm,
@@ -101,6 +179,7 @@ enum OutputFormat {
 impl OutputFormat {
     fn input_sample_format(self, source: SampleFormat) -> Option<SampleFormat> {
         match self {
+            Self::RawPcm(raw) => Some(raw.sample_format()),
             Self::Samples(format) => Some(format),
             Self::G711(_) => Some(SampleFormat::PcmI16),
             Self::WavImaAdpcm | Self::WavMsAdpcm => Some(SampleFormat::PcmI16),
@@ -133,6 +212,7 @@ impl OutputFormat {
 
     fn name(self) -> &'static str {
         match self {
+            Self::RawPcm(format) => format.name(),
             Self::Samples(format) => sample_format_name(format),
             Self::G711(G711Encoding::ALaw) => "g711_alaw",
             Self::G711(G711Encoding::MuLaw) => "g711_mulaw",
@@ -442,7 +522,7 @@ fn edit_audio_metadata(
     }
     let AudioInput {
         decoder, format, ..
-    } = open_decoder(&input)?;
+    } = open_decoder(&input, None)?;
     if format != "flac"
         && format != "ogg-flac"
         && format != "ogg-vorbis"
@@ -535,19 +615,27 @@ fn cli_rewrite_error(error: AudioError, input: &Path, output: &Path) -> CliError
 
 fn inspect_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> {
     let mut input = None;
-    for arg in &args[1..] {
-        if arg == "--json" {
-            continue;
-        }
-        if input.replace(PathBuf::from(arg)).is_some() {
-            return Err(usage_error());
+    let mut raw = RawPcmArgs::default();
+    let mut index = 1;
+    while index < args.len() {
+        if args[index] == "--json" {
+            index += 1;
+        } else if raw.parse_at(args, &mut index)? {
+        } else {
+            if input.replace(PathBuf::from(&args[index])).is_some() {
+                return Err(usage_error());
+            }
+            index += 1;
         }
     }
     let input = input.ok_or_else(usage_error)?;
-    if let Some((decoder, format, _, _, _)) = open_dsd_decoder(&input)? {
-        return inspect_dsd(decoder, format, &input).map(CommandReport::InspectDsd);
+    let raw = raw.finish()?;
+    if raw.is_none() {
+        if let Some((decoder, format, _, _, _)) = open_dsd_decoder(&input)? {
+            return inspect_dsd(decoder, format, &input).map(CommandReport::InspectDsd);
+        }
     }
-    inspect_audio(input).map(CommandReport::Inspect)
+    inspect_audio(input, raw).map(CommandReport::Inspect)
 }
 
 fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> {
@@ -555,11 +643,14 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
     let mut container = None;
     let mut bitrate = None;
     let mut valid_bits = None;
+    let mut raw = RawPcmArgs::default();
     let mut paths = Vec::new();
     let mut index = 1;
     while index < args.len() {
         if args[index] == "--json" {
             index += 1;
+        } else if raw.parse_at(args, &mut index)? {
+            continue;
         } else if args[index] == "--format" {
             index += 1;
             let Some(value) = args.get(index).and_then(|arg| arg.to_str()) else {
@@ -622,7 +713,12 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
     let input = paths.remove(0);
     let output = paths.remove(0);
     let format = format.ok_or_else(usage_error)?;
-    let dsd_input = open_dsd_decoder(&input)?;
+    let raw = raw.finish()?;
+    let dsd_input = if raw.is_none() {
+        open_dsd_decoder(&input)?
+    } else {
+        None
+    };
     if matches!(
         format,
         OutputFormat::Dsf | OutputFormat::Dsdiff | OutputFormat::DsdiffDst
@@ -634,6 +730,9 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         });
     }
     if let Some((decoder, _, id3_tag, comments, markers)) = dsd_input {
+        if raw.is_some() {
+            return Err(usage_error());
+        }
         if !matches!(
             format,
             OutputFormat::Dsf
@@ -677,6 +776,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
     if matches!(
         format,
         OutputFormat::Flac
+            | OutputFormat::RawPcm(_)
             | OutputFormat::OggFlac
             | OutputFormat::Vorbis
             | OutputFormat::WavPack
@@ -702,6 +802,7 @@ fn convert_args(args: &[std::ffi::OsString]) -> Result<CommandReport, CliError> 
         container.unwrap_or(WavContainer::Riff),
         bitrate,
         valid_bits,
+        raw,
     )?;
     Ok(CommandReport::Convert(report, output))
 }
@@ -715,6 +816,9 @@ fn parse_container(value: &str) -> Option<WavContainer> {
 }
 
 fn parse_output_format(value: &str) -> Option<OutputFormat> {
+    if let Some(raw) = RawPcmFormat::parse(value) {
+        return Some(OutputFormat::RawPcm(raw));
+    }
     match value {
         "pcm_u8" => Some(OutputFormat::Samples(SampleFormat::PcmU8)),
         "pcm_i16" => Some(OutputFormat::Samples(SampleFormat::PcmI16)),
@@ -758,6 +862,7 @@ fn convert_audio(
     container: WavContainer,
     bitrate_kbps: Option<u32>,
     valid_bits: Option<u16>,
+    raw: Option<RawPcmOptions>,
 ) -> Result<Report, CliError> {
     let AudioInput {
         mut decoder,
@@ -768,9 +873,16 @@ fn convert_audio(
         aiff_id3_tag,
         au_annotation,
         ..
-    } = open_decoder(&input)?;
+    } = open_decoder(&input, raw)?;
     let input_spec = decoder.spec();
-    let spec = if matches!(format, OutputFormat::Vorbis) {
+    let spec = if let OutputFormat::RawPcm(raw_format) = format {
+        AudioSpec::new(
+            input_spec.sample_rate(),
+            input_spec.channels(),
+            raw_format.sample_format(),
+        )
+        .map_err(|error| cli_audio_error(error.into(), &input))?
+    } else if matches!(format, OutputFormat::Vorbis) {
         AudioSpec::new(
             input_spec.sample_rate(),
             input_spec.channels(),
@@ -819,6 +931,10 @@ fn convert_audio(
 
     let result = (|| {
         let mut encoder: Box<dyn AudioEncoder> = match format {
+            OutputFormat::RawPcm(raw_format) => Box::new(
+                RawPcmEncoder::new(output_file, spec, raw_format)
+                    .map_err(|error| cli_audio_error(error, &output))?,
+            ),
             OutputFormat::Samples(_) => Box::new(
                 WavWriter::new_with_metadata_and_container(
                     output_file,
@@ -1241,6 +1357,7 @@ fn convert_audio(
         }
         Ok(Report {
             format: match format {
+                OutputFormat::RawPcm(_) => "raw-pcm",
                 OutputFormat::Flac => "flac",
                 OutputFormat::OggFlac => "ogg-flac",
                 OutputFormat::Vorbis => "ogg-vorbis",
@@ -1267,7 +1384,8 @@ fn convert_audio(
             metadata: decoder.metadata().clone(),
             output_encoding: matches!(
                 format,
-                OutputFormat::G711(_)
+                OutputFormat::RawPcm(_)
+                    | OutputFormat::G711(_)
                     | OutputFormat::WavImaAdpcm
                     | OutputFormat::WavMsAdpcm
                     | OutputFormat::AuG711(_)
@@ -1284,7 +1402,8 @@ fn convert_audio(
             output_valid_bits: valid_bits,
             container: (!matches!(
                 format,
-                OutputFormat::Flac
+                OutputFormat::RawPcm(_)
+                    | OutputFormat::Flac
                     | OutputFormat::OggFlac
                     | OutputFormat::Vorbis
                     | OutputFormat::WavPack
@@ -1583,12 +1702,27 @@ fn open_dsd_decoder(path: &Path) -> Result<Option<DsdInput>, CliError> {
     }
 }
 
-fn open_decoder(path: &Path) -> Result<AudioInput, CliError> {
+fn open_decoder(path: &Path, raw: Option<RawPcmOptions>) -> Result<AudioInput, CliError> {
     let file = File::open(path).map_err(|error| CliError {
         kind: "io",
         message: format!("{}: {error}", path.display()),
     })?;
     let mut file = file;
+    if let Some(raw) = raw {
+        let decoder = RawPcmDecoder::new(file, raw.sample_rate, raw.channels, raw.format)
+            .map_err(|error| cli_audio_error(error, path))?;
+        return Ok(AudioInput {
+            decoder: Box::new(decoder),
+            format: "raw-pcm",
+            container: None,
+            aiff_comments: None,
+            aiff_markers: None,
+            aiff_instrument: None,
+            aiff_audio_recording: None,
+            aiff_id3_tag: None,
+            au_annotation: None,
+        });
+    }
     let is_flac =
         has_signature(&mut file, b"fLaC").map_err(|error| cli_audio_error(error.into(), path))?;
     file.seek(SeekFrom::Start(0))
@@ -1748,13 +1882,13 @@ fn has_signature(reader: &mut impl Read, expected: &[u8; 4]) -> io::Result<bool>
     }
 }
 
-fn inspect_audio(path: PathBuf) -> Result<Report, CliError> {
+fn inspect_audio(path: PathBuf, raw: Option<RawPcmOptions>) -> Result<Report, CliError> {
     let AudioInput {
         mut decoder,
         format,
         container,
         ..
-    } = open_decoder(&path)?;
+    } = open_decoder(&path, raw)?;
     let spec = decoder.spec();
     let mut frames = 0_u64;
     while let Some(block) = decoder
@@ -1804,7 +1938,7 @@ fn cli_audio_error(error: AudioError, path: &Path) -> CliError {
 fn usage_error() -> CliError {
     CliError {
         kind: "usage",
-        message: "usage: zemer inspect [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|g711_alaw|g711_mulaw|wav_ima_adpcm|wav_ms_adpcm|aiff|aifc|aifc_sowt|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.ogg|input.oga|input.wv|input.dsf|input.dff> <output.wav|output.aiff|output.aifc|output.flac|output.oga|output.wv|output.dsf|output.dff> | zemer metadata edit [--json] <input.wav|input.aiff|input.aifc|input.au|input.flac|input.oga|input.ogg|input.wv|input.dsf|input.dff> <new-output.wav|new-output.aiff|new-output.aifc|new-output.flac|new-output.oga|new-output.ogg|new-output.wv|new-output.dsf|new-output.dff> [--set KEY=VALUE]... [--remove KEY]... | zemer cue split [--json] <input.cue> <new-output-dir> | zemer cue create [--json] <output.cue> <track.wav>... | zemer iso inspect [--json] <image.iso> | zemer iso extract [--json] <image.iso> <new-output-dir>".to_owned(),
+        message: "usage: zemer inspect [--json] [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] <input> | zemer convert --format <pcm_u8|pcm_i16|pcm_i24|pcm_i32|float32|float64|raw_u8|raw_s16le|raw_s16be|raw_s24le|raw_s24be|raw_s32le|raw_s32be|raw_f32le|raw_f32be|raw_f64le|raw_f64be|g711_alaw|g711_mulaw|wav_ima_adpcm|wav_ms_adpcm|aiff|aifc|aifc_sowt|au|au_alaw|au_mulaw|au_g721|au_g723_3|au_g723_5|aifc_alaw|aifc_mulaw|aifc_ima4|aifc_g726|aifc_dwvw|flac|ogg_flac|vorbis|wavpack|dsf|dsdiff|dsdiff_dst> [--input-format <raw encoding> --sample-rate <Hz> --channels <count>] [--container <riff|rf64>] [--valid-bits <1..32 for AIFF/AIFC PCM; 2..32 for AIFC DWVW>] [--bitrate <24..9600 kbps for Vorbis/WavPack; 16|24|32|40 for AIFC G.726>] [--json] <input> <output> | zemer metadata edit ... | zemer cue split/create ... | zemer iso inspect/extract ...".to_owned(),
     }
 }
 
