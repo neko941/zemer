@@ -14,11 +14,13 @@ pub(crate) struct PulseAllocation {
     pub(crate) codebook_eighth_bits: u16,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct SplitAngle {
     pub(crate) resolution: u16,
     pub(crate) index: u16,
     pub(crate) angle_q14: u16,
+    pub(crate) left_gain: f32,
+    pub(crate) right_gain: f32,
 }
 
 pub(crate) fn decode_split_angle(
@@ -69,11 +71,28 @@ pub(crate) fn decode_split_angle(
         range.decode_symbol(&frequencies[..=resolution])? as u16
     };
     let angle_q14 = (u32::from(index) * 16_384 / u32::from(resolution)) as u16;
+    let (left_gain, right_gain) = split_gains(angle_q14)?;
     Ok(SplitAngle {
         resolution,
         index,
         angle_q14,
+        left_gain,
+        right_gain,
     })
+}
+
+fn split_gains(angle_q14: u16) -> Result<(f32, f32), RangeError> {
+    if angle_q14 > 16_384 {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+    if angle_q14 == 0 {
+        return Ok((1.0, 0.0));
+    }
+    if angle_q14 == 16_384 {
+        return Ok((0.0, 1.0));
+    }
+    let angle = f64::from(angle_q14) * (std::f64::consts::FRAC_PI_2 / 16_384.0);
+    Ok((angle.cos() as f32, angle.sin() as f32))
 }
 
 pub(crate) fn codebook_size(dimensions: usize, pulses: usize) -> Result<u32, RangeError> {
@@ -548,6 +567,20 @@ mod tests {
             decode_split_angle(&mut range, 177, 64, 16, 0, false),
             Err(RangeError::InvalidPvqLayout)
         );
+    }
+
+    #[test]
+    fn split_gains_cover_endpoints_and_preserve_unit_energy() {
+        assert_eq!(super::split_gains(0), Ok((1.0, 0.0)));
+        assert_eq!(super::split_gains(16_384), Ok((0.0, 1.0)));
+        assert!(super::split_gains(16_385).is_err());
+        for angle_q14 in (0..=16_384).step_by(257) {
+            let (left, right) = super::split_gains(angle_q14).unwrap();
+            let energy = left * left + right * right;
+            assert!((energy - 1.0).abs() < 2e-7, "angle={angle_q14}: {energy}");
+            assert!((0.0..=1.0).contains(&left));
+            assert!((0.0..=1.0).contains(&right));
+        }
     }
 
     #[test]
