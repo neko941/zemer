@@ -6,6 +6,7 @@ use std::{
 use zemer_core::{AudioError, Metadata};
 
 use crate::{
+    BextChunk,
     cset::read_code_page,
     decode::{MAX_DS64_CHUNK, parse_ds64, read_info_metadata},
     encode::{
@@ -28,11 +29,35 @@ struct Chunk {
 ///
 /// The caller should write to a new temporary file and replace the source only after success.
 pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
+    reader: R,
+    writer: W,
+    metadata: &Metadata,
+) -> Result<W, AudioError> {
+    rewrite_metadata_inner(reader, writer, metadata, None)
+}
+
+/// Rewrites WAVE INFO tags and replaces the first BWF `bext` chunk, or adds one if absent.
+///
+/// The caller should write to a new temporary file and replace the source only after success.
+pub fn rewrite_metadata_with_bext<R: Read + Seek, W: Write + Seek>(
+    reader: R,
+    writer: W,
+    metadata: &Metadata,
+    bext: &BextChunk,
+) -> Result<W, AudioError> {
+    rewrite_metadata_inner(reader, writer, metadata, Some(bext))
+}
+
+fn rewrite_metadata_inner<R: Read + Seek, W: Write + Seek>(
     mut reader: R,
     mut writer: W,
     metadata: &Metadata,
+    bext: Option<&BextChunk>,
 ) -> Result<W, AudioError> {
     metadata_chunk_size(metadata)?;
+    if let Some(bext) = bext {
+        bext.chunk_size()?;
+    }
     let code_page = read_code_page(&mut reader)?;
     let original_metadata = read_info_metadata(&mut reader)?;
     let mut changed_keys = BTreeSet::new();
@@ -127,6 +152,7 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
     reader.seek(SeekFrom::Start(chunk_scan_start))?;
 
     let mut wrote_metadata = false;
+    let mut wrote_bext = false;
     let mut first_data_seen = false;
     loop {
         let position = reader.stream_position()?;
@@ -188,7 +214,21 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
                 wrote_metadata = true;
             }
         }
-        if &chunk_header[..4] == b"LIST" && size >= 4 {
+        if &chunk_header[..4] == b"bext" && !wrote_bext {
+            if let Some(bext) = bext {
+                reader.seek(SeekFrom::Start(padded_end))?;
+                write_bext_chunk(&mut writer, bext, size32 == u32::MAX, table_size_offset)?;
+                wrote_bext = true;
+            } else {
+                writer.write_all(&chunk_header)?;
+                copy_exact(&mut reader, &mut writer, size)?;
+                if size & 1 != 0 {
+                    let mut pad = [0];
+                    reader.read_exact(&mut pad)?;
+                    writer.write_all(&pad)?;
+                }
+            }
+        } else if &chunk_header[..4] == b"LIST" && size >= 4 {
             rewrite_list_chunk(
                 &mut reader,
                 &mut writer,
@@ -221,6 +261,11 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
     if !wrote_metadata && metadata_chunk_size_for_code_page(metadata, code_page)? != 0 {
         write_info_chunk(&mut writer, metadata, code_page)?;
     }
+    if !wrote_bext {
+        if let Some(bext) = bext {
+            write_bext_chunk(&mut writer, bext, false, None)?;
+        }
+    }
 
     let output_riff_end = writer.stream_position()?;
     let new_riff_size = output_riff_end
@@ -239,6 +284,31 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
     reader.seek(SeekFrom::Start(riff_end))?;
     copy_exact(&mut reader, &mut writer, file_end - riff_end)?;
     Ok(writer)
+}
+
+fn write_bext_chunk<W: Write + Seek>(
+    writer: &mut W,
+    bext: &BextChunk,
+    size_is_sentinel: bool,
+    table_size_offset: Option<u64>,
+) -> Result<(), AudioError> {
+    let size = bext.chunk_size()?;
+    writer.write_all(b"bext")?;
+    writer.write_all(&if size_is_sentinel { u32::MAX } else { size }.to_le_bytes())?;
+    bext.write(writer)?;
+    if size & 1 != 0 {
+        writer.write_all(&[0])?;
+    }
+    if size_is_sentinel {
+        let table_size_offset = table_size_offset.ok_or(AudioError::InvalidData(
+            "RF64 BWF size sentinel is missing its ds64 table entry",
+        ))?;
+        let output_end = writer.stream_position()?;
+        writer.seek(SeekFrom::Start(table_size_offset))?;
+        writer.write_all(&u64::from(size).to_le_bytes())?;
+        writer.seek(SeekFrom::Start(output_end))?;
+    }
+    Ok(())
 }
 
 fn rewrite_list_chunk<R: Read + Seek, W: Write + Seek>(
