@@ -105,6 +105,101 @@ pub(crate) fn normalize_pulses(pulses: &[i32]) -> Result<Vec<f32>, RangeError> {
         .collect())
 }
 
+pub(crate) fn spread_shape(
+    shape: &mut [f32],
+    pulse_count: u16,
+    spread: u8,
+    blocks: u8,
+) -> Result<(), RangeError> {
+    if shape.is_empty() || shape.len() > MAX_PVQ_DIMENSIONS || blocks == 0 {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+    if spread > 3 {
+        return Err(RangeError::InvalidPvqSpread);
+    }
+    let block_count = usize::from(blocks);
+    if shape.len() % block_count != 0 {
+        return Err(RangeError::InvalidPvqBlockCount);
+    }
+    if spread == 0 || shape.len() < 2 {
+        return Ok(());
+    }
+
+    let dimensions = shape.len();
+    let block_width = dimensions / block_count;
+    let spread_factor = [0.0_f32, 15.0, 10.0, 5.0][usize::from(spread)];
+    let gain = dimensions as f32 / (dimensions as f32 + spread_factor * f32::from(pulse_count));
+    let theta = std::f32::consts::FRAC_PI_4 * gain * gain;
+    let (main_sine, main_cosine) = theta.sin_cos();
+
+    if block_count > 1 && block_width >= 8 {
+        let stride = rounded_sqrt(block_width);
+        let (pre_sine, pre_cosine) = (std::f32::consts::FRAC_PI_2 - theta).sin_cos();
+        for offset in 0..stride {
+            let indices: Vec<usize> = (offset..dimensions).step_by(stride).collect();
+            rotate_index_chain(shape, &indices, pre_sine, pre_cosine);
+        }
+    }
+
+    for block in 0..block_count {
+        let start = block * block_width;
+        rotate_contiguous_chain(
+            &mut shape[start..start + block_width],
+            main_sine,
+            main_cosine,
+        );
+    }
+    Ok(())
+}
+
+fn rotate_contiguous_chain(values: &mut [f32], sine: f32, cosine: f32) {
+    for index in 0..values.len().saturating_sub(1) {
+        rotate_pair(values, index, index + 1, sine, cosine);
+    }
+    for index in (0..values.len().saturating_sub(2)).rev() {
+        rotate_pair(values, index, index + 1, sine, cosine);
+    }
+}
+
+fn rotate_index_chain(values: &mut [f32], indices: &[usize], sine: f32, cosine: f32) {
+    for index in 0..indices.len().saturating_sub(1) {
+        rotate_pair(values, indices[index], indices[index + 1], sine, cosine);
+    }
+    for index in (0..indices.len().saturating_sub(2)).rev() {
+        rotate_pair(values, indices[index], indices[index + 1], sine, cosine);
+    }
+}
+
+fn rotate_pair(values: &mut [f32], first: usize, second: usize, sine: f32, cosine: f32) {
+    let x = values[first];
+    let y = values[second];
+    values[first] = cosine * x + sine * y;
+    values[second] = -sine * x + cosine * y;
+}
+
+fn rounded_sqrt(value: usize) -> usize {
+    let floor = integer_sqrt(value);
+    if 4 * (value - floor * floor) > 4 * floor + 1 {
+        floor + 1
+    } else {
+        floor
+    }
+}
+
+fn integer_sqrt(value: usize) -> usize {
+    let mut low = 0_usize;
+    let mut high = value.min(usize::BITS as usize).max(1);
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        if middle <= value / middle {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    low
+}
+
 pub(crate) fn pulses_for_allocation(
     dimensions: usize,
     available_eighth_bits: u32,
@@ -214,7 +309,8 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        codebook_size, decode_codeword, normalize_pulses, pulses_for_allocation, unrank_codeword,
+        codebook_size, decode_codeword, normalize_pulses, pulses_for_allocation, spread_shape,
+        unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -320,5 +416,50 @@ mod tests {
             let expected = (f64::from(size).log2() * 8.0).ceil() as u16;
             assert_eq!(super::conservative_log2_eighths(size), expected, "{size}");
         }
+    }
+
+    #[test]
+    fn spreading_is_identity_for_none_and_preserves_norm_for_each_mode() {
+        let original = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let mut unchanged = original;
+        spread_shape(&mut unchanged, 1, 0, 1).unwrap();
+        assert_eq!(unchanged, original);
+
+        for spread in 1..=3 {
+            let mut shape = original;
+            spread_shape(&mut shape, 1, spread, 1).unwrap();
+            let norm_squared = shape.iter().map(|value| value * value).sum::<f32>();
+            assert!((norm_squared - 1.0).abs() < 1e-6);
+            assert_ne!(shape, original);
+        }
+    }
+
+    #[test]
+    fn spreading_handles_blockwise_and_interleaved_prerotation() {
+        let mut shape = [1.0; 16];
+        spread_shape(&mut shape, 3, 2, 2).unwrap();
+        let norm_squared = shape.iter().map(|value| value * value).sum::<f32>();
+        assert!((norm_squared - 16.0).abs() < 1e-5);
+        assert_ne!(&shape[..8], &shape[8..]);
+        assert_eq!(super::rounded_sqrt(8), 3);
+        assert_eq!(super::rounded_sqrt(15), 4);
+        assert_eq!(super::rounded_sqrt(16), 4);
+    }
+
+    #[test]
+    fn spreading_rejects_invalid_parameters_and_block_geometry() {
+        let mut shape = [0.0; 8];
+        assert_eq!(
+            spread_shape(&mut shape, 1, 4, 1),
+            Err(RangeError::InvalidPvqSpread)
+        );
+        assert_eq!(
+            spread_shape(&mut shape, 1, 1, 3),
+            Err(RangeError::InvalidPvqBlockCount)
+        );
+        assert_eq!(
+            spread_shape(&mut [], 1, 1, 1),
+            Err(RangeError::InvalidPvqLayout)
+        );
     }
 }

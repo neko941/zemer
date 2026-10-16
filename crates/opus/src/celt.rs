@@ -1,4 +1,4 @@
-use crate::pvq::{decode_codeword, normalize_pulses, pulses_for_allocation};
+use crate::pvq::{decode_codeword, normalize_pulses, pulses_for_allocation, spread_shape};
 use crate::range::{RangeDecoder, RangeError};
 
 const BAND_WIDTHS_2_5_MS: [u16; 21] = [
@@ -117,6 +117,10 @@ pub(crate) struct MonoPvqShapes {
     pub(crate) pulses: [u16; 21],
 }
 
+pub(crate) fn decode_spread(range: &mut RangeDecoder<'_>) -> Result<u8, RangeError> {
+    Ok(range.decode_symbol(&[7, 2, 21, 2])? as u8)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FinalFineEnergy {
     pub(crate) energies_q15: [i32; 42],
@@ -213,6 +217,8 @@ pub(crate) fn decode_mono_pvq_shapes(
     range: &mut RangeDecoder<'_>,
     frame_samples_48k: u16,
     allocation: FineShapeAllocation,
+    spread: u8,
+    blocks: u8,
 ) -> Result<MonoPvqShapes, RangeError> {
     let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
     let start_band = allocation.start_band;
@@ -253,6 +259,7 @@ pub(crate) fn decode_mono_pvq_shapes(
             };
             shapes[index] = normalize_pulses(&pulses)?;
         }
+        spread_shape(&mut shapes[index], pulse_counts[index], spread, blocks)?;
         balance += i64::from(allocation.shape_eighth_bits[index]) + tell;
     }
     Ok(MonoPvqShapes {
@@ -1046,9 +1053,9 @@ mod tests {
         allocation_caps, allocation_thresholds, allocation_trim_offsets, band_edges,
         decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
-        decode_header, decode_mono_pvq_shapes, predict_coarse_energies, reallocate_skipped_bands,
-        reserve_allocation_bits, select_band_allocation, split_fine_shape_allocation,
-        static_allocation,
+        decode_header, decode_mono_pvq_shapes, decode_spread, predict_coarse_energies,
+        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
+        split_fine_shape_allocation, static_allocation,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1076,7 +1083,8 @@ mod tests {
                 balance_eighth_bits: 0,
             };
             let mut range = RangeDecoder::new(&[0x5a; 32]);
-            let shapes = decode_mono_pvq_shapes(&mut range, frame_samples, allocation).unwrap();
+            let shapes =
+                decode_mono_pvq_shapes(&mut range, frame_samples, allocation, 0, 1).unwrap();
             assert_eq!(shapes.vectors[0].len(), expected_dimensions);
             assert!(shapes.vectors[1..].iter().all(Vec::is_empty));
             let norm_squared = shapes.vectors[0]
@@ -1100,7 +1108,7 @@ mod tests {
         for (payload, expected) in [(0, 1.0), (1, -1.0)] {
             let bytes = [0x00, payload];
             let mut range = RangeDecoder::new(&bytes);
-            let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation).unwrap();
+            let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1).unwrap();
             assert_eq!(shapes.vectors[0], vec![expected]);
             assert_eq!(shapes.pulses[0], 1);
         }
@@ -1118,7 +1126,7 @@ mod tests {
         };
         let mut range = RangeDecoder::new(&[0x00, 0x00]);
         let before = range.tell_frac();
-        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation).unwrap();
+        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1).unwrap();
         assert_eq!(shapes.vectors[8], vec![0.0, 0.0]);
         assert_eq!(shapes.pulses[8], 0);
         assert_eq!(range.tell_frac(), before);
@@ -1138,7 +1146,7 @@ mod tests {
             balance_eighth_bits: 0,
         };
         let mut range = RangeDecoder::new(&[0x21; 128]);
-        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation).unwrap();
+        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1).unwrap();
         assert_eq!(shapes.pulses[12], 1);
         assert_eq!(shapes.pulses[13], 2);
     }
@@ -1155,7 +1163,7 @@ mod tests {
         };
         let mut range = RangeDecoder::new(&[0x5a; 32]);
         assert_eq!(
-            decode_mono_pvq_shapes(&mut range, 60, allocation),
+            decode_mono_pvq_shapes(&mut range, 60, allocation, 0, 1),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
         assert_eq!(
@@ -1165,10 +1173,20 @@ mod tests {
                 FineShapeAllocation {
                     start_band: 2,
                     ..allocation
-                }
+                },
+                0,
+                1,
             ),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
+    }
+
+    #[test]
+    fn spread_symbol_uses_the_normative_four_value_distribution() {
+        for bytes in [[0x00], [0x40], [0x80], [0xc0], [0xff]] {
+            let mut range = RangeDecoder::new(&bytes);
+            assert!(decode_spread(&mut range).unwrap() <= 3);
+        }
     }
 
     #[test]
