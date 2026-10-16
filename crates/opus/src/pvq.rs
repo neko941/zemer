@@ -95,6 +95,25 @@ fn split_gains(angle_q14: u16) -> Result<(f32, f32), RangeError> {
     Ok((angle.cos() as f32, angle.sin() as f32))
 }
 
+pub(crate) fn combine_split_shapes(
+    left: &[f32],
+    right: &[f32],
+    split: SplitAngle,
+) -> Result<Vec<f32>, RangeError> {
+    if left.is_empty()
+        || left.len() != right.len()
+        || left.len() + right.len() > MAX_PVQ_DIMENSIONS
+        || left.iter().chain(right).any(|value| !value.is_finite())
+    {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+
+    let mut shape = Vec::with_capacity(left.len() + right.len());
+    shape.extend(left.iter().map(|&value| value * split.left_gain));
+    shape.extend(right.iter().map(|&value| value * split.right_gain));
+    Ok(shape)
+}
+
 pub(crate) fn codebook_size(dimensions: usize, pulses: usize) -> Result<u32, RangeError> {
     let counts = codebook_counts(dimensions, pulses)?;
     Ok(counts[dimensions][pulses])
@@ -581,6 +600,20 @@ mod tests {
             assert!((0.0..=1.0).contains(&left));
             assert!((0.0..=1.0).contains(&right));
         }
+    }
+
+    #[test]
+    fn split_shape_combines_unit_children_with_quantized_gains() {
+        let mut range = RangeDecoder::new(&[0; 32]);
+        let split = decode_split_angle(&mut range, 4, 80, 16, 64, true).unwrap();
+        let left = [0.6, 0.8];
+        let right = [0.0, 1.0];
+        let combined = super::combine_split_shapes(&left, &right, split).unwrap();
+        let energy = combined.iter().map(|&value| value * value).sum::<f32>();
+        assert!((energy - 1.0).abs() < 2e-7);
+        assert_eq!(combined.len(), 4);
+        assert!(super::combine_split_shapes(&left[..1], &right, split).is_err());
+        assert!(super::combine_split_shapes(&left, &[f32::NAN, 1.0], split).is_err());
     }
 
     #[test]
