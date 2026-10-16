@@ -117,6 +117,75 @@ pub(crate) struct MonoPvqShapes {
     pub(crate) pulses: [u16; 21],
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TfResolution {
+    pub(crate) selected_table: bool,
+    pub(crate) changes: Vec<bool>,
+    pub(crate) adjustments: Vec<i8>,
+}
+
+pub(crate) fn decode_tf_resolution(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    transient: bool,
+    start_band: u8,
+    end_band: u8,
+) -> Result<TfResolution, RangeError> {
+    let lm = frame_lm(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    if start_band >= end_band || end_band > 21 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+
+    let first_symbol = if transient {
+        range.decode_symbol(&[3, 1])?
+    } else {
+        range.decode_symbol(&[15, 1])?
+    };
+    let mut changes = Vec::with_capacity(usize::from(end_band - start_band));
+    changes.push(first_symbol == 1);
+    let logp = if transient { 4 } else { 5 };
+    while changes.len() < usize::from(end_band - start_band) {
+        let toggled = range.decode_bit_logp(logp)?;
+        changes.push(*changes.last().unwrap() ^ toggled);
+    }
+
+    let table_needed = changes.iter().copied().any(|change| {
+        tf_adjustment(lm, transient, false, change) != tf_adjustment(lm, transient, true, change)
+    });
+    let selected_table = table_needed && range.decode_bit_logp(1)?;
+    let adjustments = changes
+        .iter()
+        .map(|&change| tf_adjustment(lm, transient, selected_table, change))
+        .collect();
+    Ok(TfResolution {
+        selected_table,
+        changes,
+        adjustments,
+    })
+}
+
+fn frame_lm(frame_samples_48k: u16) -> Option<u32> {
+    match frame_samples_48k {
+        120 | 240 | 480 | 960 => Some(u32::from(frame_samples_48k / 120).trailing_zeros()),
+        _ => None,
+    }
+}
+
+fn tf_adjustment(lm: u32, transient: bool, select: bool, change: bool) -> i8 {
+    let table = if transient {
+        if select {
+            [[0, -1], [1, -1], [1, -1], [1, -1]]
+        } else {
+            [[0, -1], [1, 0], [2, 0], [3, 0]]
+        }
+    } else if select {
+        [[0, -1], [0, -2], [0, -3], [0, -3]]
+    } else {
+        [[0, -1], [0, -1], [0, -2], [0, -2]]
+    };
+    table[lm as usize][usize::from(change)]
+}
+
 pub(crate) fn decode_spread(range: &mut RangeDecoder<'_>) -> Result<u8, RangeError> {
     Ok(range.decode_symbol(&[7, 2, 21, 2])? as u8)
 }
@@ -1053,9 +1122,9 @@ mod tests {
         allocation_caps, allocation_thresholds, allocation_trim_offsets, band_edges,
         decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
-        decode_header, decode_mono_pvq_shapes, decode_spread, predict_coarse_energies,
-        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
-        split_fine_shape_allocation, static_allocation,
+        decode_header, decode_mono_pvq_shapes, decode_spread, decode_tf_resolution,
+        predict_coarse_energies, reallocate_skipped_bands, reserve_allocation_bits,
+        select_band_allocation, split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1187,6 +1256,74 @@ mod tests {
             let mut range = RangeDecoder::new(&bytes);
             assert!(decode_spread(&mut range).unwrap() <= 3);
         }
+    }
+
+    #[test]
+    fn tf_adjustment_tables_match_all_frame_modes() {
+        let nontransient_select0 = [[0, -1], [0, -1], [0, -2], [0, -2]];
+        let nontransient_select1 = [[0, -1], [0, -2], [0, -3], [0, -3]];
+        let transient_select0 = [[0, -1], [1, 0], [2, 0], [3, 0]];
+        let transient_select1 = [[0, -1], [1, -1], [1, -1], [1, -1]];
+        for lm in 0..4 {
+            for change in [false, true] {
+                let column = usize::from(change);
+                assert_eq!(
+                    tf_adjustment(lm, false, false, change),
+                    nontransient_select0[lm as usize][column]
+                );
+                assert_eq!(
+                    tf_adjustment(lm, false, true, change),
+                    nontransient_select1[lm as usize][column]
+                );
+                assert_eq!(
+                    tf_adjustment(lm, true, false, change),
+                    transient_select0[lm as usize][column]
+                );
+                assert_eq!(
+                    tf_adjustment(lm, true, true, change),
+                    transient_select1[lm as usize][column]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tf_resolution_decodes_relative_band_changes() {
+        let bytes = [0; 64];
+        let mut range = RangeDecoder::new(&bytes);
+        let decoded = decode_tf_resolution(&mut range, 480, true, 2, 7).unwrap();
+        assert_eq!(decoded.changes, [false; 5]);
+        assert_eq!(decoded.adjustments, [2; 5]);
+        assert!(!decoded.selected_table);
+    }
+
+    #[test]
+    fn tf_select_is_omitted_when_the_frame_table_cannot_change_results() {
+        let bytes = [0xa5; 64];
+        let mut decoded_range = RangeDecoder::new(&bytes);
+        let decoded = decode_tf_resolution(&mut decoded_range, 120, false, 0, 1).unwrap();
+        assert!(!decoded.selected_table);
+        let next_after_decode = decode_spread(&mut decoded_range).unwrap();
+
+        let mut expected_range = RangeDecoder::new(&bytes);
+        expected_range.decode_symbol(&[15, 1]).unwrap();
+        let expected_next = decode_spread(&mut expected_range).unwrap();
+        assert_eq!(next_after_decode, expected_next);
+    }
+
+    #[test]
+    fn tf_select_is_consumed_when_the_frame_table_changes_results() {
+        let bytes = [0; 64];
+        let mut decoded_range = RangeDecoder::new(&bytes);
+        let decoded = decode_tf_resolution(&mut decoded_range, 480, true, 0, 1).unwrap();
+        assert!(!decoded.selected_table);
+        let next_after_decode = decode_spread(&mut decoded_range).unwrap();
+
+        let mut expected_range = RangeDecoder::new(&bytes);
+        expected_range.decode_symbol(&[3, 1]).unwrap();
+        assert!(!expected_range.decode_bit_logp(1).unwrap());
+        let expected_next = decode_spread(&mut expected_range).unwrap();
+        assert_eq!(next_after_decode, expected_next);
     }
 
     #[test]
