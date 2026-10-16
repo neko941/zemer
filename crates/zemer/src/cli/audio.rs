@@ -742,55 +742,56 @@ pub(super) fn convert_audio(
         } else {
             8192
         };
-        let mut write_block = |block: &zemer_core::PcmBuffer| -> Result<(), CliError> {
-            if block.frames() == 0 {
-                return Ok(());
-            }
-            let mut converted = if resampling {
-                convert_sample_format(block, spec.sample_format())
-                    .map_err(|error| cli_audio_error(error.into(), &input))?
-            } else if let Some(sample_format) =
-                format.input_sample_format(input_spec.sample_format())
-            {
-                convert_sample_format(block, sample_format)
-                    .map_err(|error| cli_audio_error(error.into(), &input))?
-            } else {
-                block.clone()
-            };
-            if matches!(format, OutputFormat::Vorbis) {
-                converted = vorbis_channel_order(&converted, spec)
-                    .map_err(|error| cli_audio_error(error, &input))?;
-            }
-            frames = frames
-                .checked_add(converted.frames() as u64)
-                .ok_or_else(|| CliError {
-                    kind: "invalid_data",
-                    message: "converted frame count overflow".to_owned(),
-                })?;
-            encoder
-                .write_block(&converted)
-                .map_err(|error| cli_audio_error(error, &output))
-        };
-        while let Some(block) = decoder
-            .read_frames(input_block_frames)
-            .map_err(|error| cli_audio_error(error, &input))?
         {
+            let mut write_block = |block: &zemer_core::PcmBuffer| -> Result<(), CliError> {
+                if block.frames() == 0 {
+                    return Ok(());
+                }
+                let mut converted = if resampling {
+                    convert_sample_format(block, spec.sample_format())
+                        .map_err(|error| cli_audio_error(error.into(), &input))?
+                } else if let Some(sample_format) =
+                    format.input_sample_format(input_spec.sample_format())
+                {
+                    convert_sample_format(block, sample_format)
+                        .map_err(|error| cli_audio_error(error.into(), &input))?
+                } else {
+                    block.clone()
+                };
+                if matches!(format, OutputFormat::Vorbis) {
+                    converted = vorbis_channel_order(&converted, spec)
+                        .map_err(|error| cli_audio_error(error, &input))?;
+                }
+                frames = frames
+                    .checked_add(converted.frames() as u64)
+                    .ok_or_else(|| CliError {
+                        kind: "invalid_data",
+                        message: "converted frame count overflow".to_owned(),
+                    })?;
+                encoder
+                    .write_block(&converted)
+                    .map_err(|error| cli_audio_error(error, &output))
+            };
+            while let Some(block) = decoder
+                .read_frames(input_block_frames)
+                .map_err(|error| cli_audio_error(error, &input))?
+            {
+                if let Some(resampler) = &mut resampler {
+                    let converted = resampler.push(&block).map_err(|error| {
+                        cli_audio_error(AudioError::InvalidData(error.0), &input)
+                    })?;
+                    write_block(&converted)?;
+                } else {
+                    write_block(&block)?;
+                }
+            }
             if let Some(resampler) = &mut resampler {
-                let converted = resampler
-                    .push(&block)
+                let tail = resampler
+                    .finish()
                     .map_err(|error| cli_audio_error(AudioError::InvalidData(error.0), &input))?;
-                write_block(&converted)?;
-            } else {
-                write_block(&block)?;
+                write_block(&tail)?;
             }
         }
-        if let Some(resampler) = &mut resampler {
-            let tail = resampler
-                .finish()
-                .map_err(|error| cli_audio_error(AudioError::InvalidData(error.0), &input))?;
-            write_block(&tail)?;
-        }
-        drop(write_block);
         encoder
             .finish()
             .map_err(|error| cli_audio_error(error, &output))?;
