@@ -66,7 +66,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-g711`](crates/g711/) (Rust crate `g711`): reusable ITU-T G.711 A-law/μ-law sample conversion used by WAVE, AIFF-C, and CAF.
 - [`zemer-dwvw`](crates/dwvw/): clean-room DWVW channel encoder and decoder used by AIFC.
 - [`zemer-wavpack`](crates/wavpack/) (Rust crate `wavpack`): PCM/native DSD decoding, lossless integer PCM, standard-bitrate integer PCM hybrid `.wv`+`.wvc` encoding, bit-exact float32, raw native DSD encoding, APEv2 text metadata reading and rewriting, and checksum validation.
-- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion including `wav_ima_adpcm` and `wav_ms_adpcm`, DSF/DSDIFF/native DSD WavPack transcoding, WAVE/AIFF/AU/DSF/DSDIFF/FLAC/Ogg-FLAC/WavPack metadata editing, CUE/WAV workflows, and ISO 9660 inspection/extraction. CLI code is organized under `crates/zemer/src/cli/` by audio conversion, metadata editing, and reporting.
+- [`zemer`](crates/zemer/): CLI package and executable for inspection, conversion including `wav_ima_adpcm` and `wav_ms_adpcm`, DSF/DSDIFF/native DSD WavPack transcoding, WAVE/AIFF/AU/CAF/DSF/DSDIFF/FLAC/Ogg-FLAC/Ogg Vorbis/WavPack metadata editing, CUE/WAV workflows, and ISO 9660 inspection/extraction. CLI code is organized under `crates/zemer/src/cli/` by audio conversion, metadata editing, and reporting.
 - [`tests/`](tests/): workspace-level integration tests; codec parser unit tests stay with their format crate.
 
 ## Documentation
