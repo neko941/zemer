@@ -68,18 +68,7 @@ impl ImaAdpcmState {
     }
 
     pub fn decode_wav(&mut self, code: u8) -> i16 {
-        let step = STEP_TABLE[self.index as usize];
-        let delta = i32::from(code & 7);
-        let difference = (step * (2 * delta + 1)) >> 3;
-        self.predictor = (self.predictor
-            + if code & 8 != 0 {
-                -difference
-            } else {
-                difference
-            })
-        .clamp(i32::from(i16::MIN), i32::from(i16::MAX));
-        self.index = (self.index + INDEX_TABLE[delta as usize]).clamp(0, 88);
-        self.predictor as i16
+        self.decode(code)
     }
 
     pub fn encode(&mut self, sample: i16) -> u8 {
@@ -110,15 +99,7 @@ impl ImaAdpcmState {
         let magnitude = difference.abs();
         let delta = ((magnitude << 2) / step).min(7);
         let code = delta | if difference < 0 { 8 } else { 0 };
-        let reconstructed = (step * (2 * delta + 1)) >> 3;
-        self.predictor = (self.predictor
-            + if difference < 0 {
-                -reconstructed
-            } else {
-                reconstructed
-            })
-        .clamp(i32::from(i16::MIN), i32::from(i16::MAX));
-        self.index = (self.index + INDEX_TABLE[delta as usize]).clamp(0, 88);
+        self.decode(code as u8);
         code as u8
     }
 }
@@ -183,6 +164,29 @@ mod tests {
         let code = encoder.encode(i16::MAX);
         assert_eq!(code & 0x0f, 7);
         assert!(ImaAdpcmState::new(0, 89).is_none());
+    }
+
+    #[test]
+    fn wav_encoder_state_matches_reference_decoder() {
+        for index in 0..=88 {
+            for predictor in [i16::MIN, -1, 0, 1, i16::MAX] {
+                for sample in [i16::MIN, -1, 0, 1, i16::MAX] {
+                    let start = ImaAdpcmState::new(predictor, index).unwrap();
+                    let mut encoder = start;
+                    let code = encoder.encode_wav(sample);
+                    let mut decoder = start;
+                    decoder.decode_wav(code);
+                    assert_eq!(encoder.predictor(), decoder.predictor());
+                    assert_eq!(encoder.index(), decoder.index());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wav_decode_uses_reference_shift_accumulation() {
+        let mut state = ImaAdpcmState::new(0, 0).unwrap();
+        assert_eq!(state.decode_wav(0x07), 11);
     }
 
     #[test]
