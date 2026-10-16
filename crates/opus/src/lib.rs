@@ -12,6 +12,8 @@ mod pvq;
 // These primitives are staged for the decoder frame pipeline.
 #[allow(dead_code)]
 mod range;
+mod stream;
 
 pub use ogg::{OpusHead, OpusHeadError, OpusTags, OpusTagsError};
 pub use packet::{Bandwidth, Mode, OpusPacket, PacketError, Toc};
+pub use stream::{OpusAudioPacket, OpusStreamReader};

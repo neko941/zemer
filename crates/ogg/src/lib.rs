@@ -20,6 +20,8 @@ pub const NO_GRANULE_POSITION: u64 = u64::MAX;
 pub struct OggPacket {
     pub bytes: Vec<u8>,
     pub page_sequence: u32,
+    /// Sequence number of the page where this packet begins.
+    pub start_page_sequence: u32,
     /// Codec-defined position stored in this packet's page. `u64::MAX` is
     /// Ogg's `-1` sentinel for pages with no completed packets.
     pub page_granule_position: u64,
@@ -39,6 +41,7 @@ pub struct OggPacketReader<R> {
     sequence: Option<u32>,
     partial: Vec<u8>,
     partial_starts_page: bool,
+    partial_start_sequence: u32,
     first_page: bool,
     ended: bool,
     eos_granule_position: Option<u64>,
@@ -59,6 +62,7 @@ impl<R: Read> OggPacketReader<R> {
             sequence: None,
             partial: Vec::new(),
             partial_starts_page: false,
+            partial_start_sequence: 0,
             first_page: true,
             ended: false,
             eos_granule_position: None,
@@ -226,6 +230,7 @@ impl<R: Read> OggPacketReader<R> {
         for (index, &lace) in lacing.iter().enumerate() {
             if self.partial.is_empty() {
                 self.partial_starts_page = packet_starts_page;
+                self.partial_start_sequence = sequence;
             }
             let len = usize::from(lace);
             let new_len = self
@@ -244,6 +249,7 @@ impl<R: Read> OggPacketReader<R> {
                     OggPacket {
                         bytes: std::mem::take(&mut self.partial),
                         page_sequence: sequence,
+                        start_page_sequence: self.partial_start_sequence,
                         page_granule_position: granule_position,
                         page_flags: flags,
                         page_segment_count: segment_count,
@@ -402,6 +408,7 @@ mod tests {
         assert_eq!(&packet.bytes[..255], first);
         assert_eq!(packet.bytes[255], 0xa5);
         assert_eq!(packet.page_sequence, 1);
+        assert_eq!(packet.start_page_sequence, 0);
         assert_eq!(packet.page_granule_position, 257);
         assert!(!packet.page_is_first);
         assert!(packet.starts_page);
@@ -410,6 +417,7 @@ mod tests {
         let packet = reader.next_packet().unwrap().unwrap();
         assert_eq!(packet.bytes, b"bc");
         assert_eq!(packet.page_granule_position, 257);
+        assert_eq!(packet.start_page_sequence, 1);
         assert!(!packet.starts_page);
         assert!(packet.ends_page);
     }
@@ -424,8 +432,11 @@ mod tests {
         let second = reader.next_packet().unwrap().unwrap();
         let third = reader.next_packet().unwrap().unwrap();
         assert_eq!(first.page_granule_position, 0);
+        assert_eq!(first.start_page_sequence, 0);
         assert_eq!(second.page_granule_position, 0);
+        assert_eq!(second.start_page_sequence, 0);
         assert_eq!(third.page_granule_position, 2);
+        assert_eq!(third.start_page_sequence, 1);
         assert!(first.starts_page);
         assert!(!second.starts_page);
         assert!(third.starts_page);

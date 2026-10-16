@@ -6,5 +6,9 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+ogg.workspace = true
+zemer-core.workspace = true
+
 [lib]
 name = "opus"

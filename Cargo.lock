@@ -169,6 +169,10 @@ version = "0.7.0"
 [[package]]
 name = "zemer-opus"
 version = "0.7.0"
+dependencies = [
+ "zemer-core",
+ "zemer-ogg",
+]
 
 [[package]]
 name = "zemer-pcm"
