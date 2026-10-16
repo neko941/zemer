@@ -1,7 +1,11 @@
 //! CELT frame stages composed in normative range-coded order.
 
 use crate::celt::{
-    FrameHeader, decode_coarse_energy_residuals, decode_header, predict_coarse_energies,
+    AllocationControls, AllocationReservations, BandAllocation, FineShapeAllocation, FrameHeader,
+    ReallocatedBands, TfResolution, decode_allocation_controls, decode_coarse_energy_residuals,
+    decode_fine_energies, decode_header, decode_spread, decode_tf_resolution,
+    predict_coarse_energies, reallocate_skipped_bands, reserve_allocation_bits,
+    select_band_allocation, split_fine_shape_allocation,
 };
 use crate::range::{RangeDecoder, RangeError};
 
@@ -9,6 +13,20 @@ use crate::range::{RangeDecoder, RangeError};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MonoCeltEnergyPrefix {
     pub(crate) header: FrameHeader,
+    pub(crate) energies_q15: [i32; 42],
+}
+
+/// Mono CELT state decoded through fine energy, immediately before PVQ shapes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MonoCeltFramePrefix {
+    pub(crate) header: FrameHeader,
+    pub(crate) tf_resolution: TfResolution,
+    pub(crate) spread: u8,
+    pub(crate) controls: AllocationControls,
+    pub(crate) reservations: AllocationReservations,
+    pub(crate) band_allocation: Option<BandAllocation>,
+    pub(crate) reallocated: Option<ReallocatedBands>,
+    pub(crate) fine_shape: Option<FineShapeAllocation>,
     pub(crate) energies_q15: [i32; 42],
 }
 
@@ -63,11 +81,103 @@ pub(crate) fn decode_mono_energy_prefix(
     })
 }
 
+/// Decodes the mono CELT frame prefix through fine energy, before PVQ residuals.
+///
+/// `None` represents a silence frame, which terminates CELT side-information
+/// decoding after the header. Low-budget active frames can carry a zero-bit
+/// allocation and still proceed through the allocation stages.
+pub(crate) fn decode_mono_frame_prefix(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    frame_bytes: usize,
+    end_band: u8,
+    previous_final_energies_q15: &[i32; 42],
+) -> Result<Option<MonoCeltFramePrefix>, RangeError> {
+    let energy = decode_mono_energy_prefix(
+        range,
+        frame_samples_48k,
+        frame_bytes,
+        end_band,
+        previous_final_energies_q15,
+    )?;
+    if energy.header.silence {
+        return Ok(None);
+    }
+
+    let tf_resolution = decode_tf_resolution(
+        range,
+        frame_samples_48k,
+        energy.header.transient,
+        0,
+        end_band,
+    )?;
+    let spread = decode_spread(range)?;
+    let controls =
+        decode_allocation_controls(range, frame_samples_48k, 0, end_band, 1, frame_bytes)?;
+    let remaining_eighth_bits = frame_bytes
+        .saturating_mul(64)
+        .saturating_sub(range.tell_frac() as usize)
+        .try_into()
+        .map_err(|_| RangeError::CorruptFrame)?;
+    let reservations = reserve_allocation_bits(
+        frame_samples_48k,
+        0,
+        end_band,
+        1,
+        energy.header.transient,
+        remaining_eighth_bits,
+    )?;
+    let band_allocation = select_band_allocation(
+        frame_samples_48k,
+        0,
+        end_band,
+        1,
+        &controls,
+        reservations.remaining_eighth_bits,
+    )?;
+    let (reallocated, fine_shape, energies_q15) = if let Some(allocation) = band_allocation {
+        let reallocated = reallocate_skipped_bands(
+            range,
+            frame_samples_48k,
+            1,
+            &controls,
+            reservations,
+            allocation,
+        )?;
+        let fine_shape = split_fine_shape_allocation(frame_samples_48k, 1, reallocated)?;
+        let energies_q15 = decode_fine_energies(
+            range,
+            &energy.energies_q15,
+            &fine_shape.fine_bits,
+            end_band,
+            1,
+        )?;
+        (Some(reallocated), Some(fine_shape), energies_q15)
+    } else {
+        (None, None, energy.energies_q15)
+    };
+
+    Ok(Some(MonoCeltFramePrefix {
+        header: energy.header,
+        tf_resolution,
+        spread,
+        controls,
+        reservations,
+        band_allocation,
+        reallocated,
+        fine_shape,
+        energies_q15,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::decode_mono_energy_prefix;
+    use super::{MonoCeltFramePrefix, decode_mono_energy_prefix, decode_mono_frame_prefix};
     use crate::celt::{
-        FrameHeader, decode_coarse_energy_residuals, decode_header, predict_coarse_energies,
+        FrameHeader, decode_allocation_controls, decode_coarse_energy_residuals,
+        decode_fine_energies, decode_header, decode_spread, decode_tf_resolution,
+        predict_coarse_energies, reallocate_skipped_bands, reserve_allocation_bits,
+        select_band_allocation, split_fine_shape_allocation,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -120,6 +230,100 @@ mod tests {
             predict_coarse_energies(&residuals, &previous, 120, header.intra, 1, 1).unwrap();
         assert_eq!(actual.energies_q15, energies);
         assert_eq!(actual_range.final_range(), expected_range.final_range());
+    }
+
+    #[test]
+    fn regular_frame_composes_mono_stages_through_fine_energy() {
+        let packet = [0; 256];
+        let previous = [0; 42];
+        let mut actual_range = RangeDecoder::new(&packet);
+        let actual = decode_mono_frame_prefix(&mut actual_range, 120, packet.len(), 1, &previous)
+            .unwrap()
+            .unwrap();
+
+        let mut expected_range = RangeDecoder::new(&packet);
+        let energy =
+            decode_mono_energy_prefix(&mut expected_range, 120, packet.len(), 1, &previous)
+                .unwrap();
+        let tf_resolution = decode_tf_resolution(&mut expected_range, 120, false, 0, 1).unwrap();
+        let spread = decode_spread(&mut expected_range).unwrap();
+        let controls =
+            decode_allocation_controls(&mut expected_range, 120, 0, 1, 1, packet.len()).unwrap();
+        let remaining_eighth_bits =
+            (packet.len() * 64).saturating_sub(expected_range.tell_frac() as usize) as u32;
+        let reservations =
+            reserve_allocation_bits(120, 0, 1, 1, false, remaining_eighth_bits).unwrap();
+        let band_allocation =
+            select_band_allocation(120, 0, 1, 1, &controls, reservations.remaining_eighth_bits)
+                .unwrap();
+        let (reallocated, fine_shape, energies_q15) = if let Some(allocation) = band_allocation {
+            let reallocated = reallocate_skipped_bands(
+                &mut expected_range,
+                120,
+                1,
+                &controls,
+                reservations,
+                allocation,
+            )
+            .unwrap();
+            let fine_shape = split_fine_shape_allocation(120, 1, reallocated).unwrap();
+            let energies_q15 = decode_fine_energies(
+                &mut expected_range,
+                &energy.energies_q15,
+                &fine_shape.fine_bits,
+                1,
+                1,
+            )
+            .unwrap();
+            (Some(reallocated), Some(fine_shape), energies_q15)
+        } else {
+            (None, None, energy.energies_q15)
+        };
+        let expected = MonoCeltFramePrefix {
+            header: energy.header,
+            tf_resolution,
+            spread,
+            controls,
+            reservations,
+            band_allocation,
+            reallocated,
+            fine_shape,
+            energies_q15,
+        };
+        assert_eq!(actual, expected);
+        assert_eq!(actual_range.final_range(), expected_range.final_range());
+    }
+
+    #[test]
+    fn silence_frame_prefix_stops_after_the_header() {
+        let packet = [0xff; 64];
+        let mut actual_range = RangeDecoder::new(&packet);
+        assert_eq!(
+            decode_mono_frame_prefix(&mut actual_range, 120, packet.len(), 21, &[0; 42]).unwrap(),
+            None
+        );
+
+        let mut header_only_range = RangeDecoder::new(&packet);
+        decode_header(&mut header_only_range).unwrap();
+        assert_eq!(actual_range.final_range(), header_only_range.final_range());
+    }
+
+    #[test]
+    fn active_low_budget_frame_preserves_zero_bit_allocation() {
+        let packet = [0; 1];
+        let mut range = RangeDecoder::new(&packet);
+        let decoded = decode_mono_frame_prefix(&mut range, 120, packet.len(), 21, &[0; 42])
+            .unwrap()
+            .unwrap();
+        assert!(!decoded.header.silence);
+        assert_eq!(
+            decoded
+                .band_allocation
+                .map(|allocation| allocation.total_eighth_bits),
+            Some(0)
+        );
+        assert!(decoded.reallocated.is_some());
+        assert!(decoded.fine_shape.is_some());
     }
 
     #[test]
