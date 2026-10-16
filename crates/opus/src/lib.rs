@@ -15,5 +15,5 @@ mod range;
 mod stream;
 
 pub use ogg::{OpusHead, OpusHeadError, OpusTags, OpusTagsError};
-pub use packet::{Bandwidth, Mode, OpusPacket, PacketError, Toc};
+pub use packet::{Bandwidth, Mode, OpusPacket, PacketError, Toc, parse_multistream_packet};
 pub use stream::{OpusAudioPacket, OpusStreamReader};

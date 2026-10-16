@@ -125,6 +125,110 @@ impl<'a> OpusPacket<'a> {
         Ok(Self { toc, frames })
     }
 
+    /// Parses one self-delimited Opus packet from the start of `packet`.
+    /// Returns the packet and the number of bytes it consumed.
+    pub fn parse_self_delimited(packet: &'a [u8]) -> Result<(Self, usize), PacketError> {
+        let toc = Toc::parse(*packet.first().ok_or(PacketError::Empty)?);
+        let mut cursor = 1;
+        let mut frames = Vec::new();
+
+        match toc.frame_code {
+            0 => {
+                frames
+                    .try_reserve_exact(1)
+                    .map_err(|_| PacketError::AllocationFailed)?;
+                let size = read_frame_size(packet, &mut cursor)?;
+                check_frame_size(size)?;
+                let end = cursor
+                    .checked_add(size)
+                    .ok_or(PacketError::InvalidFrameLayout)?;
+                frames.push(packet.get(cursor..end).ok_or(PacketError::Truncated)?);
+                cursor = end;
+            }
+            1 => {
+                let size = read_frame_size(packet, &mut cursor)?;
+                check_frame_size(size)?;
+                frames
+                    .try_reserve_exact(2)
+                    .map_err(|_| PacketError::AllocationFailed)?;
+                for _ in 0..2 {
+                    let end = cursor
+                        .checked_add(size)
+                        .ok_or(PacketError::InvalidFrameLayout)?;
+                    frames.push(packet.get(cursor..end).ok_or(PacketError::Truncated)?);
+                    cursor = end;
+                }
+            }
+            2 => {
+                let first_size = read_frame_size(packet, &mut cursor)?;
+                let second_size = read_frame_size(packet, &mut cursor)?;
+                check_frame_size(first_size)?;
+                check_frame_size(second_size)?;
+                frames
+                    .try_reserve_exact(2)
+                    .map_err(|_| PacketError::AllocationFailed)?;
+                for size in [first_size, second_size] {
+                    let end = cursor
+                        .checked_add(size)
+                        .ok_or(PacketError::InvalidFrameLayout)?;
+                    frames.push(packet.get(cursor..end).ok_or(PacketError::Truncated)?);
+                    cursor = end;
+                }
+            }
+            3 => {
+                let control = *packet.get(cursor).ok_or(PacketError::Truncated)?;
+                cursor += 1;
+                let frame_count = usize::from(control >> 2);
+                if frame_count == 0 {
+                    return Err(PacketError::InvalidFrameCount);
+                }
+                check_duration(toc, frame_count)?;
+                let padding = if control & 0x02 != 0 {
+                    read_padding_size(packet, &mut cursor)?
+                } else {
+                    0
+                };
+                frames
+                    .try_reserve_exact(frame_count)
+                    .map_err(|_| PacketError::AllocationFailed)?;
+
+                let mut sizes = Vec::new();
+                sizes
+                    .try_reserve_exact(frame_count)
+                    .map_err(|_| PacketError::AllocationFailed)?;
+                if control & 0x01 == 0 {
+                    let size = read_frame_size(packet, &mut cursor)?;
+                    check_frame_size(size)?;
+                    sizes.resize(frame_count, size);
+                } else {
+                    for _ in 0..frame_count {
+                        let size = read_frame_size(packet, &mut cursor)?;
+                        check_frame_size(size)?;
+                        sizes.push(size);
+                    }
+                }
+
+                for size in sizes {
+                    let end = cursor
+                        .checked_add(size)
+                        .ok_or(PacketError::InvalidFrameLayout)?;
+                    frames.push(packet.get(cursor..end).ok_or(PacketError::Truncated)?);
+                    cursor = end;
+                }
+                cursor = cursor
+                    .checked_add(padding)
+                    .ok_or(PacketError::InvalidPadding)?;
+                if cursor > packet.len() {
+                    return Err(PacketError::Truncated);
+                }
+            }
+            _ => unreachable!("frame code is two bits"),
+        }
+
+        check_duration(toc, frames.len())?;
+        Ok((Self { toc, frames }, cursor))
+    }
+
     pub const fn toc(&self) -> Toc {
         self.toc
     }
@@ -136,6 +240,68 @@ impl<'a> OpusPacket<'a> {
     pub fn duration_samples_48k(&self) -> usize {
         usize::from(self.toc.frame_samples_48k) * self.frames.len()
     }
+}
+
+/// Splits an Ogg Opus audio packet into its constituent elementary streams.
+/// The first `stream_count - 1` packets use RFC 6716 self-delimited framing.
+pub fn parse_multistream_packet<'a>(
+    packet: &'a [u8],
+    stream_count: u8,
+) -> Result<Vec<OpusPacket<'a>>, PacketError> {
+    if stream_count == 0 {
+        return Err(PacketError::InvalidFrameCount);
+    }
+    let mut streams = Vec::new();
+    streams
+        .try_reserve_exact(usize::from(stream_count))
+        .map_err(|_| PacketError::AllocationFailed)?;
+    let mut cursor = 0;
+    for _ in 1..stream_count {
+        let (stream, consumed) = OpusPacket::parse_self_delimited(&packet[cursor..])?;
+        cursor = cursor
+            .checked_add(consumed)
+            .ok_or(PacketError::InvalidFrameLayout)?;
+        streams.push(stream);
+    }
+    let final_stream = OpusPacket::parse(&packet[cursor..])?;
+    if streams
+        .first()
+        .is_some_and(|first| first.duration_samples_48k() != final_stream.duration_samples_48k())
+    {
+        return Err(PacketError::DurationMismatch);
+    }
+    streams.push(final_stream);
+    if streams
+        .windows(2)
+        .any(|pair| pair[0].duration_samples_48k() != pair[1].duration_samples_48k())
+    {
+        return Err(PacketError::DurationMismatch);
+    }
+    Ok(streams)
+}
+
+fn check_duration(toc: Toc, frame_count: usize) -> Result<(), PacketError> {
+    let count = u16::try_from(frame_count).map_err(|_| PacketError::InvalidFrameCount)?;
+    let duration = toc
+        .frame_samples_48k
+        .checked_mul(count)
+        .ok_or(PacketError::DurationTooLong)?;
+    if duration > MAX_PACKET_DURATION_48K {
+        return Err(PacketError::DurationTooLong);
+    }
+    Ok(())
+}
+
+fn read_padding_size(packet: &[u8], cursor: &mut usize) -> Result<usize, PacketError> {
+    let mut total = 0_usize;
+    let mut value = usize::from(*packet.get(*cursor).ok_or(PacketError::Truncated)?);
+    *cursor += 1;
+    while value == 255 {
+        total = total.checked_add(254).ok_or(PacketError::InvalidPadding)?;
+        value = usize::from(*packet.get(*cursor).ok_or(PacketError::Truncated)?);
+        *cursor += 1;
+    }
+    total.checked_add(value).ok_or(PacketError::InvalidPadding)
 }
 
 fn parse_code3<'a>(
@@ -158,17 +324,7 @@ fn parse_code3<'a>(
 
     let mut cursor = 2;
     let padding_bytes = if control & 0x02 != 0 {
-        let mut total = 0_usize;
-        let mut value = usize::from(*packet.get(cursor).ok_or(PacketError::Truncated)?);
-        cursor += 1;
-        while value == 255 {
-            total = total.checked_add(254).ok_or(PacketError::InvalidPadding)?;
-            value = usize::from(*packet.get(cursor).ok_or(PacketError::Truncated)?);
-            cursor += 1;
-        }
-        total
-            .checked_add(value)
-            .ok_or(PacketError::InvalidPadding)?
+        read_padding_size(packet, &mut cursor)?
     } else {
         0
     };
@@ -252,6 +408,7 @@ pub enum PacketError {
     InvalidFrameCount,
     DurationTooLong,
     AllocationFailed,
+    DurationMismatch,
 }
 
 impl fmt::Display for PacketError {
@@ -265,6 +422,7 @@ impl fmt::Display for PacketError {
             Self::InvalidFrameCount => "invalid Opus packet frame count",
             Self::DurationTooLong => "Opus packet duration exceeds 120 ms",
             Self::AllocationFailed => "unable to allocate Opus frame table",
+            Self::DurationMismatch => "Opus multistream packet durations do not match",
         })
     }
 }
@@ -273,7 +431,7 @@ impl std::error::Error for PacketError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Bandwidth, Mode, OpusPacket, PacketError, Toc};
+    use super::{Bandwidth, Mode, OpusPacket, PacketError, Toc, parse_multistream_packet};
 
     #[test]
     fn toc_configurations_select_mode_and_bandwidth() {
@@ -324,6 +482,69 @@ mod tests {
 
         let code3_vbr = OpusPacket::parse(&[0x83, 9, 2, 1, 2, 3]).unwrap();
         assert_eq!(code3_vbr.frames, [&[1, 2][..], &[3][..]]);
+    }
+
+    #[test]
+    fn parses_self_delimited_frame_packing_codes_and_consumed_lengths() {
+        let (code0, consumed) = OpusPacket::parse_self_delimited(&[0x80, 2, 10, 11, 99]).unwrap();
+        assert_eq!(code0.frames(), &[&[10, 11][..]]);
+        assert_eq!(consumed, 4);
+
+        let (code1, consumed) = OpusPacket::parse_self_delimited(&[0x81, 1, 10, 11, 99]).unwrap();
+        assert_eq!(code1.frames(), &[&[10][..], &[11][..]]);
+        assert_eq!(consumed, 4);
+
+        let (code2, consumed) =
+            OpusPacket::parse_self_delimited(&[0x82, 1, 2, 10, 11, 12, 99]).unwrap();
+        assert_eq!(code2.frames(), &[&[10][..], &[11, 12][..]]);
+        assert_eq!(consumed, 6);
+
+        let (code3_cbr, consumed) =
+            OpusPacket::parse_self_delimited(&[0x83, 8, 2, 10, 11, 12, 13, 99]).unwrap();
+        assert_eq!(code3_cbr.frames(), &[&[10, 11][..], &[12, 13][..]]);
+        assert_eq!(consumed, 7);
+
+        let (code3_vbr, consumed) =
+            OpusPacket::parse_self_delimited(&[0x83, 9, 1, 2, 10, 11, 12, 99]).unwrap();
+        assert_eq!(code3_vbr.frames(), &[&[10][..], &[11, 12][..]]);
+        assert_eq!(consumed, 7);
+    }
+
+    #[test]
+    fn self_delimited_code3_consumes_declared_padding() {
+        let (packet, consumed) =
+            OpusPacket::parse_self_delimited(&[0x83, 10, 2, 1, 10, 11, 12, 13, 99]).unwrap();
+        assert_eq!(packet.frames(), &[&[10][..], &[11][..]]);
+        assert_eq!(consumed, 8);
+    }
+
+    #[test]
+    fn splits_multistream_packet_and_checks_equal_durations() {
+        let streams = parse_multistream_packet(&[0x80, 1, 10, 0x80, 11], 2).unwrap();
+        assert_eq!(streams.len(), 2);
+        assert_eq!(streams[0].frames(), &[&[10][..]]);
+        assert_eq!(streams[1].frames(), &[&[11][..]]);
+
+        assert_eq!(
+            parse_multistream_packet(&[0x80, 1, 10, 0x88, 11], 2),
+            Err(PacketError::DurationMismatch)
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_self_delimited_and_empty_multistream_packets() {
+        assert_eq!(
+            OpusPacket::parse_self_delimited(&[0x80, 2, 1]).unwrap_err(),
+            PacketError::Truncated
+        );
+        assert_eq!(
+            parse_multistream_packet(&[0x80], 2).unwrap_err(),
+            PacketError::Truncated
+        );
+        assert_eq!(
+            parse_multistream_packet(&[0x80], 0).unwrap_err(),
+            PacketError::InvalidFrameCount
+        );
     }
 
     #[test]
