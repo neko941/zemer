@@ -1357,4 +1357,71 @@ mod tests {
         }
         assert_eq!(decoded, samples);
     }
+
+    #[test]
+    fn aifc_dwvw_round_trips_every_depth_for_mono_and_stereo() {
+        for bits in 2_u16..=32 {
+            let (container_bits, format) = match bits {
+                2..=8 => (8_u16, SampleFormat::PcmU8),
+                9..=16 => (16, SampleFormat::PcmI16),
+                17..=24 => (24, SampleFormat::PcmI24),
+                _ => (32, SampleFormat::PcmI32),
+            };
+            let half = 1_i64 << (bits - 1);
+            for channels in [1_u16, 2] {
+                let spec = AudioSpec::new(44_100, channels, format).unwrap();
+                let values: Vec<_> = (0..17 * usize::from(channels))
+                    .map(|index| {
+                        let index = i64::try_from(index).unwrap();
+                        match index % 4 {
+                            0 => -half,
+                            1 => half - 1,
+                            2 => 0,
+                            _ => (index * 65_537).rem_euclid(half * 2) - half,
+                        }
+                    })
+                    .collect();
+                let samples = match format {
+                    SampleFormat::PcmU8 => Samples::U8(
+                        values
+                            .iter()
+                            .map(|value| ((value << (container_bits - bits)) + 128) as u8)
+                            .collect(),
+                    ),
+                    SampleFormat::PcmI16 => Samples::I16(
+                        values
+                            .iter()
+                            .map(|value| (value << (container_bits - bits)) as i16)
+                            .collect(),
+                    ),
+                    SampleFormat::PcmI24 => Samples::I24(
+                        values
+                            .iter()
+                            .map(|value| (value << (container_bits - bits)) as i32)
+                            .collect(),
+                    ),
+                    SampleFormat::PcmI32 => Samples::I32(
+                        values
+                            .iter()
+                            .map(|value| (value << (container_bits - bits)) as i32)
+                            .collect(),
+                    ),
+                    SampleFormat::Float32 | SampleFormat::Float64 => unreachable!(),
+                };
+                let input = PcmBuffer::new(spec, samples).unwrap();
+                let mut encoder = AiffEncoder::new_aifc_dwvw_with_bits_per_sample(
+                    Cursor::new(Vec::new()),
+                    spec,
+                    bits,
+                )
+                .unwrap();
+                encoder.write_block(&input).unwrap();
+                let file = encoder.finish().unwrap().get_ref().clone();
+                let mut decoder = AiffDecoder::new(Cursor::new(file)).unwrap();
+                let decoded = decoder.read_frames(17).unwrap().unwrap();
+                assert_eq!(decoded, input, "{bits}-bit, {channels}-channel DWVW");
+                assert!(decoder.read_frames(1).unwrap().is_none());
+            }
+        }
+    }
 }
