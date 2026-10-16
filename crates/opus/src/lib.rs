@@ -5,6 +5,7 @@
 
 #[allow(dead_code)]
 mod celt;
+mod ogg;
 mod packet;
 #[allow(dead_code)]
 mod pvq;
@@ -12,4 +13,5 @@ mod pvq;
 #[allow(dead_code)]
 mod range;
 
+pub use ogg::{OpusHead, OpusHeadError};
 pub use packet::{Bandwidth, Mode, OpusPacket, PacketError, Toc};
