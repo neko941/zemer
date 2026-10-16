@@ -76,6 +76,20 @@ pub(crate) struct AllocationReservations {
     pub(crate) dual_stereo_eighth_bits: u8,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BandAllocation {
+    pub(crate) quality_q64: u16,
+    pub(crate) eighth_bits: [u16; 21],
+    pub(crate) total_eighth_bits: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AllocationControls {
+    pub(crate) band_boosts: [u16; 21],
+    pub(crate) total_boost: u32,
+    pub(crate) trim: u8,
+}
+
 const ENERGY_LAPLACE_MODELS: [[[u8; 42]; 2]; 4] = [
     [
         [
@@ -156,7 +170,7 @@ pub(crate) fn static_allocation(
     channels: u8,
     quality_q64: u16,
 ) -> Result<u32, RangeError> {
-    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
     if band >= 21 || !(1..=2).contains(&channels) {
         return Err(RangeError::InvalidCeltEnergyLayout);
     }
@@ -172,7 +186,7 @@ pub(crate) fn static_allocation(
     let row = STATIC_ALLOCATION[usize::from(band)];
     let interpolated_q64 =
         u32::from(row[column]) * (64 - fraction) + u32::from(row[column + 1]) * fraction;
-    let width = u32::from(edges[usize::from(band) + 1] - edges[usize::from(band)]);
+    let width = u32::from(BAND_WIDTHS_2_5_MS[usize::from(band)]);
     let lm = u32::from(frame_samples_48k / 120).trailing_zeros();
     Ok(u32::from(channels) * width * interpolated_q64 * (1 << lm) / 256)
 }
@@ -269,6 +283,51 @@ pub(crate) fn reserve_allocation_bits(
         intensity_eighth_bits: intensity,
         dual_stereo_eighth_bits: dual_stereo,
     })
+}
+
+pub(crate) fn select_band_allocation(
+    frame_samples_48k: u16,
+    start_band: u8,
+    end_band: u8,
+    channels: u8,
+    controls: &AllocationControls,
+    available_eighth_bits: u32,
+) -> Result<Option<BandAllocation>, RangeError> {
+    let trim_offsets = allocation_trim_offsets(
+        frame_samples_48k,
+        start_band,
+        end_band,
+        channels,
+        controls.trim,
+    )?;
+    let thresholds = allocation_thresholds(frame_samples_48k, start_band, end_band, channels)?;
+    let caps = allocation_caps(frame_samples_48k, end_band, channels)?;
+    let mut best = None;
+    for quality_q64 in 0..=640 {
+        let mut eighth_bits = [0; 21];
+        let mut total_eighth_bits = 0_u32;
+        for band in start_band..end_band {
+            let band_index = usize::from(band);
+            let static_bits =
+                static_allocation(frame_samples_48k, band, channels, quality_q64)? as i64;
+            let adjusted = (static_bits
+                + i64::from(trim_offsets[band_index])
+                + i64::from(controls.band_boosts[band_index]))
+            .max(i64::from(thresholds[band_index]))
+            .min(i64::from(caps[band_index])) as u16;
+            eighth_bits[band_index] = adjusted;
+            total_eighth_bits += u32::from(adjusted);
+        }
+        if total_eighth_bits > available_eighth_bits {
+            break;
+        }
+        best = Some(BandAllocation {
+            quality_q64,
+            eighth_bits,
+            total_eighth_bits,
+        });
+    }
+    Ok(best)
 }
 
 pub(crate) fn allocation_trim_offsets(
@@ -514,6 +573,31 @@ pub(crate) fn decode_allocation_trim(
     }
 }
 
+pub(crate) fn decode_allocation_controls(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    start_band: u8,
+    end_band: u8,
+    channels: u8,
+    frame_bytes: usize,
+) -> Result<AllocationControls, RangeError> {
+    let caps = allocation_caps(frame_samples_48k, end_band, channels)?;
+    let (band_boosts, total_boost) = decode_band_boosts(
+        range,
+        frame_samples_48k,
+        start_band,
+        end_band,
+        frame_bytes,
+        &caps,
+    )?;
+    let trim = decode_allocation_trim(range, frame_bytes, total_boost)?;
+    Ok(AllocationControls {
+        band_boosts,
+        total_boost,
+        trim,
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PostFilter {
     pub(crate) period: u16,
@@ -566,10 +650,11 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 #[cfg(test)]
 mod tests {
     use super::{
-        ENERGY_LAPLACE_MODELS, FrameHeader, allocation_caps, allocation_thresholds,
-        allocation_trim_offsets, band_edges, decode_allocation_trim, decode_band_boosts,
-        decode_coarse_energy_residuals, decode_fine_energies, decode_header,
-        predict_coarse_energies, reserve_allocation_bits, static_allocation,
+        AllocationControls, ENERGY_LAPLACE_MODELS, FrameHeader, allocation_caps,
+        allocation_thresholds, allocation_trim_offsets, band_edges, decode_allocation_controls,
+        decode_allocation_trim, decode_band_boosts, decode_coarse_energy_residuals,
+        decode_fine_energies, decode_header, predict_coarse_energies, reserve_allocation_bits,
+        select_band_allocation, static_allocation,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -590,7 +675,9 @@ mod tests {
         assert_eq!(static_allocation(120, 0, 1, 0), Ok(0));
         assert_eq!(static_allocation(120, 0, 1, 64), Ok(22));
         assert_eq!(static_allocation(120, 0, 1, 640), Ok(50));
-        assert_eq!(static_allocation(240, 0, 1, 640), Ok(200));
+        assert_eq!(static_allocation(240, 0, 1, 640), Ok(100));
+        assert_eq!(static_allocation(480, 0, 1, 640), Ok(200));
+        assert_eq!(static_allocation(960, 0, 1, 640), Ok(400));
         assert_eq!(static_allocation(120, 20, 2, 640), Ok(1_144));
     }
 
@@ -691,6 +778,26 @@ mod tests {
                 .unwrap()
                 .anti_collapse_eighth_bits,
             0
+        );
+    }
+
+    #[test]
+    fn allocation_search_chooses_highest_quality_within_budget() {
+        let controls = AllocationControls {
+            band_boosts: [0; 21],
+            total_boost: 0,
+            trim: 5,
+        };
+        let allocation = select_band_allocation(120, 0, 1, 1, &controls, 8)
+            .unwrap()
+            .unwrap();
+        assert_eq!(allocation.quality_q64, 48);
+        assert_eq!(allocation.eighth_bits[0], 8);
+        assert_eq!(allocation.total_eighth_bits, 8);
+        assert!(
+            select_band_allocation(120, 0, 1, 1, &controls, 7)
+                .unwrap()
+                .is_none()
         );
     }
 
@@ -884,5 +991,14 @@ mod tests {
             decode_band_boosts(&mut range, 120, 1, 1, 8, &[0; 21]),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
+    }
+
+    #[test]
+    fn allocation_controls_apply_caps_from_frame_mode() {
+        let mut range = RangeDecoder::new(&[0xff; 8]);
+        let controls = decode_allocation_controls(&mut range, 120, 0, 1, 1, 8).unwrap();
+        assert_eq!(controls.band_boosts[0], 72);
+        assert_eq!(controls.total_boost, 72);
+        assert!(controls.trim <= 10);
     }
 }
