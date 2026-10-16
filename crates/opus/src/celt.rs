@@ -111,6 +111,12 @@ pub(crate) struct FineShapeAllocation {
     pub(crate) balance_eighth_bits: u32,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MonoPvqShapes {
+    pub(crate) vectors: [Vec<f32>; 21],
+    pub(crate) pulses: [u16; 21],
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FinalFineEnergy {
     pub(crate) energies_q15: [i32; 42],
@@ -207,7 +213,7 @@ pub(crate) fn decode_mono_pvq_shapes(
     range: &mut RangeDecoder<'_>,
     frame_samples_48k: u16,
     allocation: FineShapeAllocation,
-) -> Result<[Vec<f32>; 21], RangeError> {
+) -> Result<MonoPvqShapes, RangeError> {
     let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
     let start_band = allocation.start_band;
     let end_band = allocation.coded_end_band;
@@ -216,28 +222,43 @@ pub(crate) fn decode_mono_pvq_shapes(
     }
 
     let mut shapes = std::array::from_fn(|_| Vec::new());
+    let mut pulse_counts = [0; 21];
+    let mut balance = i64::from(allocation.balance_eighth_bits);
     for band in start_band..end_band {
         let index = usize::from(band);
+        let tell = i64::from(range.tell_frac());
+        if band != start_band {
+            balance -= tell;
+        }
+        let bands_remaining = i64::from((end_band - band).min(3));
+        let compensated =
+            i64::from(allocation.shape_eighth_bits[index]) + balance / bands_remaining;
+        let budget = compensated.clamp(0, 16_383) as u32;
         let dimensions = usize::from(edges[index + 1] - edges[index]);
         if dimensions == 1 {
-            let sign = if allocation.shape_eighth_bits[index] >= 8 {
+            let sign = if budget >= 8 {
                 range.read_raw_bits(1)?
             } else {
                 0
             };
             shapes[index] = vec![if sign == 0 { 1.0 } else { -1.0 }];
-            continue;
-        }
-        let pulse_allocation =
-            pulses_for_allocation(dimensions, allocation.shape_eighth_bits[index])?;
-        let pulses = if pulse_allocation.pulses == 0 {
-            vec![0; dimensions]
+            pulse_counts[index] = 1;
         } else {
-            decode_codeword(range, dimensions, usize::from(pulse_allocation.pulses))?
-        };
-        shapes[index] = normalize_pulses(&pulses)?;
+            let pulse_allocation = pulses_for_allocation(dimensions, budget)?;
+            pulse_counts[index] = pulse_allocation.pulses;
+            let pulses = if pulse_allocation.pulses == 0 {
+                vec![0; dimensions]
+            } else {
+                decode_codeword(range, dimensions, usize::from(pulse_allocation.pulses))?
+            };
+            shapes[index] = normalize_pulses(&pulses)?;
+        }
+        balance += i64::from(allocation.shape_eighth_bits[index]) + tell;
     }
-    Ok(shapes)
+    Ok(MonoPvqShapes {
+        vectors: shapes,
+        pulses: pulse_counts,
+    })
 }
 
 pub(crate) fn static_allocation(
@@ -1056,9 +1077,9 @@ mod tests {
             };
             let mut range = RangeDecoder::new(&[0x5a; 32]);
             let shapes = decode_mono_pvq_shapes(&mut range, frame_samples, allocation).unwrap();
-            assert_eq!(shapes[0].len(), expected_dimensions);
-            assert!(shapes[1..].iter().all(Vec::is_empty));
-            let norm_squared = shapes[0]
+            assert_eq!(shapes.vectors[0].len(), expected_dimensions);
+            assert!(shapes.vectors[1..].iter().all(Vec::is_empty));
+            let norm_squared = shapes.vectors[0]
                 .iter()
                 .map(|&value| f64::from(value) * f64::from(value))
                 .sum::<f64>();
@@ -1080,7 +1101,8 @@ mod tests {
             let bytes = [0x00, payload];
             let mut range = RangeDecoder::new(&bytes);
             let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation).unwrap();
-            assert_eq!(shapes[0], vec![expected]);
+            assert_eq!(shapes.vectors[0], vec![expected]);
+            assert_eq!(shapes.pulses[0], 1);
         }
     }
 
@@ -1097,8 +1119,28 @@ mod tests {
         let mut range = RangeDecoder::new(&[0x00, 0x00]);
         let before = range.tell_frac();
         let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation).unwrap();
-        assert_eq!(shapes[8], vec![0.0, 0.0]);
+        assert_eq!(shapes.vectors[8], vec![0.0, 0.0]);
+        assert_eq!(shapes.pulses[8], 0);
         assert_eq!(range.tell_frac(), before);
+    }
+
+    #[test]
+    fn mono_shape_rebalances_unused_bits_into_the_final_band() {
+        let mut shape_eighth_bits = [0; 21];
+        shape_eighth_bits[12] = 39;
+        shape_eighth_bits[13] = 26;
+        let allocation = FineShapeAllocation {
+            start_band: 12,
+            coded_end_band: 14,
+            shape_eighth_bits,
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let mut range = RangeDecoder::new(&[0x21; 128]);
+        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation).unwrap();
+        assert_eq!(shapes.pulses[12], 1);
+        assert_eq!(shapes.pulses[13], 2);
     }
 
     #[test]
