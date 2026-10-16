@@ -39,7 +39,7 @@ pub(crate) struct RecursivePvqSplit {
 /// codeword order. It returns `None` for a leaf, or the decoded angle and the
 /// remaining budget for a split node. Angle precision and its coded-bit cost
 /// remain the caller's responsibility because those depend on CELT allocation
-/// state and transient handling. The maximum split depth is fixed by the CELT
+/// state. The maximum split depth is fixed by the CELT
 /// frame duration as LM + 1.
 pub(crate) fn decode_recursive_pvq_shape(
     range: &mut RangeDecoder<'_>,

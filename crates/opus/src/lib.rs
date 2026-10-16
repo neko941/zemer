@@ -8,6 +8,8 @@ mod celt;
 mod ogg;
 mod packet;
 #[allow(dead_code)]
+mod postfilter;
+#[allow(dead_code)]
 mod pvq;
 // These primitives are staged for the decoder frame pipeline.
 #[allow(dead_code)]

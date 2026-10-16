@@ -1,3 +1,4 @@
+use crate::postfilter::PostFilter;
 use crate::pvq::{
     SplitAngle, combine_mid_side_shapes, decode_codeword, normalize_pulses, pulses_for_allocation,
     split_stereo_shape_budget, spread_shape,
@@ -83,7 +84,7 @@ const CELT_OVERLAP_SAMPLES: usize = 120;
 /// The basic 240-sample Vorbis-derived window is zero-padded at both ends,
 /// then extended with a flat center. This keeps the 120-sample overlap
 /// power-complementary at the transform hop for every CELT frame size.
-fn celt_low_overlap_window(transform_bins: usize) -> Result<Vec<f64>, RangeError> {
+pub(crate) fn celt_low_overlap_window(transform_bins: usize) -> Result<Vec<f64>, RangeError> {
     if ![120, 240, 480, 960].contains(&transform_bins) {
         return Err(RangeError::InvalidCeltEnergyLayout);
     }
@@ -134,11 +135,13 @@ fn inverse_mdct_windowed(spectrum: &[f32]) -> Result<Vec<f32>, RangeError> {
 #[derive(Default)]
 pub(crate) struct CeltSynthesis {
     previous: Option<Vec<Vec<f32>>>,
+    postfilter: crate::postfilter::CeltPostFilter,
 }
 
 impl CeltSynthesis {
     pub(crate) fn reset(&mut self) {
         self.previous = None;
+        self.postfilter.reset();
     }
 
     /// Denormalizes one mono CELT band set and feeds its spectrum into synthesis.
@@ -218,6 +221,19 @@ impl CeltSynthesis {
         }
         self.previous = Some(current);
         Ok(Some(output))
+    }
+
+    /// Synthesizes one CELT frame and post-filters its overlap-add PCM output.
+    pub(crate) fn synthesize_with_postfilter(
+        &mut self,
+        spectra: &[Vec<f32>],
+        postfilter: Option<PostFilter>,
+    ) -> Result<Option<Vec<Vec<f32>>>, RangeError> {
+        let mut output = self.synthesize(spectra)?;
+        if let Some(samples) = output.as_mut() {
+            self.postfilter.process(samples, postfilter)?;
+        }
+        Ok(output)
     }
 }
 
@@ -1502,13 +1518,6 @@ pub(crate) fn decode_allocation_controls(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PostFilter {
-    pub(crate) period: u16,
-    pub(crate) gain: u8,
-    pub(crate) tapset: u8,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FrameHeader {
     pub(crate) silence: bool,
     pub(crate) postfilter: Option<PostFilter>,
@@ -1554,12 +1563,12 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 mod tests {
     use super::{
         AllocationControls, ENERGY_LAPLACE_MODELS, FineShapeAllocation, FrameHeader, MonoPvqShapes,
-        allocation_caps, allocation_thresholds, allocation_trim_offsets, apply_tf_adjustment,
-        band_edges, celt_low_overlap_window, decode_allocation_controls, decode_allocation_trim,
-        decode_band_boosts, decode_coarse_energy_residuals, decode_final_fine_energy,
-        decode_fine_energies, decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes,
-        decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes, hadamard_tf_axis,
-        hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
+        PostFilter, allocation_caps, allocation_thresholds, allocation_trim_offsets,
+        apply_tf_adjustment, band_edges, celt_low_overlap_window, decode_allocation_controls,
+        decode_allocation_trim, decode_band_boosts, decode_coarse_energy_residuals,
+        decode_final_fine_energy, decode_fine_energies, decode_header, decode_mid_side_pvq_band,
+        decode_mono_pvq_shapes, decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes,
+        hadamard_tf_axis, hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
         reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
         split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
@@ -1652,6 +1661,43 @@ mod tests {
                 assert!(output.iter().flatten().all(|&sample| sample == 0.0));
             }
         }
+    }
+
+    #[test]
+    fn celt_synthesis_applies_postfilter_after_overlap_add() {
+        use super::CeltSynthesis;
+
+        let params = PostFilter {
+            period: 15,
+            gain: 7,
+            tapset: 2,
+        };
+        let spectrum = vec![1.0; 120];
+        let mut plain = CeltSynthesis::default();
+        let mut filtered = CeltSynthesis::default();
+        assert!(
+            plain
+                .synthesize(std::slice::from_ref(&spectrum))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            filtered
+                .synthesize_with_postfilter(std::slice::from_ref(&spectrum), Some(params))
+                .unwrap()
+                .is_none()
+        );
+
+        let plain = plain
+            .synthesize(std::slice::from_ref(&spectrum))
+            .unwrap()
+            .unwrap();
+        let filtered = filtered
+            .synthesize_with_postfilter(std::slice::from_ref(&spectrum), Some(params))
+            .unwrap()
+            .unwrap();
+        assert_eq!(plain[0].len(), filtered[0].len());
+        assert_ne!(plain, filtered);
     }
 
     #[test]
