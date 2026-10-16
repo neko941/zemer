@@ -502,18 +502,31 @@ pub(crate) fn decode_mid_side_pvq_band(
     // Only one PVQ vector plus a raw sign bit is needed; decoding two
     // independent vectors would waste bits and violate CELT's special case.
     if dimensions == 2 {
-        if remaining_eighth_bits < 8 {
+        let sign_cost = if angle.angle_q14 == 0 || angle.angle_q14 == 16_384 {
+            0
+        } else {
+            8
+        };
+        if remaining_eighth_bits < sign_cost {
             return Ok((vec![0.0; dimensions], vec![0.0; dimensions]));
         }
         let mid_first = mid_budget >= side_budget;
         let (coded, _) = decode_stereo_shape(
             range,
             dimensions,
-            remaining_eighth_bits - 8,
+            remaining_eighth_bits - sign_cost,
             spread,
             blocks,
             tf_adjustment,
         )?;
+        if sign_cost == 0 {
+            let zero = vec![0.0; dimensions];
+            return if mid_first {
+                combine_mid_side_shapes(&coded, &zero, angle)
+            } else {
+                combine_mid_side_shapes(&zero, &coded, angle)
+            };
+        }
         let side_sign = range.read_raw_bits(1)?;
         let (mid, side) = if mid_first {
             let sign = if side_sign == 0 { 1.0 } else { -1.0 };
@@ -1579,6 +1592,34 @@ mod tests {
                 .map(|&value| f64::from(value) * f64::from(value))
                 .sum::<f64>();
             assert!((norm_squared - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn two_dimensional_stereo_endpoints_omit_the_unneeded_sign_bit() {
+        for (angle_q14, left_gain, right_gain) in [(0, 1.0, 0.0), (16_384, 0.0, 1.0)] {
+            let angle = crate::pvq::SplitAngle {
+                resolution: 2,
+                index: if angle_q14 == 0 { 0 } else { 2 },
+                angle_q14,
+                left_gain,
+                right_gain,
+            };
+            let bytes = [0x53; 32];
+            let mut actual_range = RangeDecoder::new(&bytes);
+            let (left, right) =
+                decode_mid_side_pvq_band(&mut actual_range, 2, 40, angle, 0, 1, 0).unwrap();
+
+            let mut expected_range = RangeDecoder::new(&bytes);
+            let allocation = crate::pvq::pulses_for_allocation(2, 40).unwrap();
+            crate::pvq::decode_codeword(&mut expected_range, 2, allocation.pulses as usize)
+                .unwrap();
+            assert_eq!(actual_range.tell_frac(), expected_range.tell_frac());
+            if angle_q14 == 0 {
+                assert_eq!(left, right);
+            } else {
+                assert_eq!(left, right.iter().map(|value| -*value).collect::<Vec<_>>());
+            }
         }
     }
 
