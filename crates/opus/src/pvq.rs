@@ -33,6 +33,13 @@ pub(crate) struct RecursivePvqSplit {
     pub(crate) remaining_eighth_bits: u32,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RecursivePvqAngleContext {
+    pub(crate) pulse_cap_eighth_bits: u32,
+    pub(crate) offset_eighth_bits: i32,
+    pub(crate) time_split: bool,
+}
+
 /// Decodes a PVQ shape, recursively applying caller-decoded split angles.
 ///
 /// The callback runs at each node before its children, matching the recursive
@@ -61,6 +68,45 @@ pub(crate) fn decode_recursive_pvq_shape(
         max_split_levels,
         0,
         decode_split,
+    )
+}
+
+/// Decodes a recursive PVQ shape, choosing splits from the 32-bit codebook
+/// limit and charging each decoded angle to its node allocation.
+///
+/// The callback supplies only the node-specific angle context. It is invoked
+/// only when the allocation requires a split.
+pub(crate) fn decode_recursive_pvq_shape_for_allocation(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    dimensions: usize,
+    budget_eighth_bits: u32,
+    angle_context: &mut impl FnMut(usize, u32, u8) -> Result<RecursivePvqAngleContext, RangeError>,
+) -> Result<(Vec<f32>, u32), RangeError> {
+    let max_split_levels = pvq_split_level_limit(frame_samples_48k)?;
+    decode_recursive_pvq_shape(
+        range,
+        frame_samples_48k,
+        dimensions,
+        budget_eighth_bits,
+        &mut |range, dimensions, budget, depth| {
+            if !pvq_allocation_requires_split(dimensions, budget)? {
+                return Ok(None);
+            }
+            if depth >= max_split_levels || dimensions < 2 || dimensions % 2 != 0 {
+                return Err(RangeError::InvalidPvqLayout);
+            }
+            let context = angle_context(dimensions, budget, depth)?;
+            decode_recursive_pvq_split(
+                range,
+                dimensions,
+                budget,
+                context.pulse_cap_eighth_bits,
+                context.offset_eighth_bits,
+                context.time_split,
+            )
+            .map(Some)
+        },
     )
 }
 
@@ -845,11 +891,11 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        RecursivePvqSplit, SplitAngle, codebook_size, combine_mid_side_shapes,
-        combine_split_shapes, decode_codeword, decode_recursive_pvq_shape,
-        decode_recursive_pvq_split, decode_split_angle, normalize_pulses, pulses_for_allocation,
-        pvq_allocation_requires_split, split_shape_budget, split_stereo_shape_budget, spread_shape,
-        unrank_codeword,
+        RecursivePvqAngleContext, RecursivePvqSplit, SplitAngle, codebook_size,
+        combine_mid_side_shapes, combine_split_shapes, decode_codeword, decode_recursive_pvq_shape,
+        decode_recursive_pvq_shape_for_allocation, decode_recursive_pvq_split, decode_split_angle,
+        normalize_pulses, pulses_for_allocation, pvq_allocation_requires_split, split_shape_budget,
+        split_stereo_shape_budget, spread_shape, unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1388,6 +1434,49 @@ mod tests {
             pvq_allocation_requires_split(177, 258),
             Err(RangeError::InvalidPvqLayout)
         );
+    }
+
+    #[test]
+    fn allocation_driven_recursive_shape_decodes_angle_before_children() {
+        let mut range = RangeDecoder::new(&[0; 4]);
+        let mut contexts = Vec::new();
+        let (shape, pulses) = decode_recursive_pvq_shape_for_allocation(
+            &mut range,
+            120,
+            2,
+            258,
+            &mut |dimensions, budget, depth| {
+                contexts.push((dimensions, budget, depth));
+                Ok(RecursivePvqAngleContext {
+                    pulse_cap_eighth_bits: 256,
+                    offset_eighth_bits: 0,
+                    time_split: false,
+                })
+            },
+        )
+        .unwrap();
+
+        assert_eq!(contexts, [(2, 258, 0)]);
+        assert_eq!(pulses, 2);
+        assert_eq!(shape, [1.0, 0.0]);
+    }
+
+    #[test]
+    fn allocation_driven_shape_respects_the_frame_split_depth_limit() {
+        let mut range = RangeDecoder::new(&[0; 16]);
+        let mut angle_context_calls = 0;
+        assert_eq!(
+            decode_recursive_pvq_shape_for_allocation(&mut range, 120, 4, 1_024, &mut |_, _, _| {
+                angle_context_calls += 1;
+                Ok(RecursivePvqAngleContext {
+                    pulse_cap_eighth_bits: 0,
+                    offset_eighth_bits: 0,
+                    time_split: false,
+                })
+            },),
+            Err(RangeError::InvalidPvqLayout)
+        );
+        assert_eq!(angle_context_calls, 1);
     }
 
     #[test]
