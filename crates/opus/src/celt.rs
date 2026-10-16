@@ -141,6 +141,19 @@ impl CeltSynthesis {
         self.previous = None;
     }
 
+    /// Denormalizes one mono CELT band set and feeds its spectrum into synthesis.
+    pub(crate) fn synthesize_mono_pvq(
+        &mut self,
+        frame_samples_48k: u16,
+        allocation: FineShapeAllocation,
+        shapes: &MonoPvqShapes,
+        energies_q15: &[i32; 42],
+    ) -> Result<Option<Vec<Vec<f32>>>, RangeError> {
+        let spectrum =
+            denormalize_mono_pvq_shapes(frame_samples_48k, allocation, shapes, energies_q15)?;
+        self.synthesize(&[spectrum])
+    }
+
     /// Synthesizes channel-major spectra. The first block primes the overlap state.
     pub(crate) fn synthesize(
         &mut self,
@@ -1654,6 +1667,86 @@ mod tests {
         assert!(synthesis.synthesize(&[vec![0.0; 120]]).unwrap().is_some());
         synthesis.reset();
         assert!(synthesis.synthesize(&[vec![0.0; 240]]).unwrap().is_none());
+    }
+
+    #[test]
+    fn celt_mono_pvq_shapes_flow_through_denormalization_and_synthesis() {
+        use super::CeltSynthesis;
+
+        let allocation = FineShapeAllocation {
+            start_band: 0,
+            coded_end_band: 1,
+            shape_eighth_bits: [0; 21],
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let mut vectors: [Vec<f32>; 21] = std::array::from_fn(|_| Vec::new());
+        vectors[0] = vec![1.0];
+        let shapes = MonoPvqShapes {
+            vectors,
+            pulses: [1; 21],
+        };
+        let energies = [0; 42];
+        let mut synthesis = CeltSynthesis::default();
+        assert!(
+            synthesis
+                .synthesize_mono_pvq(120, allocation, &shapes, &energies)
+                .unwrap()
+                .is_none()
+        );
+        let output = synthesis
+            .synthesize_mono_pvq(120, allocation, &shapes, &energies)
+            .unwrap()
+            .unwrap();
+        assert_eq!(output.len(), 1);
+        assert_eq!(output[0].len(), 120);
+        assert!(output[0].iter().all(|sample| sample.is_finite()));
+        assert!(output[0].iter().any(|sample| *sample != 0.0));
+    }
+
+    #[test]
+    fn invalid_mono_shape_does_not_consume_synthesis_history() {
+        use super::CeltSynthesis;
+
+        let allocation = FineShapeAllocation {
+            start_band: 0,
+            coded_end_band: 1,
+            shape_eighth_bits: [0; 21],
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let mut valid_vectors: [Vec<f32>; 21] = std::array::from_fn(|_| Vec::new());
+        valid_vectors[0] = vec![1.0];
+        let valid = MonoPvqShapes {
+            vectors: valid_vectors,
+            pulses: [1; 21],
+        };
+        let mut invalid_vectors: [Vec<f32>; 21] = std::array::from_fn(|_| Vec::new());
+        invalid_vectors[0] = vec![1.0, 0.0];
+        let invalid = MonoPvqShapes {
+            vectors: invalid_vectors,
+            pulses: [1; 21],
+        };
+        let energies = [0; 42];
+        let mut synthesis = CeltSynthesis::default();
+        assert!(
+            synthesis
+                .synthesize_mono_pvq(120, allocation, &valid, &energies)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            synthesis.synthesize_mono_pvq(120, allocation, &invalid, &energies),
+            Err(RangeError::InvalidPvqLayout)
+        );
+        assert!(
+            synthesis
+                .synthesize_mono_pvq(120, allocation, &valid, &energies)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
