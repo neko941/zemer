@@ -219,9 +219,22 @@ pub(crate) fn decode_mono_pvq_shapes(
     for band in start_band..end_band {
         let index = usize::from(band);
         let dimensions = usize::from(edges[index + 1] - edges[index]);
+        if dimensions == 1 {
+            let sign = if allocation.shape_eighth_bits[index] >= 8 {
+                range.read_raw_bits(1)?
+            } else {
+                0
+            };
+            shapes[index] = vec![if sign == 0 { 1.0 } else { -1.0 }];
+            continue;
+        }
         let pulse_allocation =
             pulses_for_allocation(dimensions, allocation.shape_eighth_bits[index])?;
-        let pulses = decode_codeword(range, dimensions, usize::from(pulse_allocation.pulses))?;
+        let pulses = if pulse_allocation.pulses == 0 {
+            vec![0; dimensions]
+        } else {
+            decode_codeword(range, dimensions, usize::from(pulse_allocation.pulses))?
+        };
         shapes[index] = normalize_pulses(&pulses)?;
     }
     Ok(shapes)
@@ -1051,6 +1064,41 @@ mod tests {
                 .sum::<f64>();
             assert!((norm_squared - 1.0).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn one_bin_mono_band_reads_its_raw_sign_bit() {
+        let allocation = FineShapeAllocation {
+            start_band: 0,
+            coded_end_band: 1,
+            shape_eighth_bits: [8; 21],
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        for (payload, expected) in [(0, 1.0), (1, -1.0)] {
+            let bytes = [0x00, payload];
+            let mut range = RangeDecoder::new(&bytes);
+            let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation).unwrap();
+            assert_eq!(shapes[0], vec![expected]);
+        }
+    }
+
+    #[test]
+    fn zero_pulse_band_does_not_decode_a_codeword() {
+        let allocation = FineShapeAllocation {
+            start_band: 8,
+            coded_end_band: 9,
+            shape_eighth_bits: [0; 21],
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let mut range = RangeDecoder::new(&[0x00, 0x00]);
+        let before = range.tell_frac();
+        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation).unwrap();
+        assert_eq!(shapes[8], vec![0.0, 0.0]);
+        assert_eq!(range.tell_frac(), before);
     }
 
     #[test]
