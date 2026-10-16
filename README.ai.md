@@ -4,7 +4,7 @@ This is a Rust workspace for a clean-room, cross-platform music format library. 
 
 ## Workspace crates
 
-- [`zemer-core`](crates/core/): shared PCM/DSD decoder and encoder interfaces; `transcode_dsd` preserves source metadata, while `transcode_dsd_with_metadata` accepts format-mapped tags; re-exports metadata and audio buffer types.
+- [`zemer-core`](crates/core/): shared PCM/DSD decoder and encoder interfaces plus arbitrary-length forward/inverse MDCT transforms shared by Vorbis and Opus; `transcode_dsd` preserves source metadata, while `transcode_dsd_with_metadata` accepts format-mapped tags; re-exports metadata and audio buffer types.
 - [`zemer-cue`](crates/cue/) (Rust crate `cue`): clean-room WAVE/AUDIO CUE parser, writer, and checked sector/sample-frame conversion; UTF-8/Shift-JIS input is capped at 16 MiB.
 - [`zemer-dsd`](crates/dsd/): reusable native DSD stream specification and packed octet buffers.
 - [`zemer-dst`](crates/dst/): reusable clean-room DST frame decoder and first-order encoder for DSD64/128/256 profiles.

@@ -166,7 +166,7 @@ impl<R: Read> VorbisStreamReader<R> {
         };
         let block_size = decoded.block_size;
         for channel in &mut spectra {
-            let mut samples = crate::mdct::inverse_mdct(channel)?;
+            let mut samples = zemer_core::transform::inverse_mdct(channel)?;
             crate::mdct::apply_window(
                 &mut samples,
                 self.identification.block_sizes()[0],

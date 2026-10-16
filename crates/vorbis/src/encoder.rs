@@ -282,7 +282,7 @@ impl<W: Write> VorbisEncoder<W> {
                 }
             }
             mdct::apply_window(&mut samples, BLOCK_SIZE, true, true)?;
-            spectra.push(mdct::forward_mdct(&samples)?);
+            spectra.push(zemer_core::transform::forward_mdct(&samples)?);
         }
         let packet = if let Some(target_bitrate) = self.target_bitrate {
             target_audio_packet(&spectra, target_bitrate, self.spec.sample_rate())?

@@ -77,6 +77,9 @@ Crate ``zemer-core``
 Streaming decoder and encoder interfaces. It re-exports metadata and PCM types
 for convenience and compatibility:
 
+* ``transform::forward_mdct`` and ``transform::inverse_mdct`` — pure-Rust
+  Bluestein/FFT transforms for even bin counts used by Vorbis and CELT.
+
 * ``AudioDecoder`` and ``AudioEncoder`` — block-based read and write traits;
   ``AudioEncoder::finish`` finalizes streaming output. ``DsdDecoder`` and
   ``DsdEncoder`` expose native one-bit audio without passing it through the PCM

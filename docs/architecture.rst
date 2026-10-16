@@ -12,8 +12,8 @@ writers:
   values shared by format crates.
 * ``zemer-id3`` shares bounded ID3v2 text/picture parsing and rewriting between
   DSF and AIFF/AIFC containers.
-* ``zemer-core`` defines streaming decoder/encoder traits and re-exports the
-  metadata and PCM types for convenience.
+* ``zemer-core`` defines streaming decoder/encoder traits, provides shared
+  forward/inverse MDCT transforms, and re-exports the metadata and PCM types.
 * ``g711`` contains format-independent A-law/μ-law sample conversion reused by
   WAVE and AIFF-C.
 * ``ogg`` validates Ogg page framing/CRC and exposes bounded packets; codec

@@ -1,5 +1,7 @@
 use std::{error::Error, fmt, io};
 
+pub mod transform;
+
 pub use zemer_dsd::{DsdBuffer, DsdError, DsdSpec};
 pub use zemer_metadata::{Metadata, Picture};
 pub use zemer_pcm::{AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, convert_sample_format};
