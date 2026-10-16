@@ -183,12 +183,6 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     let mut prefix = [0; 8];
                     reader.read_exact(&mut prefix)?;
                     let offset = u64::from(u32::from_be_bytes(prefix[..4].try_into().unwrap()));
-                    let block_size = u32::from_be_bytes(prefix[4..8].try_into().unwrap());
-                    if block_size != 0 {
-                        return Err(AudioError::Unsupported(
-                            "blocked AIFF SSND audio is not supported",
-                        ));
-                    }
                     let sound_data = reader
                         .stream_position()?
                         .checked_add(offset)

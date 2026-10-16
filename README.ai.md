@@ -58,8 +58,9 @@ and rejects seeks beyond EOF. Optional ignored tests use external temporary
 files. Broader Ogg-FLAC source and encoder coverage remains open; do not claim
 broad corpus conformance.
 
-AIFF and AIFC PCM/float/G.711/IMA4/DWVW/G.726 support is in `crates/aiff/`. G.726
-decode accepts the recognized bitrate hint or an explicit rate; the library
+AIFF and AIFC PCM/float/G.711/IMA4/DWVW/G.726 support is in `crates/aiff/`;
+the reader honors `SSND.offset` and accepts nonzero `SSND.blockSize` alignment.
+G.726 decode accepts the recognized bitrate hint or an explicit rate; the library
 encoder takes an explicit rate and writes that hint. G.722, G.728, and GSM
 remain unintegrated pending IPR review; ACE/MACE lack complete clean-room
 algorithm descriptions and independent test vectors. Metadata-only rewrites
