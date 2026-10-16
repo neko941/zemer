@@ -253,16 +253,14 @@ impl<W: Write + Seek> WavWriter<W> {
             0
         };
         let start = writer.stream_position()?;
-        if (ima_adpcm || ms_adpcm)
-            && (spec.sample_format() != SampleFormat::PcmI16 || spec.speaker_mask().is_some())
-        {
+        if (ima_adpcm || ms_adpcm) && spec.sample_format() != SampleFormat::PcmI16 {
             return Err(AudioError::InvalidData(
-                "WAVE ADPCM encoding requires signed 16-bit PCM without a speaker mask",
+                "WAVE ADPCM encoding requires signed 16-bit PCM",
             ));
         }
-        if ms_adpcm && !(1..=2).contains(&spec.channels()) {
+        if ms_adpcm && (!(1..=2).contains(&spec.channels()) || spec.speaker_mask().is_some()) {
             return Err(AudioError::InvalidData(
-                "Microsoft ADPCM WAVE encoding requires mono or stereo PCM",
+                "Microsoft ADPCM WAVE encoding requires mono or stereo PCM without a speaker mask",
             ));
         }
         let (legacy_tag, bits_per_sample) = if ima_adpcm || ms_adpcm {
@@ -310,12 +308,12 @@ impl<W: Write + Seek> WavWriter<W> {
         } else {
             0
         };
-        let extensible = spec.speaker_mask().is_some();
+        let extensible = spec.speaker_mask().is_some() || (ima_adpcm && spec.channels() > 2);
         let non_pcm = legacy_tag != 1;
         let riff_overhead = (if extensible { 60_u64 } else { 36_u64 })
             + if ms_adpcm {
                 34
-            } else if ima_adpcm {
+            } else if ima_adpcm && !extensible {
                 4
             } else if non_pcm && !extensible {
                 2
@@ -372,10 +370,10 @@ impl<W: Write + Seek> WavWriter<W> {
         writer.write_all(
             &(if ms_adpcm {
                 50_u32
-            } else if ima_adpcm {
-                20_u32
             } else if extensible {
                 40_u32
+            } else if ima_adpcm {
+                20_u32
             } else if non_pcm {
                 18
             } else {
@@ -391,7 +389,14 @@ impl<W: Write + Seek> WavWriter<W> {
         writer.write_all(&bits_per_sample.to_le_bytes())?;
         if extensible {
             writer.write_all(&22_u16.to_le_bytes())?;
-            writer.write_all(&bits_per_sample.to_le_bytes())?;
+            writer.write_all(
+                &(if ima_adpcm {
+                    samples_per_block
+                } else {
+                    bits_per_sample
+                })
+                .to_le_bytes(),
+            )?;
             writer.write_all(&spec.speaker_mask().unwrap_or(0).to_le_bytes())?;
             writer.write_all(&subformat_guid(legacy_tag))?;
         } else if ms_adpcm {
@@ -771,6 +776,9 @@ impl<W: Write + Seek> WavWriter<W> {
 
 fn subformat_guid(format_tag: u16) -> [u8; 16] {
     match format_tag {
+        0x11 => [
+            0x11, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+        ],
         1 => EXTENSIBLE_PCM_GUID,
         3 => EXTENSIBLE_FLOAT_GUID,
         6 => [

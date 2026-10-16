@@ -201,32 +201,24 @@ fn wav_ima_adpcm_streams_one_through_eight_channels_with_fact_trimming() {
         }
         let bytes = writer.finish().unwrap().into_inner();
         assert_eq!(&bytes[12..16], b"ds64");
-        let rf64_header = 36;
+        let fmt = bytes.windows(4).position(|chunk| chunk == b"fmt ").unwrap();
         assert_eq!(
-            u16::from_le_bytes(
-                bytes[20 + rf64_header..22 + rf64_header]
-                    .try_into()
-                    .unwrap()
-            ),
-            0x0011
+            u16::from_le_bytes(bytes[fmt + 8..fmt + 10].try_into().unwrap()),
+            if channels > 2 { 0xfffe } else { 0x0011 }
         );
         assert_eq!(
-            u16::from_le_bytes(
-                bytes[34 + rf64_header..36 + rf64_header]
-                    .try_into()
-                    .unwrap()
-            ),
+            u16::from_le_bytes(bytes[fmt + 22..fmt + 24].try_into().unwrap()),
             4
         );
         assert_eq!(
-            u32::from_le_bytes(
-                bytes[48 + rf64_header..52 + rf64_header]
-                    .try_into()
-                    .unwrap()
-            ),
+            u16::from_le_bytes(bytes[fmt + 26..fmt + 28].try_into().unwrap()),
+            505
+        );
+        let fact = bytes.windows(4).position(|chunk| chunk == b"fact").unwrap();
+        assert_eq!(
+            u32::from_le_bytes(bytes[fact + 8..fact + 12].try_into().unwrap()),
             257
         );
-        let fmt = bytes.windows(4).position(|chunk| chunk == b"fmt ").unwrap();
         assert_eq!(
             u16::from_le_bytes(bytes[fmt + 20..fmt + 22].try_into().unwrap()),
             256 * channels
@@ -264,6 +256,22 @@ fn wav_ima_adpcm_writer_checks_block_alignment_channel_limit() {
 
     let too_many_channels = AudioSpec::new(32_000, 256, SampleFormat::PcmI16).unwrap();
     assert!(WavWriter::new_ima_adpcm(Cursor::new(Vec::new()), too_many_channels).is_err());
+}
+
+#[test]
+fn wav_ima_adpcm_extensible_preserves_speaker_mask() {
+    let spec =
+        AudioSpec::new_with_speaker_mask(48_000, 3, SampleFormat::PcmI16, Some(0x7)).unwrap();
+    let mut writer = WavWriter::new_ima_adpcm(Cursor::new(Vec::new()), spec).unwrap();
+    writer
+        .write_block(&PcmBuffer::new(spec, Samples::I16(vec![0; 27])).unwrap())
+        .unwrap();
+    let bytes = writer.finish().unwrap().into_inner();
+
+    let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(decoder.spec(), spec);
+    assert_eq!(decoder.read_frames(9).unwrap().unwrap().frames(), 9);
+    assert!(decoder.read_frames(1).unwrap().is_none());
 }
 
 #[test]

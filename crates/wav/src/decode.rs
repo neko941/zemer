@@ -27,6 +27,9 @@ const ALAW_GUID: [u8; 16] = [
 const MULAW_GUID: [u8; 16] = [
     7, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
 ];
+const IMA_GUID: [u8; 16] = [
+    17, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+];
 const MAX_FORMAT_CHUNK: u32 = 64 * 1024;
 const MAX_INFO_VALUE: u32 = 1024 * 1024;
 const MAX_INFO_METADATA_BYTES: usize = 16 * 1024 * 1024;
@@ -950,6 +953,55 @@ fn parse_format(bytes: &[u8]) -> Result<(AudioSpec, u16, WaveEncoding), AudioErr
     let bits = u16::from_le_bytes(bytes[14..16].try_into().unwrap());
     let mut channel_mask = None;
 
+    if tag == 0xfffe {
+        if bytes.len() < 40 || u16::from_le_bytes(bytes[16..18].try_into().unwrap()) < 22 {
+            return Err(AudioError::InvalidFormat(
+                "incomplete WAVE_FORMAT_EXTENSIBLE format chunk",
+            ));
+        }
+        let valid_bits = u16::from_le_bytes(bytes[18..20].try_into().unwrap());
+        let subformat: [u8; 16] = bytes[24..40].try_into().unwrap();
+        let mask = u32::from_le_bytes(bytes[20..24].try_into().unwrap());
+        channel_mask = if subformat == IMA_GUID && mask == 0 {
+            None
+        } else {
+            Some(mask)
+        };
+        tag = if subformat == PCM_GUID {
+            if valid_bits == 0 || valid_bits > bits {
+                return Err(AudioError::InvalidFormat(
+                    "extensible PCM valid bits must be between 1 and the container width",
+                ));
+            }
+            1
+        } else if subformat == FLOAT_GUID {
+            if valid_bits != bits {
+                return Err(AudioError::Unsupported(
+                    "extensible float valid bits differ from its container",
+                ));
+            }
+            3
+        } else if subformat == ALAW_GUID {
+            if valid_bits != bits {
+                return Err(AudioError::Unsupported(
+                    "extensible A-law valid bits differ from its container",
+                ));
+            }
+            6
+        } else if subformat == MULAW_GUID {
+            if valid_bits != bits {
+                return Err(AudioError::Unsupported(
+                    "extensible μ-law valid bits differ from its container",
+                ));
+            }
+            7
+        } else if subformat == IMA_GUID {
+            0x0011
+        } else {
+            return Err(AudioError::Unsupported("WAVE_FORMAT_EXTENSIBLE subformat"));
+        };
+    }
+
     if tag == 0x0011 {
         let extension_size = bytes
             .get(16..18)
@@ -990,7 +1042,12 @@ fn parse_format(bytes: &[u8]) -> Result<(AudioSpec, u16, WaveEncoding), AudioErr
         }
         // Existing WAVE IMA encoders disagree about the channel divisor here.
         return Ok((
-            AudioSpec::new(sample_rate, channels, SampleFormat::PcmI16)?,
+            AudioSpec::new_with_speaker_mask(
+                sample_rate,
+                channels,
+                SampleFormat::PcmI16,
+                channel_mask,
+            )?,
             block_align,
             WaveEncoding::ImaAdpcm {
                 block_align,
@@ -1068,48 +1125,6 @@ fn parse_format(bytes: &[u8]) -> Result<(AudioSpec, u16, WaveEncoding), AudioErr
                 coefficients: Arc::from(coefficients),
             },
         ));
-    }
-
-    if tag == 0xfffe {
-        if bytes.len() < 40 || u16::from_le_bytes(bytes[16..18].try_into().unwrap()) < 22 {
-            return Err(AudioError::InvalidFormat(
-                "incomplete WAVE_FORMAT_EXTENSIBLE format chunk",
-            ));
-        }
-        channel_mask = Some(u32::from_le_bytes(bytes[20..24].try_into().unwrap()));
-        let valid_bits = u16::from_le_bytes(bytes[18..20].try_into().unwrap());
-        let subformat: [u8; 16] = bytes[24..40].try_into().unwrap();
-        tag = if subformat == PCM_GUID {
-            if valid_bits == 0 || valid_bits > bits {
-                return Err(AudioError::InvalidFormat(
-                    "extensible PCM valid bits must be between 1 and the container width",
-                ));
-            }
-            1
-        } else if subformat == FLOAT_GUID {
-            if valid_bits != bits {
-                return Err(AudioError::Unsupported(
-                    "extensible float valid bits differ from its container",
-                ));
-            }
-            3
-        } else if subformat == ALAW_GUID {
-            if valid_bits != bits {
-                return Err(AudioError::Unsupported(
-                    "extensible A-law valid bits differ from its container",
-                ));
-            }
-            6
-        } else if subformat == MULAW_GUID {
-            if valid_bits != bits {
-                return Err(AudioError::Unsupported(
-                    "extensible μ-law valid bits differ from its container",
-                ));
-            }
-            7
-        } else {
-            return Err(AudioError::Unsupported("WAVE_FORMAT_EXTENSIBLE subformat"));
-        };
     }
 
     let (sample_format, encoding) = match (tag, bits) {
