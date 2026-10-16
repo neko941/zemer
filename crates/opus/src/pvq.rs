@@ -25,8 +25,8 @@ pub(crate) struct SplitAngle {
 /// A split decision after its angle symbol has been decoded.
 ///
 /// `remaining_eighth_bits` is the shape budget left after the angle's actual
-/// range-coded cost has been removed. The caller owns that bitstream-specific
-/// accounting; this value is then partitioned between equal-width children.
+/// range-coded cost has been removed. The caller then partitions it between
+/// equal-width children according to the decoded angle.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RecursivePvqSplit {
     pub(crate) angle: SplitAngle,
@@ -36,11 +36,11 @@ pub(crate) struct RecursivePvqSplit {
 /// Decodes a PVQ shape, recursively applying caller-decoded split angles.
 ///
 /// The callback runs at each node before its children, matching the recursive
-/// codeword order. It returns `None` for a leaf, or the decoded angle and the
-/// remaining budget for a split node. Angle precision and its coded-bit cost
-/// remain the caller's responsibility because those depend on CELT allocation
-/// state. The maximum split depth is fixed by the CELT
-/// frame duration as LM + 1.
+/// codeword order. It decides whether to split and, for a split, supplies the
+/// decoded angle and remaining budget. Use `decode_recursive_pvq_split` to
+/// charge the measured angle-symbol cost. The callback still derives the
+/// angle context from CELT allocation state. Maximum depth is LM + 1 for the
+/// CELT frame duration.
 pub(crate) fn decode_recursive_pvq_shape(
     range: &mut RangeDecoder<'_>,
     frame_samples_48k: u16,
@@ -685,6 +685,92 @@ pub(crate) fn pulses_for_allocation(
     Ok(best)
 }
 
+/// Reports whether a fitting pseudo-pulse codebook crosses the 32-bit limit.
+///
+/// A candidate only triggers a split when its conservative codebook cost is
+/// both larger than 32 bits and no larger than the current node allocation.
+pub(crate) fn pvq_allocation_requires_split(
+    dimensions: usize,
+    available_eighth_bits: u32,
+) -> Result<bool, RangeError> {
+    if dimensions == 0 || dimensions > MAX_PVQ_DIMENSIONS {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+    if dimensions == 1 {
+        return Ok(false);
+    }
+
+    for pseudo in 1..=MAX_PVQ_PSEUDO_PULSES {
+        let Some(pulses) = pseudo_pulse_count(pseudo) else {
+            break;
+        };
+        let Some(size) = codebook_size_u64(dimensions, pulses) else {
+            return Err(RangeError::PvqCodebookTooLarge);
+        };
+        let cost = u32::from(conservative_log2_eighths_u64(size));
+        if cost > available_eighth_bits {
+            return Ok(false);
+        }
+        if cost > 32 * 8 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn codebook_size_u64(dimensions: usize, pulses: usize) -> Option<u64> {
+    if dimensions == 1 {
+        return Some(if pulses == 0 { 1 } else { 2 });
+    }
+    if dimensions == 2 {
+        return if pulses == 0 {
+            Some(1)
+        } else {
+            u64::try_from(pulses).ok()?.checked_mul(4)
+        };
+    }
+
+    let mut previous = vec![0_u64; pulses.checked_add(1)?];
+    previous[0] = 1;
+    for _ in 1..=dimensions {
+        let mut current = vec![0_u64; pulses.checked_add(1)?];
+        current[0] = 1;
+        for pulse in 1..=pulses {
+            current[pulse] = previous[pulse]
+                .checked_add(current[pulse - 1])?
+                .checked_add(previous[pulse - 1])?;
+        }
+        previous = current;
+    }
+    previous.get(pulses).copied()
+}
+
+fn conservative_log2_eighths_u64(value: u64) -> u16 {
+    if value <= 1 {
+        return 0;
+    }
+
+    let mut power = [1_u64, 0, 0, 0, 0, 0, 0, 0];
+    for _ in 0..8 {
+        let mut carry = 0_u128;
+        for limb in &mut power {
+            let product = u128::from(*limb) * u128::from(value) + carry;
+            *limb = product as u64;
+            carry = product >> u64::BITS;
+        }
+        debug_assert_eq!(carry, 0);
+    }
+    let highest_limb = power.iter().rposition(|&limb| limb != 0).unwrap_or(0);
+    let bit_length = highest_limb as u16 * u64::BITS as u16
+        + (u64::BITS - power[highest_limb].leading_zeros()) as u16;
+    let is_power_of_two = power.iter().map(|limb| limb.count_ones()).sum::<u32>() == 1;
+    if is_power_of_two {
+        bit_length - 1
+    } else {
+        bit_length
+    }
+}
+
 fn max_codebook_pulses(dimensions: usize) -> usize {
     match dimensions {
         1 => 1_024,
@@ -762,7 +848,8 @@ mod tests {
         RecursivePvqSplit, SplitAngle, codebook_size, combine_mid_side_shapes,
         combine_split_shapes, decode_codeword, decode_recursive_pvq_shape,
         decode_recursive_pvq_split, decode_split_angle, normalize_pulses, pulses_for_allocation,
-        split_shape_budget, split_stereo_shape_budget, spread_shape, unrank_codeword,
+        pvq_allocation_requires_split, split_shape_budget, split_stereo_shape_budget, spread_shape,
+        unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1284,6 +1371,23 @@ mod tests {
             let expected = (f64::from(size).log2() * 8.0).ceil() as u16;
             assert_eq!(super::conservative_log2_eighths(size), expected, "{size}");
         }
+    }
+
+    #[test]
+    fn pvq_split_trigger_uses_the_first_fitting_codebook_over_32_bits() {
+        // For N=2, V(2,K)=4K. The last pseudo-pulse candidate at or below
+        // 32 bits has cost 256 eighth-bits; the next candidate costs 258.
+        assert!(!pvq_allocation_requires_split(2, 257).unwrap());
+        assert!(pvq_allocation_requires_split(2, 258).unwrap());
+        assert!(!pvq_allocation_requires_split(1, u32::MAX).unwrap());
+        assert_eq!(
+            pvq_allocation_requires_split(0, 258),
+            Err(RangeError::InvalidPvqLayout)
+        );
+        assert_eq!(
+            pvq_allocation_requires_split(177, 258),
+            Err(RangeError::InvalidPvqLayout)
+        );
     }
 
     #[test]
