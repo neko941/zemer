@@ -4,6 +4,7 @@ pub(crate) enum RangeError {
     InvalidInverseCdf,
     InvalidLogProbability,
     InvalidLaplaceModel,
+    InvalidCeltEnergyLayout,
     InvalidTotal,
     CorruptFrame,
     RawBitsTooWide,
@@ -215,7 +216,7 @@ impl<'a> RangeDecoder<'a> {
     }
 }
 
-fn laplace_interval(
+pub(crate) fn laplace_interval(
     value: u32,
     zero_frequency: u16,
     decay: u16,
