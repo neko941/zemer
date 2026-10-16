@@ -1,4 +1,7 @@
-use crate::pvq::{decode_codeword, normalize_pulses, pulses_for_allocation, spread_shape};
+use crate::pvq::{
+    SplitAngle, combine_mid_side_shapes, decode_codeword, normalize_pulses,
+    pulses_for_allocation, split_stereo_shape_budget, spread_shape,
+};
 use crate::range::{RangeDecoder, RangeError};
 
 const BAND_WIDTHS_2_5_MS: [u16; 21] = [
@@ -114,7 +117,7 @@ pub(crate) struct FineShapeAllocation {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MonoPvqShapes {
     pub(crate) vectors: [Vec<f32>; 21],
-    pub(crate) pulses: [u16; 21],
+    pub(crate) pulses: [u32; 21],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -443,7 +446,7 @@ pub(crate) fn decode_mono_pvq_shapes(
             let pulses = if pulse_allocation.pulses == 0 {
                 vec![0; dimensions]
             } else {
-                decode_codeword(range, dimensions, usize::from(pulse_allocation.pulses))?
+                decode_codeword(range, dimensions, pulse_allocation.pulses as usize)?
             };
             shapes[index] = normalize_pulses(&pulses)?;
         }
@@ -455,6 +458,98 @@ pub(crate) fn decode_mono_pvq_shapes(
         vectors: shapes,
         pulses: pulse_counts,
     })
+}
+
+/// Decodes a CELT stereo band from its normalized mid/side PVQ vectors.
+///
+/// The angle has already been decoded. Any unused codebook budget from the
+/// first vector is transferred to the second, as required by CELT's stereo
+/// allocation rule.
+pub(crate) fn decode_mid_side_pvq_band(
+    range: &mut RangeDecoder<'_>,
+    dimensions: usize,
+    remaining_eighth_bits: u32,
+    angle: SplitAngle,
+    spread: u8,
+    blocks: u8,
+    tf_adjustment: i8,
+) -> Result<(Vec<f32>, Vec<f32>), RangeError> {
+    if !(2..=176).contains(&dimensions)
+        || angle.angle_q14 > 16_384
+        || !angle.left_gain.is_finite()
+        || !angle.right_gain.is_finite()
+        || !(0.0..=1.0).contains(&angle.left_gain)
+        || !(0.0..=1.0).contains(&angle.right_gain)
+    {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+    if !(1..=8).contains(&blocks)
+        || !blocks.is_power_of_two()
+        || dimensions % usize::from(blocks) != 0
+        || !(-3..=3).contains(&tf_adjustment)
+        || (tf_adjustment > 0
+            && (1_usize << tf_adjustment as u32) > usize::from(blocks))
+    {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    if spread > 3 {
+        return Err(RangeError::InvalidPvqSpread);
+    }
+
+    let (mid_budget, side_budget) =
+        split_stereo_shape_budget(remaining_eighth_bits, dimensions, angle.angle_q14)?;
+    let mid_first = mid_budget >= side_budget;
+    let (first_budget, second_budget) = if mid_first {
+        (mid_budget, side_budget)
+    } else {
+        (side_budget, mid_budget)
+    };
+    let (first, first_cost) = decode_stereo_shape(
+        range,
+        dimensions,
+        first_budget,
+        spread,
+        blocks,
+        tf_adjustment,
+    )?;
+    let second_budget = second_budget
+        .checked_add(first_budget - u32::from(first_cost))
+        .ok_or(RangeError::InvalidPvqLayout)?;
+    let (second, _) = decode_stereo_shape(
+        range,
+        dimensions,
+        second_budget,
+        spread,
+        blocks,
+        tf_adjustment,
+    )?;
+    let (mid, side) = if mid_first {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    combine_mid_side_shapes(&mid, &side, angle)
+}
+
+fn decode_stereo_shape(
+    range: &mut RangeDecoder<'_>,
+    dimensions: usize,
+    budget_eighth_bits: u32,
+    spread: u8,
+    blocks: u8,
+    tf_adjustment: i8,
+) -> Result<(Vec<f32>, u16), RangeError> {
+    let allocation = pulses_for_allocation(dimensions, budget_eighth_bits)?;
+    let pulses = allocation.pulses as usize;
+    let codeword = if pulses == 0 {
+        vec![0; dimensions]
+    } else {
+        decode_codeword(range, dimensions, pulses)?
+    };
+    let mut shape = normalize_pulses(&codeword)?;
+    spread_shape(&mut shape, allocation.pulses, spread, blocks)?;
+    apply_tf_adjustment(&mut shape, tf_adjustment, blocks)?;
+    Ok((shape, allocation.codebook_eighth_bits))
 }
 
 /// Restores the decoded mono band gains on an otherwise zero CELT spectrum.
@@ -1278,7 +1373,7 @@ mod tests {
         allocation_caps, allocation_thresholds, allocation_trim_offsets, apply_tf_adjustment,
         band_edges, decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
-        decode_header, decode_mono_pvq_shapes, decode_spread, decode_tf_resolution,
+        decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes, decode_spread, decode_tf_resolution,
         denormalize_mono_pvq_shapes, hadamard_tf_axis, hadamard_tf_vector, predict_coarse_energies,
         reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
         split_fine_shape_allocation, static_allocation, tf_adjustment,
@@ -1429,6 +1524,87 @@ mod tests {
         let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1, &[0; 21]).unwrap();
         assert_eq!(shapes.pulses[12], 1);
         assert_eq!(shapes.pulses[13], 2);
+    }
+
+    #[test]
+    fn stereo_shape_decode_reassigns_first_codebook_remainder() {
+        let angle = crate::pvq::SplitAngle {
+            resolution: 2,
+            index: 1,
+            angle_q14: 8_192,
+            left_gain: std::f32::consts::FRAC_1_SQRT_2,
+            right_gain: std::f32::consts::FRAC_1_SQRT_2,
+        };
+        assert_eq!(crate::pvq::pulses_for_allocation(2, 20).unwrap().pulses, 1);
+        assert_eq!(crate::pvq::pulses_for_allocation(2, 24).unwrap().pulses, 2);
+
+        let bytes = [0x53; 32];
+        let mut actual_range = RangeDecoder::new(&bytes);
+        let (left, right) = decode_mid_side_pvq_band(
+            &mut actual_range,
+            2,
+            40,
+            angle,
+            0,
+            1,
+            0,
+        )
+        .unwrap();
+
+        let mut expected_range = RangeDecoder::new(&bytes);
+        crate::pvq::decode_codeword(&mut expected_range, 2, 1).unwrap();
+        crate::pvq::decode_codeword(&mut expected_range, 2, 2).unwrap();
+        assert_eq!(actual_range.tell_frac(), expected_range.tell_frac());
+        for channel in [left, right] {
+            let norm_squared = channel
+                .iter()
+                .map(|&value| f64::from(value) * f64::from(value))
+                .sum::<f64>();
+            assert!((norm_squared - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn stereo_shape_decode_keeps_unallocated_channels_zero_without_consuming_bits() {
+        let angle = crate::pvq::SplitAngle {
+            resolution: 2,
+            index: 1,
+            angle_q14: 8_192,
+            left_gain: std::f32::consts::FRAC_1_SQRT_2,
+            right_gain: std::f32::consts::FRAC_1_SQRT_2,
+        };
+        let mut range = RangeDecoder::new(&[0x53; 32]);
+        let before = range.tell_frac();
+        assert_eq!(
+            decode_mid_side_pvq_band(&mut range, 2, 0, angle, 0, 1, 0),
+            Ok((vec![0.0, 0.0], vec![0.0, 0.0]))
+        );
+        assert_eq!(range.tell_frac(), before);
+    }
+
+    #[test]
+    fn stereo_shape_decode_codes_the_larger_side_vector_first() {
+        let angle = crate::pvq::SplitAngle {
+            resolution: 4,
+            index: 3,
+            angle_q14: 12_288,
+            left_gain: 0.382_683_43,
+            right_gain: 0.923_879_5,
+        };
+        assert_eq!(
+            crate::pvq::split_stereo_shape_budget(40, 2, angle.angle_q14),
+            Ok((15, 25))
+        );
+        assert_eq!(crate::pvq::pulses_for_allocation(2, 25).unwrap().pulses, 2);
+        assert_eq!(crate::pvq::pulses_for_allocation(2, 16).unwrap().pulses, 1);
+
+        let bytes = [0x37; 32];
+        let mut actual_range = RangeDecoder::new(&bytes);
+        decode_mid_side_pvq_band(&mut actual_range, 2, 40, angle, 0, 1, 0).unwrap();
+        let mut expected_range = RangeDecoder::new(&bytes);
+        crate::pvq::decode_codeword(&mut expected_range, 2, 2).unwrap();
+        crate::pvq::decode_codeword(&mut expected_range, 2, 1).unwrap();
+        assert_eq!(actual_range.tell_frac(), expected_range.tell_frac());
     }
 
     #[test]

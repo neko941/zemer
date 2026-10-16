@@ -1,7 +1,6 @@
 use crate::range::{RangeDecoder, RangeError};
 
 const MAX_PVQ_DIMENSIONS: usize = 176;
-const MAX_PVQ_PULSES: usize = 1024;
 const MAX_PVQ_PSEUDO_PULSES: u16 = 255;
 const MAX_SPLIT_ANGLE_RESOLUTION: usize = 256;
 const SPLIT_ANGLE_EXP2_Q14: [u16; 8] = [
@@ -10,7 +9,7 @@ const SPLIT_ANGLE_EXP2_Q14: [u16; 8] = [
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PulseAllocation {
-    pub(crate) pulses: u16,
+    pub(crate) pulses: u32,
     pub(crate) codebook_eighth_bits: u16,
 }
 
@@ -175,6 +174,26 @@ pub(crate) fn split_shape_budget(
     if !(1..=MAX_PVQ_DIMENSIONS / 2).contains(&child_dimensions) || angle_q14 > 16_384 {
         return Err(RangeError::InvalidPvqLayout);
     }
+    split_energy_angle_budget(remaining_eighth_bits, child_dimensions, angle_q14)
+}
+
+/// Splits a stereo band budget between mid and side vectors of equal width.
+pub(crate) fn split_stereo_shape_budget(
+    remaining_eighth_bits: u32,
+    dimensions: usize,
+    angle_q14: u16,
+) -> Result<(u32, u32), RangeError> {
+    if !(1..=MAX_PVQ_DIMENSIONS).contains(&dimensions) || angle_q14 > 16_384 {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+    split_energy_angle_budget(remaining_eighth_bits, dimensions, angle_q14)
+}
+
+fn split_energy_angle_budget(
+    remaining_eighth_bits: u32,
+    dimensions: usize,
+    angle_q14: u16,
+) -> Result<(u32, u32), RangeError> {
     if angle_q14 == 0 {
         return Ok((remaining_eighth_bits, 0));
     }
@@ -184,7 +203,7 @@ pub(crate) fn split_shape_budget(
 
     let theta = f64::from(angle_q14) * (std::f64::consts::FRAC_PI_2 / 16_384.0);
     let log2_tangent = theta.tan().ln() / std::f64::consts::LN_2;
-    let dimension_cost = (child_dimensions - 1) as f64 * 8.0 * log2_tangent;
+    let dimension_cost = (dimensions - 1) as f64 * 8.0 * log2_tangent;
     let left_exact = (f64::from(remaining_eighth_bits) - dimension_cost) * 0.5;
     let left = (left_exact + 0.5)
         .floor()
@@ -193,6 +212,25 @@ pub(crate) fn split_shape_budget(
 }
 
 pub(crate) fn codebook_size(dimensions: usize, pulses: usize) -> Result<u32, RangeError> {
+    if dimensions == 0 || dimensions > MAX_PVQ_DIMENSIONS {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+    if pulses > max_codebook_pulses(dimensions) {
+        return Err(RangeError::PvqCodebookTooLarge);
+    }
+    if dimensions == 1 {
+        return Ok(if pulses == 0 { 1 } else { 2 });
+    }
+    if dimensions == 2 {
+        return if pulses == 0 {
+            Ok(1)
+        } else {
+            u32::try_from(pulses)
+                .ok()
+                .and_then(|pulses| pulses.checked_mul(4))
+                .ok_or(RangeError::PvqCodebookTooLarge)
+        };
+    }
     let counts = codebook_counts(dimensions, pulses)?;
     Ok(counts[dimensions][pulses])
 }
@@ -202,8 +240,52 @@ pub(crate) fn unrank_codeword(
     pulses: usize,
     index: u32,
 ) -> Result<Vec<i32>, RangeError> {
+    let size = codebook_size(dimensions, pulses)?;
+    if index >= size {
+        return Err(RangeError::CorruptFrame);
+    }
+    if dimensions == 1 {
+        return Ok(vec![if index == 0 { pulses as i32 } else { -(pulses as i32) }]);
+    }
+    if dimensions == 2 {
+        return unrank_two_dimensional(pulses, index);
+    }
     let counts = codebook_counts(dimensions, pulses)?;
     unrank_from_counts(&counts, dimensions, pulses, index)
+}
+
+fn unrank_two_dimensional(pulses: usize, index: u32) -> Result<Vec<i32>, RangeError> {
+    if pulses == 0 {
+        return if index == 0 {
+            Ok(vec![0, 0])
+        } else {
+            Err(RangeError::CorruptFrame)
+        };
+    }
+
+    let positive_count = 2 * pulses as u64 + 1;
+    let (sign, local_index) = if u64::from(index) < positive_count {
+        (1_i32, u64::from(index))
+    } else {
+        (-1_i32, u64::from(index) - positive_count)
+    };
+    let remaining = if local_index == 0 {
+        0
+    } else {
+        local_index.div_ceil(2) as usize
+    };
+    if remaining > pulses || (sign < 0 && remaining == pulses) {
+        return Err(RangeError::CorruptFrame);
+    }
+    let first = sign * (pulses - remaining) as i32;
+    let second = if remaining == 0 {
+        0
+    } else if local_index % 2 == 1 {
+        remaining as i32
+    } else {
+        -(remaining as i32)
+    };
+    Ok(vec![first, second])
 }
 
 fn unrank_from_counts(
@@ -263,10 +345,9 @@ pub(crate) fn decode_codeword(
     dimensions: usize,
     pulses: usize,
 ) -> Result<Vec<i32>, RangeError> {
-    let counts = codebook_counts(dimensions, pulses)?;
-    let total = counts[dimensions][pulses];
+    let total = codebook_size(dimensions, pulses)?;
     let index = range.decode_uint(total)?;
-    unrank_from_counts(&counts, dimensions, pulses, index)
+    unrank_codeword(dimensions, pulses, index)
 }
 
 pub(crate) fn normalize_pulses(pulses: &[i32]) -> Result<Vec<f32>, RangeError> {
@@ -289,7 +370,7 @@ pub(crate) fn normalize_pulses(pulses: &[i32]) -> Result<Vec<f32>, RangeError> {
 
 pub(crate) fn spread_shape(
     shape: &mut [f32],
-    pulse_count: u16,
+    pulse_count: u32,
     spread: u8,
     blocks: u8,
 ) -> Result<(), RangeError> {
@@ -310,7 +391,7 @@ pub(crate) fn spread_shape(
     let dimensions = shape.len();
     let block_width = dimensions / block_count;
     let spread_factor = [0.0_f32, 15.0, 10.0, 5.0][usize::from(spread)];
-    let gain = dimensions as f32 / (dimensions as f32 + spread_factor * f32::from(pulse_count));
+    let gain = dimensions as f32 / (dimensions as f32 + spread_factor * pulse_count as f32);
     let theta = std::f32::consts::FRAC_PI_4 * gain * gain;
     let (main_sine, main_cosine) = theta.sin_cos();
 
@@ -391,7 +472,7 @@ pub(crate) fn pulses_for_allocation(
     }
 
     let mut low = 0_usize;
-    let mut high = MAX_PVQ_PULSES;
+    let mut high = max_codebook_pulses(dimensions);
     while low < high {
         let middle = low + (high - low).div_ceil(2);
         match codebook_size(dimensions, middle) {
@@ -400,8 +481,6 @@ pub(crate) fn pulses_for_allocation(
             Err(error) => return Err(error),
         }
     }
-    let counts = codebook_counts(dimensions, low)?;
-
     let mut best = PulseAllocation {
         pulses: 0,
         codebook_eighth_bits: 0,
@@ -414,20 +493,31 @@ pub(crate) fn pulses_for_allocation(
         if pulses > low {
             break;
         }
-        let cost = u32::from(conservative_log2_eighths(counts[dimensions][pulses]));
+        let size = codebook_size(dimensions, pulses)?;
+        let cost = u32::from(conservative_log2_eighths(size));
         if cost > available_eighth_bits {
             continue;
         }
         let distance = available_eighth_bits - cost;
         if distance < best_distance {
             best = PulseAllocation {
-                pulses: pulses as u16,
+                pulses: pulses as u32,
                 codebook_eighth_bits: cost as u16,
             };
             best_distance = distance;
         }
     }
     Ok(best)
+}
+
+fn max_codebook_pulses(dimensions: usize) -> usize {
+    match dimensions {
+        1 => 1_024,
+        2 => (u32::MAX / 4) as usize,
+        3 => 65_536,
+        4 => 2_048,
+        _ => 1_024,
+    }
 }
 
 fn pseudo_pulse_count(index: u16) -> Option<usize> {
@@ -468,8 +558,11 @@ fn conservative_log2_eighths(value: u32) -> u16 {
 }
 
 fn codebook_counts(dimensions: usize, pulses: usize) -> Result<Vec<Vec<u32>>, RangeError> {
-    if dimensions == 0 || dimensions > MAX_PVQ_DIMENSIONS || pulses > MAX_PVQ_PULSES {
+    if dimensions <= 2 || dimensions > MAX_PVQ_DIMENSIONS {
         return Err(RangeError::InvalidPvqLayout);
+    }
+    if pulses > max_codebook_pulses(dimensions) {
+        return Err(RangeError::PvqCodebookTooLarge);
     }
 
     let mut counts = vec![vec![0_u32; pulses + 1]; dimensions + 1];
@@ -492,7 +585,8 @@ mod tests {
 
     use super::{
         codebook_size, combine_mid_side_shapes, decode_codeword, decode_split_angle,
-        normalize_pulses, pulses_for_allocation, split_shape_budget, spread_shape, unrank_codeword,
+        normalize_pulses, pulses_for_allocation, split_shape_budget, split_stereo_shape_budget,
+        spread_shape, unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -522,6 +616,56 @@ mod tests {
     }
 
     #[test]
+    fn two_dimensional_unranking_matches_the_published_signed_pulse_order() {
+        for pulses in 1..=8 {
+            let mut expected = vec![vec![pulses as i32, 0]];
+            for remaining in 1..=pulses {
+                let first = (pulses - remaining) as i32;
+                expected.push(vec![first, remaining as i32]);
+                expected.push(vec![first, -(remaining as i32)]);
+            }
+            expected.push(vec![-(pulses as i32), 0]);
+            for remaining in 1..pulses {
+                let first = -((pulses - remaining) as i32);
+                expected.push(vec![first, remaining as i32]);
+                expected.push(vec![first, -(remaining as i32)]);
+            }
+
+            let actual: Vec<_> = (0..codebook_size(2, pulses).unwrap())
+                .map(|index| unrank_codeword(2, pulses, index).unwrap())
+                .collect();
+            assert_eq!(actual, expected, "pulses={pulses}");
+            assert_eq!(actual.iter().collect::<HashSet<_>>().len(), 4 * pulses);
+        }
+    }
+
+    #[test]
+    fn two_dimensional_codebooks_support_high_pulse_counts_without_large_tables() {
+        assert_eq!(codebook_size(2, 262_144), Ok(1_048_576));
+        assert_eq!(
+            unrank_codeword(2, 262_144, 0),
+            Ok(vec![262_144, 0])
+        );
+        let allocation = pulses_for_allocation(2, 160).unwrap();
+        assert!(allocation.pulses > 100_000);
+        assert_eq!(allocation.codebook_eighth_bits, 160);
+        assert_eq!(
+            codebook_size(2, (u32::MAX / 4) as usize),
+            Ok(u32::MAX - 3)
+        );
+        assert_eq!(
+            codebook_size(2, (u32::MAX / 4) as usize + 1),
+            Err(RangeError::PvqCodebookTooLarge)
+        );
+        let mut range = RangeDecoder::new(&[0xa5; 8]);
+        let decoded = decode_codeword(&mut range, 2, (u32::MAX / 4) as usize).unwrap();
+        assert_eq!(
+            decoded.iter().map(|value| value.unsigned_abs()).sum::<u32>(),
+            u32::MAX / 4
+        );
+    }
+
+    #[test]
     fn decoder_uses_the_uniform_range_index() {
         let mut low = RangeDecoder::new(&[0x00]);
         let mut high = RangeDecoder::new(&[0xff]);
@@ -536,7 +680,7 @@ mod tests {
     fn rejects_invalid_layouts_overlarge_codebooks_and_indexes() {
         assert_eq!(codebook_size(0, 1), Err(RangeError::InvalidPvqLayout));
         assert_eq!(codebook_size(177, 1), Err(RangeError::InvalidPvqLayout));
-        assert_eq!(codebook_size(2, 1025), Err(RangeError::InvalidPvqLayout));
+        assert_eq!(codebook_size(0, 1025), Err(RangeError::InvalidPvqLayout));
         assert_eq!(
             codebook_size(176, 100),
             Err(RangeError::PvqCodebookTooLarge)
@@ -792,6 +936,13 @@ mod tests {
             split_shape_budget(101, 4, 16_385),
             Err(RangeError::InvalidPvqLayout)
         );
+    }
+
+    #[test]
+    fn stereo_shape_budget_accepts_full_celt_band_widths() {
+        assert_eq!(split_stereo_shape_budget(160, 176, 8_192), Ok((80, 80)));
+        assert_eq!(split_stereo_shape_budget(160, 0, 8_192), Err(RangeError::InvalidPvqLayout));
+        assert_eq!(split_stereo_shape_budget(160, 177, 8_192), Err(RangeError::InvalidPvqLayout));
     }
 
     #[test]
