@@ -852,7 +852,7 @@ fn metadata_edit_rejects_invalid_bwf_field_width() {
             "metadata",
             "edit",
             "--bext-originator",
-            "name longer than 32 bytes",
+            "originator value longer than thirty-two bytes",
         ])
         .arg(&input_path)
         .arg(&output_path)
