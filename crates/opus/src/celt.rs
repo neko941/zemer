@@ -1,6 +1,6 @@
 use crate::pvq::{
-    SplitAngle, combine_mid_side_shapes, decode_codeword, normalize_pulses,
-    pulses_for_allocation, split_stereo_shape_budget, spread_shape,
+    SplitAngle, combine_mid_side_shapes, decode_codeword, normalize_pulses, pulses_for_allocation,
+    split_stereo_shape_budget, spread_shape,
 };
 use crate::range::{RangeDecoder, RangeError};
 
@@ -487,8 +487,7 @@ pub(crate) fn decode_mid_side_pvq_band(
         || !blocks.is_power_of_two()
         || dimensions % usize::from(blocks) != 0
         || !(-3..=3).contains(&tf_adjustment)
-        || (tf_adjustment > 0
-            && (1_usize << tf_adjustment as u32) > usize::from(blocks))
+        || (tf_adjustment > 0 && (1_usize << tf_adjustment as u32) > usize::from(blocks))
     {
         return Err(RangeError::InvalidCeltEnergyLayout);
     }
@@ -1373,10 +1372,10 @@ mod tests {
         allocation_caps, allocation_thresholds, allocation_trim_offsets, apply_tf_adjustment,
         band_edges, decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
-        decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes, decode_spread, decode_tf_resolution,
-        denormalize_mono_pvq_shapes, hadamard_tf_axis, hadamard_tf_vector, predict_coarse_energies,
-        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
-        split_fine_shape_allocation, static_allocation, tf_adjustment,
+        decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes, decode_spread,
+        decode_tf_resolution, denormalize_mono_pvq_shapes, hadamard_tf_axis, hadamard_tf_vector,
+        predict_coarse_energies, reallocate_skipped_bands, reserve_allocation_bits,
+        select_band_allocation, split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1540,16 +1539,8 @@ mod tests {
 
         let bytes = [0x53; 32];
         let mut actual_range = RangeDecoder::new(&bytes);
-        let (left, right) = decode_mid_side_pvq_band(
-            &mut actual_range,
-            2,
-            40,
-            angle,
-            0,
-            1,
-            0,
-        )
-        .unwrap();
+        let (left, right) =
+            decode_mid_side_pvq_band(&mut actual_range, 2, 40, angle, 0, 1, 0).unwrap();
 
         let mut expected_range = RangeDecoder::new(&bytes);
         crate::pvq::decode_codeword(&mut expected_range, 2, 1).unwrap();

@@ -245,7 +245,11 @@ pub(crate) fn unrank_codeword(
         return Err(RangeError::CorruptFrame);
     }
     if dimensions == 1 {
-        return Ok(vec![if index == 0 { pulses as i32 } else { -(pulses as i32) }]);
+        return Ok(vec![if index == 0 {
+            pulses as i32
+        } else {
+            -(pulses as i32)
+        }]);
     }
     if dimensions == 2 {
         return unrank_two_dimensional(pulses, index);
@@ -642,17 +646,11 @@ mod tests {
     #[test]
     fn two_dimensional_codebooks_support_high_pulse_counts_without_large_tables() {
         assert_eq!(codebook_size(2, 262_144), Ok(1_048_576));
-        assert_eq!(
-            unrank_codeword(2, 262_144, 0),
-            Ok(vec![262_144, 0])
-        );
+        assert_eq!(unrank_codeword(2, 262_144, 0), Ok(vec![262_144, 0]));
         let allocation = pulses_for_allocation(2, 160).unwrap();
         assert!(allocation.pulses > 100_000);
         assert_eq!(allocation.codebook_eighth_bits, 160);
-        assert_eq!(
-            codebook_size(2, (u32::MAX / 4) as usize),
-            Ok(u32::MAX - 3)
-        );
+        assert_eq!(codebook_size(2, (u32::MAX / 4) as usize), Ok(u32::MAX - 3));
         assert_eq!(
             codebook_size(2, (u32::MAX / 4) as usize + 1),
             Err(RangeError::PvqCodebookTooLarge)
@@ -660,7 +658,10 @@ mod tests {
         let mut range = RangeDecoder::new(&[0xa5; 8]);
         let decoded = decode_codeword(&mut range, 2, (u32::MAX / 4) as usize).unwrap();
         assert_eq!(
-            decoded.iter().map(|value| value.unsigned_abs()).sum::<u32>(),
+            decoded
+                .iter()
+                .map(|value| value.unsigned_abs())
+                .sum::<u32>(),
             u32::MAX / 4
         );
     }
@@ -941,8 +942,14 @@ mod tests {
     #[test]
     fn stereo_shape_budget_accepts_full_celt_band_widths() {
         assert_eq!(split_stereo_shape_budget(160, 176, 8_192), Ok((80, 80)));
-        assert_eq!(split_stereo_shape_budget(160, 0, 8_192), Err(RangeError::InvalidPvqLayout));
-        assert_eq!(split_stereo_shape_budget(160, 177, 8_192), Err(RangeError::InvalidPvqLayout));
+        assert_eq!(
+            split_stereo_shape_budget(160, 0, 8_192),
+            Err(RangeError::InvalidPvqLayout)
+        );
+        assert_eq!(
+            split_stereo_shape_budget(160, 177, 8_192),
+            Err(RangeError::InvalidPvqLayout)
+        );
     }
 
     #[test]
