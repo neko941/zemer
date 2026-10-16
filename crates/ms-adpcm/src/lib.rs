@@ -318,7 +318,7 @@ fn choose_parameters(samples: &[i16], channels: usize, channel: usize) -> (usize
             + i64::from(sample(0)) * i64::from(coefficients.second))
             / 256;
         let first_error = (i64::from(sample(2)) - initial_prediction).unsigned_abs();
-        let initial_delta = ((first_error + 3) / 4).clamp(16, i16::MAX as u64) as i16;
+        let initial_delta = first_error.div_ceil(4).clamp(16, i16::MAX as u64) as i16;
         let mut state = State {
             coefficients,
             delta: i32::from(initial_delta),
