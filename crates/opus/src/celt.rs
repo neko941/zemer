@@ -63,6 +63,19 @@ const ALLOCATION_CAPS: [[u8; 21]; 8] = [
     ],
 ];
 
+const LOG2_FRAC_EIGHTHS: [u8; 21] = [
+    0, 8, 12, 16, 18, 20, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 32, 33, 33, 34, 35,
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AllocationReservations {
+    pub(crate) remaining_eighth_bits: u32,
+    pub(crate) anti_collapse_eighth_bits: u8,
+    pub(crate) skip_eighth_bits: u8,
+    pub(crate) intensity_eighth_bits: u8,
+    pub(crate) dual_stereo_eighth_bits: u8,
+}
+
 const ENERGY_LAPLACE_MODELS: [[[u8; 42]; 2]; 4] = [
     [
         [
@@ -201,6 +214,61 @@ pub(crate) fn allocation_caps(
         caps[usize::from(band)] = ((cache_cap * u32::from(channels) * width) / 4) as u16;
     }
     Ok(caps)
+}
+
+pub(crate) fn reserve_allocation_bits(
+    frame_samples_48k: u16,
+    start_band: u8,
+    end_band: u8,
+    channels: u8,
+    transient: bool,
+    available_eighth_bits: u32,
+) -> Result<AllocationReservations, RangeError> {
+    if band_edges(frame_samples_48k).is_none()
+        || start_band >= end_band
+        || end_band > 21
+        || !(1..=2).contains(&channels)
+    {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let lm = u32::from(frame_samples_48k / 120).trailing_zeros();
+    let mut total = available_eighth_bits.saturating_sub(1);
+    let anti_collapse = if transient && lm > 1 && total >= (lm + 2) * 8 {
+        total -= 8;
+        8
+    } else {
+        0
+    };
+    let skip = if total > 8 {
+        total -= 8;
+        8
+    } else {
+        0
+    };
+    let intensity = if channels == 2 {
+        let reserved = u32::from(LOG2_FRAC_EIGHTHS[usize::from(end_band - start_band - 1)]);
+        if reserved <= total {
+            total -= reserved;
+            reserved as u8
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+    let dual_stereo = if channels == 2 && total > 8 {
+        total -= 8;
+        8
+    } else {
+        0
+    };
+    Ok(AllocationReservations {
+        remaining_eighth_bits: total,
+        anti_collapse_eighth_bits: anti_collapse,
+        skip_eighth_bits: skip,
+        intensity_eighth_bits: intensity,
+        dual_stereo_eighth_bits: dual_stereo,
+    })
 }
 
 pub(crate) fn allocation_trim_offsets(
@@ -501,7 +569,7 @@ mod tests {
         ENERGY_LAPLACE_MODELS, FrameHeader, allocation_caps, allocation_thresholds,
         allocation_trim_offsets, band_edges, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_fine_energies, decode_header,
-        predict_coarse_energies, static_allocation,
+        predict_coarse_energies, reserve_allocation_bits, static_allocation,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -583,6 +651,46 @@ mod tests {
         assert_eq!(
             allocation_caps(120, 0, 1),
             Err(RangeError::InvalidCeltEnergyLayout)
+        );
+    }
+
+    #[test]
+    fn allocation_reservations_follow_frame_and_channel_rules() {
+        assert_eq!(
+            reserve_allocation_bits(960, 0, 21, 1, true, 50),
+            Ok(super::AllocationReservations {
+                remaining_eighth_bits: 33,
+                anti_collapse_eighth_bits: 8,
+                skip_eighth_bits: 8,
+                intensity_eighth_bits: 0,
+                dual_stereo_eighth_bits: 0,
+            })
+        );
+        assert_eq!(
+            reserve_allocation_bits(960, 0, 21, 2, false, 100),
+            Ok(super::AllocationReservations {
+                remaining_eighth_bits: 48,
+                anti_collapse_eighth_bits: 0,
+                skip_eighth_bits: 8,
+                intensity_eighth_bits: 35,
+                dual_stereo_eighth_bits: 8,
+            })
+        );
+        assert_eq!(
+            reserve_allocation_bits(960, 0, 21, 2, false, 16),
+            Ok(super::AllocationReservations {
+                remaining_eighth_bits: 7,
+                anti_collapse_eighth_bits: 0,
+                skip_eighth_bits: 8,
+                intensity_eighth_bits: 0,
+                dual_stereo_eighth_bits: 0,
+            })
+        );
+        assert_eq!(
+            reserve_allocation_bits(120, 0, 21, 1, true, 40)
+                .unwrap()
+                .anti_collapse_eighth_bits,
+            0
         );
     }
 
