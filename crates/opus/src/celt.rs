@@ -337,6 +337,42 @@ pub(crate) fn decode_mono_pvq_shapes(
     })
 }
 
+/// Restores the decoded mono band gains on an otherwise zero CELT spectrum.
+///
+/// Energy values are base-2 log gains in Q15. The RFC 8251 energy ceiling is
+/// applied before conversion so corrupt frames cannot overflow the spectrum.
+pub(crate) fn denormalize_mono_pvq_shapes(
+    frame_samples_48k: u16,
+    allocation: FineShapeAllocation,
+    shapes: &MonoPvqShapes,
+    energies_q15: &[i32; 42],
+) -> Result<Vec<f32>, RangeError> {
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    let start_band = allocation.start_band;
+    let end_band = allocation.coded_end_band;
+    if start_band >= end_band || end_band > 21 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+
+    let mut spectrum = vec![0.0; usize::from(frame_samples_48k)];
+    for band in start_band..end_band {
+        let index = usize::from(band);
+        let start = usize::from(edges[index]);
+        let end = usize::from(edges[index + 1]);
+        let shape = &shapes.vectors[index];
+        if shape.len() != end - start || shape.iter().any(|value| !value.is_finite()) {
+            return Err(RangeError::InvalidPvqLayout);
+        }
+
+        let log_gain = (energies_q15[index * 2] as f32 / 32_768.0).min(32.0);
+        let gain = log_gain.exp2();
+        for (coefficient, &normalized) in spectrum[start..end].iter_mut().zip(shape) {
+            *coefficient = normalized * gain;
+        }
+    }
+    Ok(spectrum)
+}
+
 pub(crate) fn static_allocation(
     frame_samples_48k: u16,
     band: u8,
@@ -1118,13 +1154,14 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 #[cfg(test)]
 mod tests {
     use super::{
-        AllocationControls, ENERGY_LAPLACE_MODELS, FineShapeAllocation, FrameHeader,
+        AllocationControls, ENERGY_LAPLACE_MODELS, FineShapeAllocation, FrameHeader, MonoPvqShapes,
         allocation_caps, allocation_thresholds, allocation_trim_offsets, band_edges,
         decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
         decode_header, decode_mono_pvq_shapes, decode_spread, decode_tf_resolution,
-        predict_coarse_energies, reallocate_skipped_bands, reserve_allocation_bits,
-        select_band_allocation, split_fine_shape_allocation, static_allocation, tf_adjustment,
+        denormalize_mono_pvq_shapes, predict_coarse_energies, reallocate_skipped_bands,
+        reserve_allocation_bits, select_band_allocation, split_fine_shape_allocation,
+        static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1162,6 +1199,58 @@ mod tests {
                 .sum::<f64>();
             assert!((norm_squared - 1.0).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn mono_shape_denormalization_restores_q15_log_gain_and_caps_extremes() {
+        let allocation = FineShapeAllocation {
+            start_band: 8,
+            coded_end_band: 9,
+            shape_eighth_bits: [0; 21],
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let mut vectors = std::array::from_fn(|_| Vec::new());
+        vectors[8] = vec![0.6, 0.8];
+        let shapes = MonoPvqShapes {
+            vectors,
+            pulses: [0; 21],
+        };
+        let mut energies = [0; 42];
+        energies[16] = 32_768;
+
+        let spectrum = denormalize_mono_pvq_shapes(120, allocation, &shapes, &energies).unwrap();
+        assert_eq!(spectrum.len(), 120);
+        assert_eq!(spectrum[8..10], [1.2, 1.6]);
+        assert!(spectrum[..8].iter().all(|&value| value == 0.0));
+        assert!(spectrum[10..].iter().all(|&value| value == 0.0));
+
+        energies[16] = 40 * 32_768;
+        let capped = denormalize_mono_pvq_shapes(120, allocation, &shapes, &energies).unwrap();
+        assert_eq!(capped[8], 0.6 * 2.0_f32.powi(32));
+    }
+
+    #[test]
+    fn mono_shape_denormalization_rejects_malformed_band_shapes() {
+        let allocation = FineShapeAllocation {
+            start_band: 8,
+            coded_end_band: 9,
+            shape_eighth_bits: [0; 21],
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let mut vectors = std::array::from_fn(|_| Vec::new());
+        vectors[8] = vec![1.0];
+        let shapes = MonoPvqShapes {
+            vectors,
+            pulses: [0; 21],
+        };
+        assert_eq!(
+            denormalize_mono_pvq_shapes(120, allocation, &shapes, &[0; 42]),
+            Err(RangeError::InvalidPvqLayout)
+        );
     }
 
     #[test]
