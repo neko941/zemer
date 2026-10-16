@@ -244,6 +244,44 @@ pub(crate) fn hadamard_tf_axis(
     Ok(())
 }
 
+/// Applies one decoded CELT TF adjustment to a block-major band vector.
+///
+/// Positive adjustments transform across time blocks in natural order.
+/// Negative adjustments transform within each block in sequency order.
+fn apply_tf_adjustment(values: &mut [f32], adjustment: i8, blocks: u8) -> Result<(), RangeError> {
+    if values.is_empty()
+        || values.len() > 176
+        || !(1..=8).contains(&blocks)
+        || !blocks.is_power_of_two()
+        || values.len() % usize::from(blocks) != 0
+        || !(-3..=3).contains(&adjustment)
+    {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    if adjustment == 0 {
+        return Ok(());
+    }
+
+    let axis_length = 1_usize << adjustment.unsigned_abs();
+    let block_width = values.len() / usize::from(blocks);
+    if adjustment > 0 {
+        if axis_length > usize::from(blocks) || usize::from(blocks) % axis_length != 0 {
+            return Err(RangeError::InvalidCeltEnergyLayout);
+        }
+        return hadamard_tf_axis(values, axis_length, block_width, false);
+    }
+
+    for block in values.chunks_exact_mut(block_width) {
+        let complete = block.len() / axis_length * axis_length;
+        // Non-power-of-two band widths can leave a short suffix outside the
+        // Hadamard axis; preserve those bins unchanged.
+        for vector in block[..complete].chunks_exact_mut(axis_length) {
+            hadamard_tf_vector(vector, true)?;
+        }
+    }
+    Ok(())
+}
+
 fn frame_lm(frame_samples_48k: u16) -> Option<u32> {
     match frame_samples_48k {
         120 | 240 | 480 | 960 => Some(u32::from(frame_samples_48k / 120).trailing_zeros()),
@@ -358,16 +396,17 @@ pub(crate) fn band_edges(frame_samples_48k: u16) -> Option<[u16; 22]> {
     Some(edges)
 }
 
-/// Decodes the mono, unsplit PVQ shape vector for each coded CELT band.
+/// Decodes mono, unsplit PVQ shapes and applies spreading and TF adjustments.
 ///
-/// This returns normalized band shapes only. CELT's spreading, recursive
-/// splits, denormalization, and inverse transform are separate stages.
+/// Recursive splits, stereo, denormalization, and inverse-transform synthesis
+/// remain separate stages.
 pub(crate) fn decode_mono_pvq_shapes(
     range: &mut RangeDecoder<'_>,
     frame_samples_48k: u16,
     allocation: FineShapeAllocation,
     spread: u8,
     blocks: u8,
+    tf_adjustments: &[i8; 21],
 ) -> Result<MonoPvqShapes, RangeError> {
     let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
     let start_band = allocation.start_band;
@@ -409,6 +448,7 @@ pub(crate) fn decode_mono_pvq_shapes(
             shapes[index] = normalize_pulses(&pulses)?;
         }
         spread_shape(&mut shapes[index], pulse_counts[index], spread, blocks)?;
+        apply_tf_adjustment(&mut shapes[index], tf_adjustments[index], blocks)?;
         balance += i64::from(allocation.shape_eighth_bits[index]) + tell;
     }
     Ok(MonoPvqShapes {
@@ -1235,8 +1275,8 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 mod tests {
     use super::{
         AllocationControls, ENERGY_LAPLACE_MODELS, FineShapeAllocation, FrameHeader, MonoPvqShapes,
-        allocation_caps, allocation_thresholds, allocation_trim_offsets, band_edges,
-        decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
+        allocation_caps, allocation_thresholds, allocation_trim_offsets, apply_tf_adjustment,
+        band_edges, decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
         decode_header, decode_mono_pvq_shapes, decode_spread, decode_tf_resolution,
         denormalize_mono_pvq_shapes, hadamard_tf_axis, hadamard_tf_vector, predict_coarse_energies,
@@ -1270,7 +1310,8 @@ mod tests {
             };
             let mut range = RangeDecoder::new(&[0x5a; 32]);
             let shapes =
-                decode_mono_pvq_shapes(&mut range, frame_samples, allocation, 0, 1).unwrap();
+                decode_mono_pvq_shapes(&mut range, frame_samples, allocation, 0, 1, &[0; 21])
+                    .unwrap();
             assert_eq!(shapes.vectors[0].len(), expected_dimensions);
             assert!(shapes.vectors[1..].iter().all(Vec::is_empty));
             let norm_squared = shapes.vectors[0]
@@ -1346,7 +1387,8 @@ mod tests {
         for (payload, expected) in [(0, 1.0), (1, -1.0)] {
             let bytes = [0x00, payload];
             let mut range = RangeDecoder::new(&bytes);
-            let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1).unwrap();
+            let shapes =
+                decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1, &[0; 21]).unwrap();
             assert_eq!(shapes.vectors[0], vec![expected]);
             assert_eq!(shapes.pulses[0], 1);
         }
@@ -1364,7 +1406,7 @@ mod tests {
         };
         let mut range = RangeDecoder::new(&[0x00, 0x00]);
         let before = range.tell_frac();
-        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1).unwrap();
+        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1, &[0; 21]).unwrap();
         assert_eq!(shapes.vectors[8], vec![0.0, 0.0]);
         assert_eq!(shapes.pulses[8], 0);
         assert_eq!(range.tell_frac(), before);
@@ -1384,7 +1426,7 @@ mod tests {
             balance_eighth_bits: 0,
         };
         let mut range = RangeDecoder::new(&[0x21; 128]);
-        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1).unwrap();
+        let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1, &[0; 21]).unwrap();
         assert_eq!(shapes.pulses[12], 1);
         assert_eq!(shapes.pulses[13], 2);
     }
@@ -1401,7 +1443,7 @@ mod tests {
         };
         let mut range = RangeDecoder::new(&[0x5a; 32]);
         assert_eq!(
-            decode_mono_pvq_shapes(&mut range, 60, allocation, 0, 1),
+            decode_mono_pvq_shapes(&mut range, 60, allocation, 0, 1, &[0; 21]),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
         assert_eq!(
@@ -1414,6 +1456,7 @@ mod tests {
                 },
                 0,
                 1,
+                &[0; 21],
             ),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
@@ -1527,6 +1570,91 @@ mod tests {
                 Err(RangeError::InvalidCeltEnergyLayout)
             );
         }
+    }
+
+    #[test]
+    fn positive_tf_adjustment_transforms_across_short_blocks() {
+        let mut values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        apply_tf_adjustment(&mut values, 1, 2).unwrap();
+        let expected = [
+            18.0_f32.sqrt(),
+            32.0_f32.sqrt(),
+            50.0_f32.sqrt(),
+            72.0_f32.sqrt(),
+            -8.0_f32.sqrt(),
+            -8.0_f32.sqrt(),
+            -8.0_f32.sqrt(),
+            -8.0_f32.sqrt(),
+        ];
+        for (actual, expected) in values.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn negative_tf_adjustment_transforms_each_block_in_sequency_order() {
+        let mut values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        apply_tf_adjustment(&mut values, -2, 2).unwrap();
+        let expected = [5.0, -2.0, 0.0, -1.0, 13.0, -2.0, 0.0, -1.0];
+        for (actual, expected) in values.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn negative_tf_adjustment_keeps_an_incomplete_tail_unchanged() {
+        let mut values = [1.0, 2.0, 3.0];
+        apply_tf_adjustment(&mut values, -1, 1).unwrap();
+        assert!((values[0] - 3.0 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((values[1] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert_eq!(values[2], 3.0);
+    }
+
+    #[test]
+    fn tf_adjustment_rejects_impossible_block_geometry_without_mutation() {
+        let mut too_few_blocks = [1.0, 2.0];
+        assert_eq!(
+            apply_tf_adjustment(&mut too_few_blocks, 1, 1),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(too_few_blocks, [1.0, 2.0]);
+
+        let mut non_power_of_two_blocks = [1.0; 6];
+        assert_eq!(
+            apply_tf_adjustment(&mut non_power_of_two_blocks, 0, 3),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(non_power_of_two_blocks, [1.0; 6]);
+    }
+
+    #[test]
+    fn mono_shape_decode_applies_the_per_band_tf_adjustment() {
+        let allocation = FineShapeAllocation {
+            start_band: 0,
+            coded_end_band: 1,
+            shape_eighth_bits: [64; 21],
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let bytes = [0x5a; 64];
+        let mut plain_range = RangeDecoder::new(&bytes);
+        let mut tf_range = RangeDecoder::new(&bytes);
+        let plain =
+            decode_mono_pvq_shapes(&mut plain_range, 480, allocation, 0, 2, &[0; 21]).unwrap();
+        let mut adjustments = [0; 21];
+        adjustments[0] = -1;
+        let transformed =
+            decode_mono_pvq_shapes(&mut tf_range, 480, allocation, 0, 2, &adjustments).unwrap();
+
+        let mut expected = plain.vectors[0].clone();
+        apply_tf_adjustment(&mut expected, -1, 2).unwrap();
+        assert_eq!(transformed.vectors[0], expected);
+        let transformed_norm = transformed.vectors[0]
+            .iter()
+            .map(|&value| f64::from(value) * f64::from(value))
+            .sum::<f64>();
+        assert!((transformed_norm - 1.0).abs() < 1e-6);
     }
 
     #[test]
