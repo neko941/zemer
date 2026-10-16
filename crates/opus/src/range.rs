@@ -139,6 +139,20 @@ impl<'a> RangeDecoder<'a> {
         self.nbits_total - (u32::BITS - self.rng.leading_zeros())
     }
 
+    pub(crate) fn tell_frac(&self) -> u32 {
+        let mut log_range = u32::BITS - self.rng.leading_zeros();
+        let mut range_q15 = self.rng >> (log_range - 16);
+        for _ in 0..3 {
+            range_q15 = (range_q15 * range_q15) >> 15;
+            let bit = range_q15 >> 16;
+            log_range = 2 * log_range + bit;
+            if bit != 0 {
+                range_q15 >>= 1;
+            }
+        }
+        self.nbits_total * 8 - log_range
+    }
+
     fn value(&self, total: u32) -> Result<u32, RangeError> {
         if total == 0 || total > u16::MAX.into() {
             return Err(RangeError::InvalidTotal);
@@ -241,12 +255,26 @@ mod tests {
     #[test]
     fn reads_raw_bits_from_the_end_in_lsb_first_order() {
         let mut decoder = RangeDecoder::new(&[0x00, 0b1011_0010]);
+        assert_eq!(decoder.tell_frac(), 8);
         assert_eq!(decoder.read_raw_bits(4), Ok(0b0010));
         assert_eq!(decoder.read_raw_bits(4), Ok(0b1011));
         assert_eq!(decoder.tell(), 9);
+        assert_eq!(decoder.tell_frac(), 72);
         assert_eq!(decoder.read_raw_bits(8), Ok(0));
         assert_eq!(decoder.read_raw_bits(1), Err(RangeError::RawBitsExhausted));
         assert_eq!(decoder.read_raw_bits(33), Err(RangeError::RawBitsTooWide));
+    }
+
+    #[test]
+    fn fractional_bit_count_rounds_up_to_whole_bits() {
+        let mut decoder = RangeDecoder::new(&[0x36, 0x92, 0x17]);
+        for frequencies in [&[1, 1][..], &[1, 2, 5][..], &[9, 1][..]] {
+            let _ = decoder.decode_symbol(frequencies).unwrap();
+            let whole_bits = decoder.tell();
+            let fractional_bits = decoder.tell_frac();
+            assert!(whole_bits * 8 >= fractional_bits);
+            assert!(whole_bits * 8 < fractional_bits + 8);
+        }
     }
 
     #[test]
