@@ -1359,6 +1359,48 @@ mod tests {
     }
 
     #[test]
+    fn aifc_dwvw_stereo_stream_concatenates_word_aligned_mono_channels() {
+        let left: Vec<i16> = (0..257)
+            .map(|frame| i16::try_from((frame * 977 % 24_001) - 12_000).unwrap())
+            .collect();
+        let right: Vec<i16> = (0..257)
+            .map(|frame| i16::try_from((frame * 1_297 % 24_001) - 12_000).unwrap())
+            .collect();
+        let stereo: Vec<i16> = left
+            .iter()
+            .zip(&right)
+            .flat_map(|(&left, &right)| [left, right])
+            .collect();
+
+        let stereo_file = encode_dwvw(2, stereo);
+        let left_file = encode_dwvw(1, left);
+        let right_file = encode_dwvw(1, right);
+        let mut expected = ssnd_payload(&left_file).to_vec();
+        expected.extend_from_slice(ssnd_payload(&right_file));
+
+        assert_eq!(ssnd_payload(&stereo_file), expected);
+    }
+
+    fn encode_dwvw(channels: u16, samples: Vec<i16>) -> Vec<u8> {
+        let spec = AudioSpec::new(44_100, channels, SampleFormat::PcmI16).unwrap();
+        let mut encoder = AiffEncoder::new_aifc_dwvw(Cursor::new(Vec::new()), spec).unwrap();
+        encoder
+            .write_block(&PcmBuffer::new(spec, Samples::I16(samples)).unwrap())
+            .unwrap();
+        encoder.finish().unwrap().get_ref().clone()
+    }
+
+    fn ssnd_payload(file: &[u8]) -> &[u8] {
+        let chunk = file
+            .windows(4)
+            .position(|bytes| bytes == b"SSND")
+            .expect("AIFC file contains SSND");
+        let size = u32::from_be_bytes(file[chunk + 4..chunk + 8].try_into().unwrap()) as usize;
+        let body = chunk + 8;
+        &file[body + 8..body + size]
+    }
+
+    #[test]
     fn aifc_dwvw_round_trips_every_depth_across_channel_counts() {
         for bits in 2_u16..=32 {
             let (container_bits, format) = match bits {
