@@ -3,6 +3,7 @@ use std::io::{Seek, SeekFrom, Write};
 use crate::cset::{UTF8_CODE_PAGE, encode_info_value, write_utf8_chunk};
 use crate::ima_adpcm::encode_block as encode_ima_block;
 use crate::info::id_from_key;
+use crate::tags::{encode_id3, info_metadata, write_chunk as write_id3_chunk};
 use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{encode_alaw, encode_mulaw};
 use ms_adpcm::{STANDARD_COEFFICIENTS, encode_block as encode_ms_block};
@@ -585,8 +586,7 @@ impl<W: Write + Seek> WavWriter<W> {
             self.writer.write_all(&[0])?;
         }
         if self.metadata_chunk_bytes > 0 {
-            write_utf8_chunk(&mut self.writer)?;
-            write_info_chunk(&mut self.writer, &self.metadata, UTF8_CODE_PAGE)?;
+            write_metadata_chunks(&mut self.writer, &self.metadata, UTF8_CODE_PAGE)?;
         }
         if let Some(cue) = &self.cue {
             cue.write(&mut self.writer)?;
@@ -861,18 +861,34 @@ pub(super) fn metadata_chunk_size_for_code_page(
 }
 
 fn writer_metadata_size(metadata: &Metadata) -> Result<u64, AudioError> {
-    if !metadata.pictures().is_empty() {
-        return Err(AudioError::Unsupported(
-            "WAVE writer does not support embedded pictures",
-        ));
+    let info = info_metadata(metadata);
+    let info_size = metadata_chunk_size(&info)?;
+    let info_size = info_size
+        .checked_add(if info_size == 0 { 0 } else { 12 })
+        .ok_or(AudioError::Unsupported("WAVE metadata size overflow"))?;
+    let id3_size =
+        encode_id3(metadata)?.map_or(0, |tag| 8 + tag.len() as u64 + (tag.len() as u64 & 1));
+    info_size
+        .checked_add(id3_size)
+        .ok_or(AudioError::Unsupported("WAVE metadata size overflow"))
+}
+
+fn write_metadata_chunks<W: Write>(
+    writer: &mut W,
+    metadata: &Metadata,
+    code_page: u16,
+) -> Result<(), AudioError> {
+    let info = info_metadata(metadata);
+    if metadata_chunk_size_for_code_page(&info, code_page)? != 0 {
+        if code_page == UTF8_CODE_PAGE {
+            write_utf8_chunk(writer)?;
+        }
+        write_info_chunk(writer, &info, code_page)?;
     }
-    let size = metadata_chunk_size(metadata)?;
-    if size == 0 {
-        Ok(0)
-    } else {
-        size.checked_add(16)
-            .ok_or(AudioError::Unsupported("WAVE metadata size overflow"))
+    if let Some(tag) = encode_id3(metadata)? {
+        write_id3_chunk(writer, &tag)?;
     }
+    Ok(())
 }
 
 pub(super) fn write_info_chunk<W: Write>(
@@ -1003,11 +1019,21 @@ mod tests {
     use g711::{encode_alaw, encode_mulaw};
 
     #[test]
-    fn constructor_rejects_pictures_it_cannot_store() {
+    fn writes_and_reads_embedded_pictures_in_a_wave_id3_chunk() {
         let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
         let mut metadata = Metadata::default();
-        metadata.add_picture(Picture::new(3, "image/png", "cover", 0, 0, 0, 0, [1]));
-        assert!(WavWriter::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).is_err());
+        let picture = Picture::new(3, "image/png", "cover", 0, 0, 0, 0, [1, 2, 3]);
+        metadata.add_picture(picture.clone());
+        let audio = PcmBuffer::new(spec, Samples::I16(vec![123])).unwrap();
+        let mut writer =
+            WavWriter::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).unwrap();
+        writer.write_block(&audio).unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        assert!(bytes.windows(4).any(|window| window == b"id3 "));
+
+        let mut decoder = crate::WavDecoder::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(decoder.metadata().pictures(), [picture]);
+        assert_eq!(decoder.read_frames(1).unwrap().unwrap(), audio);
     }
 
     #[derive(Default)]

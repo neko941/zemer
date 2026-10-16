@@ -13,6 +13,12 @@ header fields, sample-loop records, and opaque sampler-specific bytes. Each
 typed chunk is limited to 16 MiB; duplicate cue names and sample-loop
 identifiers are rejected.
 
+The decoder also reads ID3v2 metadata and APIC/PIC artwork from ``id3 `` or
+``ID3 `` RIFF chunks. This is a compatibility convention used by some audio
+software, not a defined WAVE artwork field; the writer emits lowercase
+``id3 `` chunks. ``LIST/INFO`` remains the native mapping for registered WAVE
+text fields, while other text and pictures use ID3.
+
 .. code-block:: rust
 
    use std::{fs::File, io::BufReader};
@@ -205,6 +211,7 @@ writer does not create segmented ``wavl`` audio; it writes a contiguous
 reader retains at most 16 MiB and 65,536 supported INFO values across the file.
 The first ``bext`` chunk is parsed and bounded to 16 MiB; its fixed fields are
 602 bytes followed by coding history. A single ``cue `` or ``smpl`` chunk is
-parsed; each is bounded to 16 MiB. Cue records have 32-bit fields and do not
-provide RF64-scale marker positions. Writers emit at most one of each typed
-chunk. Other embedded metadata chunks are not interpreted.
+parsed; each is bounded to 16 MiB. A single lowercase or uppercase ID3 chunk
+is bounded to 16 MiB. Cue records have 32-bit fields and do not provide
+RF64-scale marker positions. Writers emit at most one of each typed chunk.
+Other embedded metadata chunks are not interpreted.

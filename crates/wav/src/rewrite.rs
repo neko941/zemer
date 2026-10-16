@@ -14,6 +14,10 @@ use crate::{
         write_info_subchunks,
     },
     info::is_managed_id,
+    tags::{
+        MAX_ID3_CHUNK_BYTES, encode_id3, id3_metadata, info_metadata, read_id3, write_chunk,
+        write_chunk_with_id,
+    },
 };
 
 const COPY_BUFFER_SIZE: usize = 64 * 1024;
@@ -25,7 +29,7 @@ struct Chunk {
     table_size_offset: Option<u64>,
 }
 
-/// Rewrites changed RIFF INFO tags while copying unchanged fields and audio bytes as-is.
+/// Rewrites RIFF INFO and ID3 metadata while copying audio bytes as-is.
 ///
 /// The caller should write to a new temporary file and replace the source only after success.
 pub fn rewrite_metadata<R: Read + Seek, W: Write + Seek>(
@@ -54,7 +58,8 @@ fn rewrite_metadata_inner<R: Read + Seek, W: Write + Seek>(
     metadata: &Metadata,
     bext: Option<&BextChunk>,
 ) -> Result<W, AudioError> {
-    metadata_chunk_size(metadata)?;
+    let info = info_metadata(metadata);
+    metadata_chunk_size(&info)?;
     if let Some(bext) = bext {
         bext.chunk_size()?;
     }
@@ -62,7 +67,7 @@ fn rewrite_metadata_inner<R: Read + Seek, W: Write + Seek>(
     let original_metadata = read_info_metadata(&mut reader)?;
     let mut changed_keys = BTreeSet::new();
     let mut metadata_to_write = Metadata::default();
-    for (key, values) in metadata.iter() {
+    for (key, values) in info.iter() {
         if original_metadata.values(key) != values {
             changed_keys.insert(key.to_owned());
             for value in values {
@@ -71,7 +76,7 @@ fn rewrite_metadata_inner<R: Read + Seek, W: Write + Seek>(
         }
     }
     for (key, _) in original_metadata.iter() {
-        if metadata.values(key).is_empty() {
+        if info.values(key).is_empty() {
             changed_keys.insert(key.to_owned());
         }
     }
@@ -153,6 +158,7 @@ fn rewrite_metadata_inner<R: Read + Seek, W: Write + Seek>(
 
     let mut wrote_metadata = false;
     let mut wrote_bext = false;
+    let mut id3_seen = false;
     let mut first_data_seen = false;
     loop {
         let position = reader.stream_position()?;
@@ -228,6 +234,34 @@ fn rewrite_metadata_inner<R: Read + Seek, W: Write + Seek>(
                     writer.write_all(&pad)?;
                 }
             }
+        } else if matches!(&chunk_header[..4], b"id3 " | b"ID3 ") {
+            if id3_seen || size > MAX_ID3_CHUNK_BYTES {
+                return Err(AudioError::InvalidFormat(
+                    "duplicate or oversized WAVE ID3 chunk",
+                ));
+            }
+            id3_seen = true;
+            let id = chunk_header[..4].try_into().unwrap();
+            let tag = read_id3(&mut reader, size)?;
+            if size & 1 != 0 {
+                let mut pad = [0];
+                reader.read_exact(&mut pad)?;
+            }
+            let rewritten = ::id3::rewrite_metadata_tag(&tag, &id3_metadata(metadata))?;
+            if rewritten.len() as u64 > MAX_ID3_CHUNK_BYTES {
+                return Err(AudioError::InvalidData(
+                    "WAVE ID3 metadata exceeds the 16 MiB limit",
+                ));
+            }
+            if !rewritten.is_empty() {
+                write_id3_chunk(
+                    &mut writer,
+                    &id,
+                    &rewritten,
+                    size32 == u32::MAX,
+                    table_size_offset,
+                )?;
+            }
         } else if &chunk_header[..4] == b"LIST" && size >= 4 {
             rewrite_list_chunk(
                 &mut reader,
@@ -258,8 +292,13 @@ fn rewrite_metadata_inner<R: Read + Seek, W: Write + Seek>(
             ));
         }
     }
-    if !wrote_metadata && metadata_chunk_size_for_code_page(metadata, code_page)? != 0 {
-        write_info_chunk(&mut writer, metadata, code_page)?;
+    if !wrote_metadata && metadata_chunk_size_for_code_page(&info, code_page)? != 0 {
+        write_info_chunk(&mut writer, &info, code_page)?;
+    }
+    if !id3_seen {
+        if let Some(tag) = encode_id3(metadata)? {
+            write_chunk(&mut writer, &tag)?;
+        }
     }
     if !wrote_bext {
         if let Some(bext) = bext {
@@ -284,6 +323,34 @@ fn rewrite_metadata_inner<R: Read + Seek, W: Write + Seek>(
     reader.seek(SeekFrom::Start(riff_end))?;
     copy_exact(&mut reader, &mut writer, file_end - riff_end)?;
     Ok(writer)
+}
+
+fn write_id3_chunk<W: Write + Seek>(
+    writer: &mut W,
+    id: &[u8; 4],
+    tag: &[u8],
+    size_is_sentinel: bool,
+    table_size_offset: Option<u64>,
+) -> Result<(), AudioError> {
+    if !size_is_sentinel {
+        return write_chunk_with_id(writer, id, tag);
+    }
+    let size = u32::try_from(tag.len())
+        .map_err(|_| AudioError::InvalidData("WAVE ID3 chunk is too large"))?;
+    writer.write_all(id)?;
+    writer.write_all(&u32::MAX.to_le_bytes())?;
+    writer.write_all(tag)?;
+    if size & 1 != 0 {
+        writer.write_all(&[0])?;
+    }
+    let table_size_offset = table_size_offset.ok_or(AudioError::InvalidFormat(
+        "RF64 ID3 size sentinel is missing its ds64 table entry",
+    ))?;
+    let end = writer.stream_position()?;
+    writer.seek(SeekFrom::Start(table_size_offset))?;
+    writer.write_all(&u64::from(size).to_le_bytes())?;
+    writer.seek(SeekFrom::Start(end))?;
+    Ok(())
 }
 
 fn write_bext_chunk<W: Write + Seek>(
@@ -426,7 +493,7 @@ fn copy_exact<R: Read, W: Write>(
 mod tests {
     use std::io::Cursor;
 
-    use zemer_core::{AudioDecoder, Metadata, Samples};
+    use zemer_core::{AudioDecoder, Metadata, Picture, Samples};
 
     use super::rewrite_metadata;
     use crate::WavDecoder;
@@ -489,6 +556,38 @@ mod tests {
         bytes[52..60].copy_from_slice(&u64::from(list_size).to_le_bytes());
         let list_header = info_list_header(&bytes);
         bytes[list_header + 4..list_header + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+        let riff_size = (bytes.len() - 8) as u64;
+        bytes[20..28].copy_from_slice(&riff_size.to_le_bytes());
+        bytes
+    }
+
+    fn rf64_file_with_sentinel_id3() -> Vec<u8> {
+        let mut riff = riff_file();
+        let mut id3 = Metadata::default();
+        id3.insert("ALBUM", "Album");
+        id3.add_picture(Picture::new(3, "image/png", "front", 0, 0, 0, 0, [1, 2, 3]));
+        let tag = ::id3::encode_metadata(&id3).unwrap();
+        let mut id3_chunk = Vec::new();
+        crate::tags::write_chunk(&mut id3_chunk, &tag).unwrap();
+        riff.splice(riff.len() - 10..riff.len() - 10, id3_chunk);
+        let riff_size = (riff.len() - 8) as u32;
+        riff[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        let id3_offset = riff
+            .windows(4)
+            .position(|window| window == b"id3 ")
+            .unwrap();
+        riff[id3_offset + 4..id3_offset + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let mut bytes = b"RF64\xff\xff\xff\xffWAVE".to_vec();
+        let mut ds64 = Vec::new();
+        ds64.extend_from_slice(&0_u64.to_le_bytes());
+        ds64.extend_from_slice(&2_u64.to_le_bytes());
+        ds64.extend_from_slice(&2_u64.to_le_bytes());
+        ds64.extend_from_slice(&1_u32.to_le_bytes());
+        ds64.extend_from_slice(b"id3 ");
+        ds64.extend_from_slice(&(tag.len() as u64).to_le_bytes());
+        chunk(&mut bytes, b"ds64", &ds64, 0);
+        bytes.extend_from_slice(&riff[12..]);
         let riff_size = (bytes.len() - 8) as u64;
         bytes[20..28].copy_from_slice(&riff_size.to_le_bytes());
         bytes
@@ -587,6 +686,65 @@ mod tests {
             &rewritten[engineer..engineer + 12],
             b"IENG\x04\0\0\0Ol\xff\0"
         );
+    }
+
+    #[test]
+    fn reads_and_rewrites_uppercase_wave_id3_picture_chunks() {
+        let mut original = riff_file();
+        let mut embedded = Metadata::default();
+        embedded.insert("ALBUM", "Original album");
+        embedded.add_picture(Picture::new(3, "image/png", "front", 0, 0, 0, 0, [1, 2, 3]));
+        let tag = ::id3::encode_metadata(&embedded).unwrap();
+        let mut wave_id3 = Vec::new();
+        crate::tags::write_chunk_with_id(&mut wave_id3, b"ID3 ", &tag).unwrap();
+        original.splice(original.len() - 10..original.len() - 10, wave_id3);
+        let riff_size = (original.len() - 8) as u32;
+        original[4..8].copy_from_slice(&riff_size.to_le_bytes());
+
+        let source = WavDecoder::new(Cursor::new(original.clone())).unwrap();
+        assert_eq!(source.metadata().values("ALBUM"), ["Original album"]);
+        assert_eq!(source.metadata().pictures().len(), 1);
+
+        let mut updated = source.metadata().clone();
+        updated.remove("ALBUM");
+        updated.insert("ALBUM", "Updated album");
+        let output = rewrite_metadata(Cursor::new(original), Cursor::new(Vec::new()), &updated)
+            .unwrap()
+            .into_inner();
+        assert!(output.windows(4).any(|window| window == b"ID3 "));
+        let decoded = WavDecoder::new(Cursor::new(output)).unwrap();
+        assert_eq!(decoded.metadata().values("ALBUM"), ["Updated album"]);
+        assert_eq!(decoded.metadata().pictures(), source.metadata().pictures());
+    }
+
+    #[test]
+    fn updates_the_ds64_table_for_a_rewritten_sentinel_id3_chunk() {
+        let original = rf64_file_with_sentinel_id3();
+        let mut metadata = WavDecoder::new(Cursor::new(original.clone()))
+            .unwrap()
+            .metadata()
+            .clone();
+        metadata.remove("ALBUM");
+        metadata.insert("ALBUM", "Longer album name");
+
+        let output = rewrite_metadata(Cursor::new(original), Cursor::new(Vec::new()), &metadata)
+            .unwrap()
+            .into_inner();
+        assert_eq!(&output[..4], b"RF64");
+        assert_eq!(u32::from_le_bytes(output[44..48].try_into().unwrap()), 1);
+        let id3 = output
+            .windows(8)
+            .position(|window| window == b"id3 \xff\xff\xff\xff")
+            .unwrap();
+        let table_size = u64::from_le_bytes(output[52..60].try_into().unwrap());
+        let actual_size = ::id3::encode_metadata(&crate::tags::id3_metadata(&metadata))
+            .unwrap()
+            .len() as u64;
+        assert_eq!(table_size, actual_size);
+        let decoded = WavDecoder::new(Cursor::new(output)).unwrap();
+        assert_eq!(decoded.metadata().values("ALBUM"), ["Longer album name"]);
+        assert_eq!(decoded.metadata().pictures().len(), 1);
+        assert!(id3 > 0);
     }
 
     #[test]

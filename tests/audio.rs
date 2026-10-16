@@ -161,7 +161,7 @@ fn append_wav_chunk(bytes: &mut Vec<u8>, id: [u8; 4], body: &[u8]) {
 }
 
 #[test]
-fn wav_writer_rejects_metadata_it_cannot_represent() {
+fn wav_writer_uses_id3_for_non_info_metadata() {
     let audio = PcmBuffer::new(
         AudioSpec::new(44_100, 1, SampleFormat::PcmU8).unwrap(),
         Samples::U8(vec![128]),
@@ -169,9 +169,13 @@ fn wav_writer_rejects_metadata_it_cannot_represent() {
     .unwrap();
     let mut metadata = Metadata::default();
     metadata.insert("composer", "Unknown mapping");
-    assert!(
-        WavWriter::new_with_metadata(Cursor::new(Vec::new()), audio.spec(), &metadata).is_err()
-    );
+    let mut writer =
+        WavWriter::new_with_metadata(Cursor::new(Vec::new()), audio.spec(), &metadata).unwrap();
+    writer.write_block(&audio).unwrap();
+    let bytes = writer.finish().unwrap().into_inner();
+    let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(decoder.metadata().values("COMPOSER"), ["Unknown mapping"]);
+    assert_eq!(decoder.read_frames(1).unwrap().unwrap(), audio);
 }
 
 #[test]

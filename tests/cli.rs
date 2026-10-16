@@ -744,6 +744,8 @@ fn metadata_edit_updates_wave_info_without_reencoding_audio() {
     let mut metadata = Metadata::default();
     metadata.insert("TITLE", "Old title");
     metadata.insert("ALBUM", "Remove me");
+    let cover = Picture::new(3, "image/png", "front", 0, 0, 0, 0, [4, 5, 6]);
+    metadata.add_picture(cover.clone());
     write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
 
     let output = Command::new(cli_path())
@@ -774,6 +776,7 @@ fn metadata_edit_updates_wave_info_without_reencoding_audio() {
     assert_eq!(decoder.metadata().values("TITLE"), ["New title"]);
     assert_eq!(decoder.metadata().values("ARTIST"), ["Artist"]);
     assert!(decoder.metadata().values("ALBUM").is_empty());
+    assert_eq!(decoder.metadata().pictures(), [cover]);
     assert_eq!(decoder.read_frames(3).unwrap().unwrap(), audio);
     let _ = fs::remove_file(input_path);
     let _ = fs::remove_file(output_path);
