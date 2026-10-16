@@ -32,6 +32,69 @@ pub(crate) struct MonoCeltFramePrefix {
     pub(crate) energies_q15: [i32; 42],
 }
 
+/// Final coarse-energy history carried between sequential mono CELT frames.
+///
+/// The caller resets this when the CELT decoder state is reset, and commits a
+/// frame only after its final fine energy has been decoded successfully.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct MonoCeltEnergyHistory {
+    previous_final_energies_q15: [i32; 42],
+}
+
+impl Default for MonoCeltEnergyHistory {
+    fn default() -> Self {
+        Self {
+            previous_final_energies_q15: [0; 42],
+        }
+    }
+}
+
+impl MonoCeltEnergyHistory {
+    pub(crate) fn reset(&mut self) {
+        self.previous_final_energies_q15 = [0; 42];
+    }
+
+    pub(crate) fn decode_prefix(
+        &self,
+        range: &mut RangeDecoder<'_>,
+        frame_samples_48k: u16,
+        frame_bytes: usize,
+        end_band: u8,
+    ) -> Result<Option<MonoCeltFramePrefix>, RangeError> {
+        decode_mono_frame_prefix(
+            range,
+            frame_samples_48k,
+            frame_bytes,
+            end_band,
+            &self.previous_final_energies_q15,
+        )
+    }
+
+    /// Decodes one supported active mono CELT frame and commits its energy
+    /// history only after the frame tail succeeds. Silence, transient frames,
+    /// and recursive PVQ splits are not yet handled by this path.
+    pub(crate) fn decode_active_frame(
+        &mut self,
+        range: &mut RangeDecoder<'_>,
+        frame_samples_48k: u16,
+        frame_bytes: usize,
+        end_band: u8,
+        synthesis: &mut CeltSynthesis,
+    ) -> Result<MonoCeltPcmFrame, RangeError> {
+        let prefix = self
+            .decode_prefix(range, frame_samples_48k, frame_bytes, end_band)?
+            .ok_or(RangeError::UnsupportedCeltMode)?;
+        let frame =
+            decode_mono_celt_frame(range, frame_samples_48k, frame_bytes, &prefix, synthesis)?;
+        self.commit(&frame);
+        Ok(frame)
+    }
+
+    pub(crate) fn commit(&mut self, frame: &MonoCeltPcmFrame) {
+        self.previous_final_energies_q15 = frame.final_energy.energies_q15;
+    }
+}
+
 /// Decoded mono CELT frame data after PVQ, final energy, and synthesis.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MonoCeltPcmFrame {
@@ -244,7 +307,7 @@ pub(crate) fn decode_mono_celt_frame(
 #[cfg(test)]
 mod tests {
     use super::{
-        MonoCeltFramePrefix, decode_mono_celt_frame, decode_mono_energy_prefix,
+        MonoCeltEnergyHistory, MonoCeltFramePrefix, decode_mono_energy_prefix,
         decode_mono_frame_prefix,
     };
     use crate::celt::{
@@ -404,17 +467,13 @@ mod tests {
     fn mono_frame_decodes_pvq_final_energy_and_stateful_pcm() {
         let packet = [0; 256];
         let mut synthesis = crate::celt::CeltSynthesis::default();
-        let mut previous_energies = [0; 42];
+        let mut energy_history = MonoCeltEnergyHistory::default();
 
         for frame_index in 0..2 {
             let mut range = RangeDecoder::new(&packet);
-            let prefix =
-                decode_mono_frame_prefix(&mut range, 120, packet.len(), 1, &previous_energies)
-                    .unwrap()
-                    .unwrap();
-            let frame =
-                decode_mono_celt_frame(&mut range, 120, packet.len(), &prefix, &mut synthesis)
-                    .unwrap();
+            let frame = energy_history
+                .decode_active_frame(&mut range, 120, packet.len(), 1, &mut synthesis)
+                .unwrap();
 
             assert_eq!(frame.spectrum.len(), 120);
             assert!(frame.spectrum.iter().all(|sample| sample.is_finite()));
@@ -424,8 +483,15 @@ mod tests {
             } else {
                 assert_eq!(frame.samples.as_ref().map(Vec::len), Some(120));
             }
-            previous_energies = frame.final_energy.energies_q15;
+            assert_eq!(
+                energy_history.previous_final_energies_q15,
+                frame.final_energy.energies_q15
+            );
         }
+
+        let mut reset_history = energy_history;
+        reset_history.reset();
+        assert_eq!(reset_history, MonoCeltEnergyHistory::default());
     }
 
     #[test]
