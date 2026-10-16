@@ -1,0 +1,15 @@
+[package]
+name = "zemer-caf"
+description = "Core Audio Format audio reader and writer for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "caf"
+
+[dependencies]
+zemer-core.workspace = true
+g711.workspace = true
+ima-adpcm.workspace = true

@@ -8,6 +8,7 @@ use std::{
 
 use aiff::{AiffAudioRecording, AiffComment, AiffDecoder, AiffEncoder, AiffMarker};
 use au::{AuDecoder, AuEncoder};
+use caf::CafDecoder;
 use dsdiff::DsdiffDecoder;
 use dsf::{DsfDecoder, DsfEncoder};
 use flac::{FlacDecoder, OggFlacDecoder, OggFlacEncoder};
@@ -995,6 +996,75 @@ fn convert_encodes_g711_only_when_explicitly_selected() {
         let _ = fs::remove_file(output_path);
     }
     let _ = fs::remove_file(input_path);
+}
+
+#[test]
+fn caf_cli_inspects_converts_and_edits_metadata_without_changing_audio() {
+    let input_path = temporary_path();
+    let caf_path = temporary_path().with_extension("caf");
+    let edited_path = temporary_path().with_extension("caf");
+    let ima4_path = temporary_path().with_extension("caf");
+    let spec = AudioSpec::new(44_100, 2, SampleFormat::PcmI16).unwrap();
+    let audio = PcmBuffer::new(
+        spec,
+        Samples::I16((0..130).map(|n| (n as i16).wrapping_mul(41)).collect()),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("title", "CAF source");
+    metadata.insert("artist", "One");
+    metadata.insert("artist", "Two");
+    write_wav_with_metadata(File::create(&input_path).unwrap(), &audio, &metadata).unwrap();
+
+    let converted = Command::new(cli_path())
+        .args(["convert", "--format", "caf", "--json"])
+        .arg(&input_path)
+        .arg(&caf_path)
+        .output()
+        .unwrap();
+    assert!(converted.status.success(), "{}", String::from_utf8_lossy(&converted.stderr));
+    assert!(String::from_utf8_lossy(&converted.stdout).contains("\"format\":\"caf\""));
+
+    let inspected = Command::new(cli_path())
+        .args(["inspect", "--json"])
+        .arg(&caf_path)
+        .output()
+        .unwrap();
+    assert!(inspected.status.success(), "{}", String::from_utf8_lossy(&inspected.stderr));
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains("\"TITLE\":[\"CAF source\"]"));
+    let mut decoder = CafDecoder::new(File::open(&caf_path).unwrap()).unwrap();
+    assert_eq!(decoder.metadata(), &metadata);
+    assert_eq!(decoder.read_frames(100).unwrap().unwrap(), audio);
+
+    let edited = Command::new(cli_path())
+        .args(["metadata", "edit", "--set", "TITLE=Updated", "--json"])
+        .arg(&caf_path)
+        .arg(&edited_path)
+        .output()
+        .unwrap();
+    assert!(edited.status.success(), "{}", String::from_utf8_lossy(&edited.stderr));
+    let mut edited_decoder = CafDecoder::new(File::open(&edited_path).unwrap()).unwrap();
+    assert_eq!(edited_decoder.metadata().values("TITLE"), ["Updated"]);
+    assert_eq!(edited_decoder.metadata().values("ARTIST"), ["One", "Two"]);
+    assert_eq!(edited_decoder.read_frames(100).unwrap().unwrap(), audio);
+
+    let ima4 = Command::new(cli_path())
+        .args(["convert", "--format", "caf_ima4", "--json"])
+        .arg(&input_path)
+        .arg(&ima4_path)
+        .output()
+        .unwrap();
+    assert!(ima4.status.success(), "{}", String::from_utf8_lossy(&ima4.stderr));
+    let mut ima4_decoder = CafDecoder::new(File::open(&ima4_path).unwrap()).unwrap();
+    let mut frames = 0;
+    while let Some(block) = ima4_decoder.read_frames(17).unwrap() {
+        frames += block.frames();
+    }
+    assert_eq!(frames, audio.frames());
+
+    for path in [input_path, caf_path, edited_path, ima4_path] {
+        let _ = fs::remove_file(path);
+    }
 }
 
 #[test]

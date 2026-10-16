@@ -14,7 +14,7 @@ installed):
 This installs ``zemer`` in Cargo's binary directory, usually ``~/.cargo/bin``.
 Alternatively, run it from a source checkout with ``cargo run -p zemer --``.
 
-Inspect a WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, DSF, DSDIFF, WavPack, or explicitly described raw PCM file:
+Inspect a WAVE, AIFF/AIFC, AU, CAF, native FLAC, Ogg-FLAC, DSF, DSDIFF, WavPack, or explicitly described raw PCM file:
 
 .. code-block:: console
 
@@ -22,6 +22,7 @@ Inspect a WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, DSF, DSDIFF, WavPack, or e
    cargo run -p zemer -- inspect input.aiff
    cargo run -p zemer -- inspect input.aifc
    cargo run -p zemer -- inspect input.au
+   cargo run -p zemer -- inspect input.caf
    cargo run -p zemer -- inspect input.flac
    cargo run -p zemer -- inspect input.wv
    cargo run -p zemer -- inspect input.dsf
@@ -35,6 +36,7 @@ For scripts and agents, request JSON:
    cargo run -p zemer -- inspect --json input.wav
    cargo run -p zemer -- inspect --json input.aiff
    cargo run -p zemer -- inspect --json input.au
+   cargo run -p zemer -- inspect --json input.caf
    cargo run -p zemer -- inspect --json input.flac
    cargo run -p zemer -- inspect --json input.wv
    cargo run -p zemer -- inspect --json input.dsf
@@ -50,7 +52,7 @@ For native DSD, JSON reports bit rate, octet-frame count, exact samples per
 channel, duration as a sample-count/bit-rate fraction, and supported metadata.
 Inspection streams the entire file to validate and count audio.
 
-Convert WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF input to a supported target format:
+Convert WAVE, AIFF/AIFC, AU, CAF, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF input to a supported target format:
 
 .. code-block:: console
 
@@ -61,6 +63,8 @@ Convert WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF inpu
    cargo run -p zemer -- convert --format aifc input.wav output.aifc
    cargo run -p zemer -- convert --format au input.wav output.au
    cargo run -p zemer -- convert --format au_mulaw input.wav output-mulaw.au
+   cargo run -p zemer -- convert --format caf input.wav output.caf
+   cargo run -p zemer -- convert --format caf_ima4 input.wav output-ima4.caf
    cargo run -p zemer -- convert --format aifc_alaw input.wav output-alaw.aifc
    cargo run -p zemer -- convert --format aifc_mulaw input.wav output-mulaw.aifc
    cargo run -p zemer -- convert --format aifc_ima4 input.wav output-ima4.aifc
@@ -173,13 +177,14 @@ audio conversion writes a new container and omits source-only unknown chunks.
    zemer metadata edit --set "TITLE=New title" input.wav updated.wav --json
    zemer metadata edit --set "TITLE=New title" input.aiff updated.aiff --json
    zemer metadata edit --set "COMMENT=New note" input.au updated.au --json
+   zemer metadata edit --set "TITLE=New title" input.caf updated.caf --json
    zemer metadata edit --set "TITLE=New title" input.dsf updated.dsf --json
    zemer metadata edit --set "TITLE=New title" input.dff updated.dff --json
    zemer metadata edit --set "TITLE=New title" input.wv updated.wv --json
    zemer metadata edit --set "TITLE=New title" input.oga updated.oga --json
 
 AU maps only COMMENT into its annotation. If the comment stays unchanged, the
-original annotation bytes are retained. FLAC keys may use printable ASCII other than ``=``; WAVE supports TITLE,
+original annotation bytes are retained. CAF edits preserve encoded audio packets and metadata chunks other than the replaced ``info`` chunk. FLAC keys may use printable ASCII other than ``=``; WAVE supports TITLE,
 ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO; AIFF/AIFC native
 chunks support ASCII TITLE, ARTIST, and COMMENT, while the non-standard ID3
 chunk supports common UTF-8 ID3 text. DSF writes ID3v2.4 UTF-8 text. DSDIFF title, artist, and

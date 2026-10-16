@@ -17,6 +17,8 @@ writers:
   mapping rules remain in their own crates.
 * ``wav`` implements RIFF/WAVE and ``aiff`` implements AIFF/AIFC on top of
   those shared interfaces.
+* ``caf`` implements the CAF v1 container and reuses the shared G.711 and
+  IMA4 packet codecs.
 * ``dsf`` and ``dsdiff`` implement separate raw DSD container layouts on top
   of the shared packed-octet DSD interface.
 * ``dst`` is the reusable compressed DSD frame codec used by ``dsdiff``; it
