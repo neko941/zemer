@@ -604,13 +604,28 @@ mod tests {
 
     #[test]
     fn split_shape_combines_unit_children_with_quantized_gains() {
-        let mut range = RangeDecoder::new(&[0; 32]);
-        let split = decode_split_angle(&mut range, 4, 80, 16, 64, true).unwrap();
+        let (left_gain, right_gain) = super::split_gains(8_192).unwrap();
+        let split = super::SplitAngle {
+            resolution: 2,
+            index: 1,
+            angle_q14: 8_192,
+            left_gain,
+            right_gain,
+        };
         let left = [0.6, 0.8];
         let right = [0.0, 1.0];
         let combined = super::combine_split_shapes(&left, &right, split).unwrap();
-        let energy = combined.iter().map(|&value| value * value).sum::<f32>();
-        assert!((energy - 1.0).abs() < 2e-7);
+        let left_energy = combined[..2]
+            .iter()
+            .map(|&value| value * value)
+            .sum::<f32>();
+        let right_energy = combined[2..]
+            .iter()
+            .map(|&value| value * value)
+            .sum::<f32>();
+        assert!((left_energy - 0.5).abs() < 2e-7);
+        assert!((right_energy - 0.5).abs() < 2e-7);
+        assert!((left_energy + right_energy - 1.0).abs() < 2e-7);
         assert_eq!(combined.len(), 4);
         assert!(super::combine_split_shapes(&left[..1], &right, split).is_err());
         assert!(super::combine_split_shapes(&left, &[f32::NAN, 1.0], split).is_err());
