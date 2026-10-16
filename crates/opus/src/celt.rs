@@ -452,13 +452,15 @@ fn frame_lm(frame_samples_48k: u16) -> Option<u32> {
     }
 }
 
-/// Derives the angle quantizer context for a recursive mono band split.
+/// Returns a candidate angle context for a recursive mono band split.
 ///
 /// `depth` counts already-applied parent splits. The angle for the next split
 /// uses the remaining transform depth after the parent dimensions are halved.
 /// CELT's base-band log widths are stored in eighth-bit units, matching the
-/// allocation arithmetic used by the recursive PVQ decoder.
-pub(crate) fn recursive_pvq_angle_context(
+/// allocation arithmetic used by the recursive PVQ decoder. This context has
+/// not been validated against packet-level Opus decoding and must not be used
+/// as a conformance claim.
+pub(crate) fn candidate_recursive_pvq_angle_context(
     frame_samples_48k: u16,
     band: u8,
     depth: u8,
@@ -1594,20 +1596,21 @@ mod tests {
     use super::{
         AllocationControls, ENERGY_LAPLACE_MODELS, FineShapeAllocation, FrameHeader, MonoPvqShapes,
         PostFilter, allocation_caps, allocation_thresholds, allocation_trim_offsets,
-        apply_tf_adjustment, band_edges, celt_low_overlap_window, decode_allocation_controls,
-        decode_allocation_trim, decode_band_boosts, decode_coarse_energy_residuals,
-        decode_final_fine_energy, decode_fine_energies, decode_header, decode_mid_side_pvq_band,
-        decode_mono_pvq_shapes, decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes,
-        hadamard_tf_axis, hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
-        reallocate_skipped_bands, recursive_pvq_angle_context, reserve_allocation_bits,
-        select_band_allocation, split_fine_shape_allocation, static_allocation, tf_adjustment,
+        apply_tf_adjustment, band_edges, candidate_recursive_pvq_angle_context,
+        celt_low_overlap_window, decode_allocation_controls, decode_allocation_trim,
+        decode_band_boosts, decode_coarse_energy_residuals, decode_final_fine_energy,
+        decode_fine_energies, decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes,
+        decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes, hadamard_tf_axis,
+        hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
+        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
+        split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
 
     #[test]
     fn recursive_split_angle_context_tracks_band_width_and_remaining_lm() {
         assert_eq!(
-            recursive_pvq_angle_context(120, 12, 0),
+            candidate_recursive_pvq_angle_context(120, 12, 0),
             Ok(crate::pvq::RecursivePvqAngleContext {
                 pulse_cap_eighth_bits: 8,
                 offset_eighth_bits: 0,
@@ -1616,7 +1619,7 @@ mod tests {
         );
         for (depth, pulse_cap, offset) in [(0, 32, 12), (1, 24, 8), (2, 16, 4)] {
             assert_eq!(
-                recursive_pvq_angle_context(960, 12, depth),
+                candidate_recursive_pvq_angle_context(960, 12, depth),
                 Ok(crate::pvq::RecursivePvqAngleContext {
                     pulse_cap_eighth_bits: pulse_cap,
                     offset_eighth_bits: offset,
@@ -1629,15 +1632,15 @@ mod tests {
     #[test]
     fn recursive_split_angle_context_rejects_invalid_band_or_impossible_depth() {
         assert_eq!(
-            recursive_pvq_angle_context(120, 21, 0),
+            candidate_recursive_pvq_angle_context(120, 21, 0),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
         assert_eq!(
-            recursive_pvq_angle_context(120, 0, 0),
+            candidate_recursive_pvq_angle_context(120, 0, 0),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
         assert_eq!(
-            recursive_pvq_angle_context(60, 12, 0),
+            candidate_recursive_pvq_angle_context(60, 12, 0),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
     }
