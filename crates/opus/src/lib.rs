@@ -6,6 +6,8 @@
 #[allow(dead_code)]
 mod celt;
 mod packet;
+#[allow(dead_code)]
+mod pvq;
 // These primitives are staged for the decoder frame pipeline.
 #[allow(dead_code)]
 mod range;
