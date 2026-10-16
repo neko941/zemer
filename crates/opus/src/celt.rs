@@ -28,6 +28,41 @@ const STATIC_ALLOCATION: [[u8; 11]; 21] = [
     [0, 0, 0, 0, 0, 1, 1, 1, 1, 20, 104],
 ];
 
+const ALLOCATION_CAPS: [[u8; 21]; 8] = [
+    [
+        224, 224, 224, 224, 224, 224, 224, 224, 160, 160, 160, 160, 185, 185, 185, 178, 178, 168,
+        134, 61, 37,
+    ],
+    [
+        224, 224, 224, 224, 224, 224, 224, 224, 240, 240, 240, 240, 207, 207, 207, 198, 198, 183,
+        144, 66, 40,
+    ],
+    [
+        160, 160, 160, 160, 160, 160, 160, 160, 185, 185, 185, 185, 193, 193, 193, 183, 183, 172,
+        138, 64, 38,
+    ],
+    [
+        240, 240, 240, 240, 240, 240, 240, 240, 207, 207, 207, 207, 204, 204, 204, 193, 193, 180,
+        143, 66, 40,
+    ],
+    [
+        185, 185, 185, 185, 185, 185, 185, 185, 193, 193, 193, 193, 193, 193, 193, 183, 183, 172,
+        138, 65, 39,
+    ],
+    [
+        207, 207, 207, 207, 207, 207, 207, 207, 204, 204, 204, 204, 201, 201, 201, 188, 188, 176,
+        141, 66, 40,
+    ],
+    [
+        193, 193, 193, 193, 193, 193, 193, 193, 193, 193, 193, 193, 194, 194, 194, 184, 184, 173,
+        139, 65, 39,
+    ],
+    [
+        204, 204, 204, 204, 204, 204, 204, 204, 201, 201, 201, 201, 198, 198, 198, 187, 187, 175,
+        140, 66, 40,
+    ],
+];
+
 const ENERGY_LAPLACE_MODELS: [[[u8; 42]; 2]; 4] = [
     [
         [
@@ -127,6 +162,79 @@ pub(crate) fn static_allocation(
     let width = u32::from(edges[usize::from(band) + 1] - edges[usize::from(band)]);
     let lm = u32::from(frame_samples_48k / 120).trailing_zeros();
     Ok(u32::from(channels) * width * interpolated_q64 * (1 << lm) / 256)
+}
+
+pub(crate) fn allocation_thresholds(
+    frame_samples_48k: u16,
+    start_band: u8,
+    end_band: u8,
+    channels: u8,
+) -> Result<[u16; 21], RangeError> {
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    if start_band >= end_band || end_band > 21 || !(1..=2).contains(&channels) {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let mut thresholds = [0; 21];
+    for band in start_band..end_band {
+        let width = u32::from(edges[usize::from(band) + 1] - edges[usize::from(band)]);
+        let threshold = ((24 * width) >> 4).max(8 * u32::from(channels));
+        thresholds[usize::from(band)] = threshold as u16;
+    }
+    Ok(thresholds)
+}
+
+pub(crate) fn allocation_caps(
+    frame_samples_48k: u16,
+    end_band: u8,
+    channels: u8,
+) -> Result<[u16; 21], RangeError> {
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    if end_band == 0 || end_band > 21 || !(1..=2).contains(&channels) {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let lm = u32::from(frame_samples_48k / 120).trailing_zeros();
+    let mode = (2 * lm + u32::from(channels == 2)) as usize;
+    let mut caps = [0; 21];
+    for band in 0..end_band {
+        let width = u32::from(edges[usize::from(band) + 1] - edges[usize::from(band)]);
+        let cache_cap = u32::from(ALLOCATION_CAPS[mode][usize::from(band)]) + 64;
+        caps[usize::from(band)] = ((cache_cap * u32::from(channels) * width) / 4) as u16;
+    }
+    Ok(caps)
+}
+
+pub(crate) fn allocation_trim_offsets(
+    frame_samples_48k: u16,
+    start_band: u8,
+    end_band: u8,
+    channels: u8,
+    trim: u8,
+) -> Result<[i32; 21], RangeError> {
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    let lm = u32::from(frame_samples_48k / 120).trailing_zeros();
+    if start_band >= end_band || end_band > 21 || !(1..=2).contains(&channels) || trim > 10 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let mut offsets = [0; 21];
+    for band in start_band..end_band {
+        let remaining_bands = i32::from(end_band - band);
+        let base_width = i32::from(BAND_WIDTHS_2_5_MS[usize::from(band)]);
+        let adjustment = ((i32::from(trim) - 5 - lm as i32)
+            * i32::from(channels)
+            * base_width
+            * remaining_bands
+            * (1 << lm)
+            * 8)
+            >> 6;
+        let width = edges[usize::from(band) + 1] - edges[usize::from(band)];
+        offsets[usize::from(band)] = adjustment
+            - if width == 1 {
+                8 * i32::from(channels)
+            } else {
+                0
+            };
+    }
+    Ok(offsets)
 }
 
 pub(crate) fn decode_coarse_energy_residuals(
@@ -390,7 +498,8 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 #[cfg(test)]
 mod tests {
     use super::{
-        ENERGY_LAPLACE_MODELS, FrameHeader, band_edges, decode_allocation_trim, decode_band_boosts,
+        ENERGY_LAPLACE_MODELS, FrameHeader, allocation_caps, allocation_thresholds,
+        allocation_trim_offsets, band_edges, decode_allocation_trim, decode_band_boosts,
         decode_coarse_energy_residuals, decode_fine_energies, decode_header,
         predict_coarse_energies, static_allocation,
     };
@@ -434,6 +543,46 @@ mod tests {
         assert_eq!(
             static_allocation(120, 0, 1, 641),
             Err(RangeError::InvalidCeltQuality)
+        );
+    }
+
+    #[test]
+    fn allocation_limits_follow_frame_width_and_trim_rules() {
+        let thresholds = allocation_thresholds(120, 0, 2, 1).unwrap();
+        assert_eq!(&thresholds[..3], &[8, 8, 0]);
+        let thresholds = allocation_thresholds(960, 0, 2, 2).unwrap();
+        assert_eq!(&thresholds[..3], &[16, 16, 0]);
+
+        let neutral = allocation_trim_offsets(120, 0, 2, 1, 5).unwrap();
+        assert_eq!(&neutral[..2], &[-8, -8]);
+        let high = allocation_trim_offsets(240, 0, 2, 1, 10).unwrap();
+        assert_eq!(&high[..2], &[2, 1]);
+
+        let caps = allocation_caps(120, 2, 1).unwrap();
+        assert_eq!(&caps[..2], &[72, 72]);
+        assert_eq!(allocation_caps(120, 1, 2).unwrap()[0], 144);
+        assert_eq!(allocation_caps(240, 1, 1).unwrap()[0], 112);
+        let caps = allocation_caps(240, 2, 2).unwrap();
+        assert_eq!(&caps[..2], &[304, 304]);
+        assert_eq!(allocation_caps(480, 1, 1).unwrap()[0], 249);
+        assert_eq!(allocation_caps(480, 1, 2).unwrap()[0], 542);
+        assert_eq!(allocation_caps(960, 1, 1).unwrap()[0], 514);
+        assert_eq!(allocation_caps(960, 1, 2).unwrap()[0], 1_072);
+    }
+
+    #[test]
+    fn allocation_limits_reject_invalid_layout_and_trim() {
+        assert_eq!(
+            allocation_thresholds(120, 0, 0, 1),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            allocation_trim_offsets(120, 0, 1, 1, 11),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            allocation_caps(120, 0, 1),
+            Err(RangeError::InvalidCeltEnergyLayout)
         );
     }
 
