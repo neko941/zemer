@@ -156,8 +156,8 @@ fn copy_file_rejects_an_entry_from_another_image() {
     let first = IsoImage::new(Cursor::new(sample_iso(false))).unwrap();
     let foreign = first.entries()[0].clone();
     let mut second_bytes = sample_iso(false);
-    let file_record = 18 * LOGICAL_BLOCK_SIZE as usize + 68;
-    second_bytes[file_record + 33] = b'B';
+    let file_data = 19 * LOGICAL_BLOCK_SIZE as usize;
+    second_bytes[file_data..file_data + 4].copy_from_slice(b"evil");
     let mut second = IsoImage::new(Cursor::new(second_bytes)).unwrap();
 
     assert!(matches!(
