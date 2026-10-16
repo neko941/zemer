@@ -1,5 +1,21 @@
 # Generated audio fixtures
 
+## WAVE Microsoft ADPCM interoperability
+
+`tests/wav_ms_adpcm_interop.rs` generates distinct 44.1-kHz mono and stereo
+PCM inputs, encodes each with Zemer and FFmpeg, and compares the decoded PCM
+sample-for-sample in both directions. The 1,203-frame inputs exercise partial
+final blocks: FFmpeg's raw decoder output can include padded samples beyond the
+WAVE `fact` count, so the test compares the declared-length prefix. Zemer trims
+to `fact`. No external audio files are bundled. It requires FFmpeg with the
+Microsoft ADPCM encoder and decoder; set `ZEMER_FFMPEG` if FFmpeg is not on
+`PATH`:
+
+```sh
+ZEMER_FFMPEG=ffmpeg cargo test --test wav_ms_adpcm_interop \
+  microsoft_adpcm_interoperates_with_ffmpeg_in_mono_and_stereo -- --ignored --exact
+```
+
 ## AIFF instrument metadata
 
 `crates/aiff/src/instrument.rs` includes the 20-byte `INST` payload shown in
