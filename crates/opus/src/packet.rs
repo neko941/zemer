@@ -31,8 +31,8 @@ impl Toc {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpusPacket<'a> {
-    pub toc: Toc,
-    pub frames: Vec<&'a [u8]>,
+    toc: Toc,
+    frames: Vec<&'a [u8]>,
 }
 
 impl<'a> OpusPacket<'a> {
@@ -91,8 +91,16 @@ impl<'a> OpusPacket<'a> {
         Ok(Self { toc, frames })
     }
 
-    pub fn duration_samples_48k(&self) -> u16 {
-        self.toc.frame_samples_48k * self.frames.len() as u16
+    pub const fn toc(&self) -> Toc {
+        self.toc
+    }
+
+    pub fn frames(&self) -> &[&'a [u8]] {
+        &self.frames
+    }
+
+    pub fn duration_samples_48k(&self) -> usize {
+        usize::from(self.toc.frame_samples_48k) * self.frames.len()
     }
 }
 
@@ -117,26 +125,16 @@ fn parse_code3<'a>(
     let mut cursor = 2;
     let padding_bytes = if control & 0x02 != 0 {
         let mut total = 0_usize;
-        loop {
-            let value = usize::from(*packet.get(cursor).ok_or(PacketError::Truncated)?);
+        let mut value = usize::from(*packet.get(cursor).ok_or(PacketError::Truncated)?);
+        cursor += 1;
+        while value == 255 {
+            total = total.checked_add(254).ok_or(PacketError::InvalidPadding)?;
+            value = usize::from(*packet.get(cursor).ok_or(PacketError::Truncated)?);
             cursor += 1;
-            let padding = if value == 255 {
-                let extra = usize::from(*packet.get(cursor).ok_or(PacketError::Truncated)?);
-                cursor += 1;
-                254_usize
-                    .checked_add(extra)
-                    .ok_or(PacketError::InvalidPadding)?
-            } else {
-                value
-            };
-            total = total
-                .checked_add(padding)
-                .ok_or(PacketError::InvalidPadding)?;
-            if value != 255 {
-                break;
-            }
         }
         total
+            .checked_add(value)
+            .ok_or(PacketError::InvalidPadding)?
     } else {
         0
     };
@@ -246,8 +244,8 @@ mod tests {
     #[test]
     fn toc_configuration_maps_all_32_frame_durations() {
         let expected = [
-            480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 480,
-            960, 120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960,
+            480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 1920, 2880, 480, 960, 480, 960,
+            120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960, 120, 240, 480, 960,
         ];
         for (configuration, &samples) in expected.iter().enumerate() {
             let toc = Toc::parse((configuration as u8) << 3);
@@ -284,6 +282,20 @@ mod tests {
 
         let padded = OpusPacket::parse(&[0x83, 6, 2, 8, 9, 0xaa, 0xbb]).unwrap();
         assert_eq!(padded.frames, [&[8, 9][..]]);
+
+        let mut long_padding = vec![0x83, 6, 255, 255, 2, 0x42];
+        long_padding.extend([0xcc; 510]);
+        let padded = OpusPacket::parse(&long_padding).unwrap();
+        assert_eq!(padded.frames, [&[0x42][..]]);
+    }
+
+    #[test]
+    fn enforces_the_1275_byte_implicit_frame_limit() {
+        let mut packet = vec![0x80];
+        packet.extend([0x55; 1275]);
+        assert_eq!(OpusPacket::parse(&packet).unwrap().frames[0].len(), 1275);
+        packet.push(0);
+        assert_eq!(OpusPacket::parse(&packet), Err(PacketError::FrameTooLarge));
     }
 
     #[test]
@@ -301,17 +313,26 @@ mod tests {
         ] {
             assert!(OpusPacket::parse(invalid).is_err(), "{invalid:?}");
         }
-        assert_eq!(OpusPacket::parse(&[0x82, 3, 1]).unwrap_err(), PacketError::InvalidFrameLayout);
+        assert_eq!(
+            OpusPacket::parse(&[0x82, 3, 1]).unwrap_err(),
+            PacketError::InvalidFrameLayout
+        );
     }
 
     #[test]
     fn packet_code_duration_is_bounded_to_120_ms() {
         let mut packet = vec![0xf3, 49 << 2];
         packet.extend([0; 49]);
-        assert_eq!(OpusPacket::parse(&packet), Err(PacketError::DurationTooLong));
-        assert_eq!(OpusPacket::parse(&[0x83, 8, 0, 0]), Ok(OpusPacket {
-            toc: Toc::parse(0x83),
-            frames: vec![&[0][..], &[0][..]],
-        }));
+        assert_eq!(
+            OpusPacket::parse(&packet),
+            Err(PacketError::DurationTooLong)
+        );
+        assert_eq!(
+            OpusPacket::parse(&[0x83, 8, 0, 0]),
+            Ok(OpusPacket {
+                toc: Toc::parse(0x83),
+                frames: vec![&[0][..], &[0][..]],
+            })
+        );
     }
 }
