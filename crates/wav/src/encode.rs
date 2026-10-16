@@ -4,6 +4,7 @@ use crate::ima_adpcm::encode_block as encode_ima_block;
 use crate::info::id_from_key;
 use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{encode_alaw, encode_mulaw};
+use ms_adpcm::{STANDARD_COEFFICIENTS, encode_block as encode_ms_block};
 use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 pub use g711::G711Encoding;
@@ -22,6 +23,12 @@ pub enum WavContainer {
     Rf64,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum AdpcmEncoding {
+    Ima,
+    Microsoft,
+}
+
 pub struct WavWriter<W> {
     writer: W,
     spec: AudioSpec,
@@ -38,7 +45,7 @@ pub struct WavWriter<W> {
     sampler: Option<WavSamplerChunk>,
     embedded_chunk_bytes: u64,
     g711: Option<G711Encoding>,
-    ima_adpcm: bool,
+    adpcm: Option<AdpcmEncoding>,
     samples_per_block: u16,
     ima_pending: Vec<i16>,
     frames_written: u64,
@@ -57,15 +64,7 @@ impl<W: Write + Seek> WavWriter<W> {
         spec: AudioSpec,
         metadata: &Metadata,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(
-            writer,
-            spec,
-            metadata,
-            None,
-            false,
-            WavContainer::Riff,
-            None,
-        )
+        Self::new_configured(writer, spec, metadata, None, None, WavContainer::Riff, None)
     }
 
     pub fn new_with_bext(writer: W, spec: AudioSpec, bext: &BextChunk) -> Result<Self, AudioError> {
@@ -94,7 +93,7 @@ impl<W: Write + Seek> WavWriter<W> {
         bext: &BextChunk,
         container: WavContainer,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(writer, spec, metadata, None, false, container, Some(bext))
+        Self::new_configured(writer, spec, metadata, None, None, container, Some(bext))
     }
 
     pub fn new_with_container(
@@ -111,7 +110,7 @@ impl<W: Write + Seek> WavWriter<W> {
         metadata: &Metadata,
         container: WavContainer,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(writer, spec, metadata, None, false, container, None)
+        Self::new_configured(writer, spec, metadata, None, None, container, None)
     }
 
     pub fn new_g711(
@@ -138,7 +137,7 @@ impl<W: Write + Seek> WavWriter<W> {
             spec,
             metadata,
             Some(encoding),
-            false,
+            None,
             WavContainer::Riff,
             None,
         )
@@ -176,7 +175,7 @@ impl<W: Write + Seek> WavWriter<W> {
             spec,
             metadata,
             Some(encoding),
-            false,
+            None,
             container,
             None,
         )
@@ -197,7 +196,41 @@ impl<W: Write + Seek> WavWriter<W> {
         metadata: &Metadata,
         container: WavContainer,
     ) -> Result<Self, AudioError> {
-        Self::new_configured(writer, spec, metadata, None, true, container, None)
+        Self::new_configured(
+            writer,
+            spec,
+            metadata,
+            None,
+            Some(AdpcmEncoding::Ima),
+            container,
+            None,
+        )
+    }
+
+    pub fn new_ms_adpcm(writer: W, spec: AudioSpec) -> Result<Self, AudioError> {
+        Self::new_ms_adpcm_with_metadata_and_container(
+            writer,
+            spec,
+            &Metadata::default(),
+            WavContainer::Riff,
+        )
+    }
+
+    pub fn new_ms_adpcm_with_metadata_and_container(
+        writer: W,
+        spec: AudioSpec,
+        metadata: &Metadata,
+        container: WavContainer,
+    ) -> Result<Self, AudioError> {
+        Self::new_configured(
+            writer,
+            spec,
+            metadata,
+            None,
+            Some(AdpcmEncoding::Microsoft),
+            container,
+            None,
+        )
     }
 
     fn new_configured(
@@ -205,10 +238,12 @@ impl<W: Write + Seek> WavWriter<W> {
         spec: AudioSpec,
         metadata: &Metadata,
         g711: Option<G711Encoding>,
-        ima_adpcm: bool,
+        adpcm: Option<AdpcmEncoding>,
         container: WavContainer,
         bext: Option<&BextChunk>,
     ) -> Result<Self, AudioError> {
+        let ima_adpcm = adpcm == Some(AdpcmEncoding::Ima);
+        let ms_adpcm = adpcm == Some(AdpcmEncoding::Microsoft);
         let metadata_chunk_bytes = metadata_chunk_size(metadata)?;
         let bext_chunk_bytes = if let Some(chunk) = bext {
             let size = chunk.chunk_size()?;
@@ -217,17 +252,17 @@ impl<W: Write + Seek> WavWriter<W> {
             0
         };
         let start = writer.stream_position()?;
-        if ima_adpcm
+        if (ima_adpcm || ms_adpcm)
             && (spec.sample_format() != SampleFormat::PcmI16
                 || !(1..=2).contains(&spec.channels())
                 || spec.speaker_mask().is_some())
         {
             return Err(AudioError::InvalidData(
-                "WAVE IMA ADPCM encoding requires mono/stereo signed 16-bit PCM without a speaker mask",
+                "WAVE ADPCM encoding requires mono/stereo signed 16-bit PCM without a speaker mask",
             ));
         }
-        let (legacy_tag, bits_per_sample) = if ima_adpcm {
-            (0x0011_u16, 4_u16)
+        let (legacy_tag, bits_per_sample) = if ima_adpcm || ms_adpcm {
+            (if ms_adpcm { 0x0002_u16 } else { 0x0011_u16 }, 4_u16)
         } else {
             match (g711, spec.sample_format()) {
                 (Some(G711Encoding::ALaw), SampleFormat::PcmI16) => (6_u16, 8_u16),
@@ -245,14 +280,20 @@ impl<W: Write + Seek> WavWriter<W> {
                 (None, SampleFormat::Float64) => (3, 64),
             }
         };
-        let block_align = if ima_adpcm {
-            256_u16
+        let block_align = if ima_adpcm || ms_adpcm {
+            if ms_adpcm && spec.channels() == 2 {
+                512
+            } else {
+                256
+            }
         } else {
             spec.channels()
                 .checked_mul(bits_per_sample / 8)
                 .ok_or(AudioError::InvalidData("WAVE block alignment overflow"))?
         };
-        let samples_per_block = if ima_adpcm {
+        let samples_per_block = if ms_adpcm {
+            ms_adpcm::samples_per_block(block_align, spec.channels())?
+        } else if ima_adpcm {
             1 + (block_align - 4 * spec.channels()) * 2 / spec.channels()
         } else {
             0
@@ -260,7 +301,9 @@ impl<W: Write + Seek> WavWriter<W> {
         let extensible = spec.speaker_mask().is_some();
         let non_pcm = legacy_tag != 1;
         let riff_overhead = (if extensible { 60_u64 } else { 36_u64 })
-            + if ima_adpcm {
+            + if ms_adpcm {
+                34
+            } else if ima_adpcm {
                 4
             } else if non_pcm && !extensible {
                 2
@@ -278,7 +321,7 @@ impl<W: Write + Seek> WavWriter<W> {
                 "WAVE metadata exceeds the RIFF/WAVE size limit",
             ));
         }
-        let byte_rate = if ima_adpcm {
+        let byte_rate = if ima_adpcm || ms_adpcm {
             u64::from(spec.sample_rate()) * u64::from(block_align) / u64::from(samples_per_block)
         } else {
             u64::from(spec.sample_rate()) * u64::from(block_align)
@@ -315,7 +358,9 @@ impl<W: Write + Seek> WavWriter<W> {
         }
         writer.write_all(b"fmt ")?;
         writer.write_all(
-            &(if ima_adpcm {
+            &(if ms_adpcm {
+                50_u32
+            } else if ima_adpcm {
                 20_u32
             } else if extensible {
                 40_u32
@@ -337,6 +382,14 @@ impl<W: Write + Seek> WavWriter<W> {
             writer.write_all(&bits_per_sample.to_le_bytes())?;
             writer.write_all(&spec.speaker_mask().unwrap_or(0).to_le_bytes())?;
             writer.write_all(&subformat_guid(legacy_tag))?;
+        } else if ms_adpcm {
+            writer.write_all(&32_u16.to_le_bytes())?;
+            writer.write_all(&samples_per_block.to_le_bytes())?;
+            writer.write_all(&(STANDARD_COEFFICIENTS.len() as u16).to_le_bytes())?;
+            for coefficient in STANDARD_COEFFICIENTS {
+                writer.write_all(&coefficient.first.to_le_bytes())?;
+                writer.write_all(&coefficient.second.to_le_bytes())?;
+            }
         } else if ima_adpcm {
             writer.write_all(&2_u16.to_le_bytes())?;
             writer.write_all(&samples_per_block.to_le_bytes())?;
@@ -376,7 +429,7 @@ impl<W: Write + Seek> WavWriter<W> {
             sampler: None,
             embedded_chunk_bytes: 0,
             g711,
-            ima_adpcm,
+            adpcm,
             samples_per_block,
             ima_pending: Vec::new(),
             frames_written: 0,
@@ -501,7 +554,7 @@ impl<W: Write + Seek> WavWriter<W> {
     }
 
     fn finalize_output(&mut self) -> Result<(), AudioError> {
-        if self.ima_adpcm && !self.ima_pending.is_empty() {
+        if self.adpcm.is_some() && !self.ima_pending.is_empty() {
             let channels = usize::from(self.spec.channels());
             let start = self.ima_pending.len() - channels;
             let final_frame = self.ima_pending[start..].to_vec();
@@ -509,7 +562,7 @@ impl<W: Write + Seek> WavWriter<W> {
             while self.ima_pending.len() < target {
                 self.ima_pending.extend_from_slice(&final_frame);
             }
-            self.write_ima_block()?;
+            self.write_adpcm_block()?;
         }
         if self.data_bytes & 1 != 0 {
             self.writer.write_all(&[0])?;
@@ -532,7 +585,7 @@ impl<W: Write + Seek> WavWriter<W> {
         let block_align = u64::from(self.spec.channels())
             .checked_mul(u64::from(self.bytes_per_sample))
             .ok_or(AudioError::InvalidData("WAVE block alignment overflow"))?;
-        let sample_count = if self.ima_adpcm {
+        let sample_count = if self.adpcm.is_some() {
             self.frames_written
         } else {
             self.data_bytes / block_align
@@ -609,10 +662,10 @@ impl<W: Write + Seek> AudioEncoder for WavWriter<W> {
             .frames_written
             .checked_add(frames)
             .ok_or(AudioError::Unsupported("WAVE sample count overflow"))?;
-        if self.ima_adpcm {
+        if self.adpcm.is_some() {
             let Samples::I16(samples) = block.samples() else {
                 return Err(AudioError::InvalidData(
-                    "WAVE IMA ADPCM requires signed 16-bit input",
+                    "WAVE ADPCM requires signed 16-bit input",
                 ));
             };
             let target = usize::from(self.samples_per_block) * channels;
@@ -623,7 +676,7 @@ impl<W: Write + Seek> AudioEncoder for WavWriter<W> {
                     .extend_from_slice(&samples[offset..offset + take]);
                 offset += take;
                 if self.ima_pending.len() == target {
-                    if let Err(error) = self.write_ima_block() {
+                    if let Err(error) = self.write_adpcm_block() {
                         self.poisoned = true;
                         return Err(error);
                     }
@@ -670,8 +723,16 @@ impl<W: Write + Seek> AudioEncoder for WavWriter<W> {
 }
 
 impl<W: Write + Seek> WavWriter<W> {
-    fn write_ima_block(&mut self) -> Result<(), AudioError> {
-        let encoded = encode_ima_block(&self.ima_pending, self.spec.channels())?;
+    fn write_adpcm_block(&mut self) -> Result<(), AudioError> {
+        let encoded = if self.adpcm == Some(AdpcmEncoding::Microsoft) {
+            encode_ms_block(
+                &self.ima_pending,
+                self.spec.channels(),
+                if self.spec.channels() == 2 { 512 } else { 256 },
+            )?
+        } else {
+            encode_ima_block(&self.ima_pending, self.spec.channels())?
+        };
         let new_size = self
             .data_bytes
             .checked_add(encoded.len() as u64)

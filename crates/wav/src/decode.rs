@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     io::{Read, Seek, SeekFrom},
+    sync::Arc,
 };
 
 use crate::encode::WavContainer;
@@ -8,6 +9,9 @@ use crate::ima_adpcm::{decode_block as decode_ima_block, frames_in_block};
 use crate::info::key_from_id;
 use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{decode_alaw, decode_mulaw};
+use ms_adpcm::{
+    Coefficients, decode_block as decode_ms_block, frames_in_block as ms_frames_in_block,
+};
 use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
 
 const PCM_GUID: [u8; 16] = [
@@ -130,7 +134,7 @@ fn parse_wavl<R: Read + Seek>(
     reader: &mut R,
     end: u64,
     frame_bytes: u16,
-    encoding: WaveEncoding,
+    encoding: &WaveEncoding,
     container: WavContainer,
     ds64: &mut Option<Ds64>,
     audio: &mut AudioLayout,
@@ -187,7 +191,14 @@ fn parse_wavl<R: Read + Seek>(
                     samples_per_block,
                 } = encoding
                 {
-                    frames_in_block(chunk_size, frame_bytes / 2, block_align, samples_per_block)?
+                    frames_in_block(
+                        chunk_size,
+                        frame_bytes / 2,
+                        *block_align,
+                        *samples_per_block,
+                    )?
+                } else if let WaveEncoding::MsAdpcm { block_align, .. } = encoding {
+                    ms_frames_in_block(chunk_size, frame_bytes / 2, *block_align)?
                 } else {
                     if chunk_size % u64::from(frame_bytes) != 0 {
                         return Err(AudioError::InvalidFormat(
@@ -226,7 +237,7 @@ fn parse_wavl<R: Read + Seek>(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum WaveEncoding {
     Pcm(SampleFormat),
     ALaw,
@@ -235,12 +246,16 @@ enum WaveEncoding {
         block_align: u16,
         samples_per_block: u16,
     },
+    MsAdpcm {
+        block_align: u16,
+        coefficients: Arc<[Coefficients]>,
+    },
 }
 
 fn data_frames(
     bytes: u64,
     frame_bytes: u16,
-    encoding: WaveEncoding,
+    encoding: &WaveEncoding,
     channels: u16,
 ) -> Result<u64, AudioError> {
     if let WaveEncoding::ImaAdpcm {
@@ -248,7 +263,9 @@ fn data_frames(
         samples_per_block,
     } = encoding
     {
-        frames_in_block(bytes, channels, block_align, samples_per_block)
+        frames_in_block(bytes, channels, *block_align, *samples_per_block)
+    } else if let WaveEncoding::MsAdpcm { block_align, .. } = encoding {
+        ms_frames_in_block(bytes, channels, *block_align)
     } else if bytes % u64::from(frame_bytes) == 0 {
         Ok(bytes / u64::from(frame_bytes))
     } else {
@@ -427,14 +444,16 @@ impl<R: Read + Seek> WavDecoder<R> {
                     reader.read_exact(&mut bytes)?;
                     let (spec, align, parsed_encoding) = parse_format(&bytes)?;
                     parsed_spec = Some(spec);
-                    let decoded_frame_bytes =
-                        if matches!(parsed_encoding, WaveEncoding::ImaAdpcm { .. }) {
-                            spec.channels()
-                                .checked_mul(2)
-                                .ok_or(AudioError::InvalidFormat("WAVE frame alignment overflow"))?
-                        } else {
-                            align
-                        };
+                    let decoded_frame_bytes = if matches!(
+                        &parsed_encoding,
+                        WaveEncoding::ImaAdpcm { .. } | WaveEncoding::MsAdpcm { .. }
+                    ) {
+                        spec.channels()
+                            .checked_mul(2)
+                            .ok_or(AudioError::InvalidFormat("WAVE frame alignment overflow"))?
+                    } else {
+                        align
+                    };
                     frame_bytes = Some(decoded_frame_bytes);
                     encoding = Some(parsed_encoding);
                 }
@@ -444,7 +463,7 @@ impl<R: Read + Seek> WavDecoder<R> {
                 b"data" => {
                     let frame_bytes = frame_bytes
                         .ok_or(AudioError::InvalidFormat("fmt chunk must precede data"))?;
-                    let (spec, encoding) = match (parsed_spec, encoding) {
+                    let (spec, encoding) = match (parsed_spec, encoding.as_ref()) {
                         (Some(spec), Some(encoding)) => (spec, encoding),
                         _ => return Err(AudioError::InvalidFormat("missing WAVE format")),
                     };
@@ -498,6 +517,7 @@ impl<R: Read + Seek> WavDecoder<R> {
                                 wavl_end,
                                 frame_bytes,
                                 encoding
+                                    .as_ref()
                                     .ok_or(AudioError::InvalidFormat("missing WAVE encoding"))?,
                                 container,
                                 &mut ds64,
@@ -517,9 +537,12 @@ impl<R: Read + Seek> WavDecoder<R> {
         let frame_bytes =
             frame_bytes.ok_or(AudioError::InvalidFormat("missing frame alignment"))?;
         let encoding = encoding.ok_or(AudioError::InvalidFormat("missing WAVE encoding"))?;
-        if let WaveEncoding::ImaAdpcm { .. } = encoding {
+        if matches!(
+            &encoding,
+            WaveEncoding::ImaAdpcm { .. } | WaveEncoding::MsAdpcm { .. }
+        ) {
             let fact_frames = fact_sample_count.ok_or(AudioError::InvalidFormat(
-                "IMA ADPCM WAVE file is missing its fact sample count",
+                "ADPCM WAVE file is missing its fact sample count",
             ))?;
             if fact_frames > audio.remaining_frames {
                 return Err(AudioError::InvalidFormat(
@@ -586,10 +609,13 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
         if frames == 0 {
             return Ok(None);
         }
-        if matches!(self.encoding, WaveEncoding::ImaAdpcm { .. }) {
+        if matches!(
+            &self.encoding,
+            WaveEncoding::ImaAdpcm { .. } | WaveEncoding::MsAdpcm { .. }
+        ) {
             let frames = usize::try_from(frames)
                 .map_err(|_| AudioError::InvalidData("requested IMA ADPCM block is too large"))?;
-            return self.read_ima_frames(frames).map(Some);
+            return self.read_adpcm_frames(frames).map(Some);
         }
         let frames = usize::try_from(frames)
             .map_err(|_| AudioError::InvalidData("requested block size overflow"))?;
@@ -641,7 +667,7 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
                     let frames_left = (byte_count - bytes.len()) / frame_bytes;
                     let take_frames = (*remaining_frames).min(frames_left as u64);
                     let silence_frame = self.last_frame.get_or_insert_with(|| {
-                        initial_silence_frame(self.frame_bytes, self.encoding)
+                        initial_silence_frame(self.frame_bytes, &self.encoding)
                     });
                     let take_bytes = usize::try_from(take_frames)
                         .ok()
@@ -673,7 +699,7 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
             .remaining_frames
             .checked_sub(decoded_frames)
             .ok_or(AudioError::InvalidData("WAVE sample count underflow"))?;
-        let samples = decode_samples(self.encoding, bytes)?;
+        let samples = decode_samples(&self.encoding, bytes)?;
         PcmBuffer::new(self.spec, samples)
             .map(Some)
             .map_err(AudioError::from)
@@ -681,18 +707,18 @@ impl<R: Read + Seek> AudioDecoder for WavDecoder<R> {
 }
 
 impl<R: Read + Seek> WavDecoder<R> {
-    fn read_ima_frames(&mut self, requested_frames: usize) -> Result<PcmBuffer, AudioError> {
+    fn read_adpcm_frames(&mut self, requested_frames: usize) -> Result<PcmBuffer, AudioError> {
         let channels = usize::from(self.spec.channels());
         let sample_count =
             requested_frames
                 .checked_mul(channels)
                 .ok_or(AudioError::InvalidData(
-                    "requested IMA ADPCM block size overflow",
+                    "requested ADPCM block size overflow",
                 ))?;
         let mut output = Vec::new();
         output
             .try_reserve_exact(sample_count)
-            .map_err(|_| AudioError::InvalidData("requested IMA ADPCM block is too large"))?;
+            .map_err(|_| AudioError::InvalidData("requested ADPCM block is too large"))?;
         while output.len() < sample_count {
             if self.ima_pending_offset < self.ima_pending.len() {
                 let count = (sample_count - output.len())
@@ -716,7 +742,7 @@ impl<R: Read + Seek> WavDecoder<R> {
             }
             let Some(segment) = self.segments.front_mut() else {
                 return Err(AudioError::InvalidFormat(
-                    "IMA ADPCM data ended before the fact sample count",
+                    "ADPCM data ended before the fact sample count",
                 ));
             };
             match segment {
@@ -729,26 +755,30 @@ impl<R: Read + Seek> WavDecoder<R> {
                         self.segments.pop_front();
                         continue;
                     }
-                    let WaveEncoding::ImaAdpcm {
-                        block_align,
-                        samples_per_block,
-                    } = self.encoding
-                    else {
-                        unreachable!("IMA reader is called only for IMA data")
+                    let block_align = match &self.encoding {
+                        WaveEncoding::ImaAdpcm { block_align, .. } => *block_align,
+                        WaveEncoding::MsAdpcm { block_align, .. } => *block_align,
+                        _ => unreachable!("ADPCM reader is called only for ADPCM data"),
                     };
-                    let byte_count = usize::try_from(
-                        (*remaining_bytes).min(u64::from(block_align)),
-                    )
-                    .map_err(|_| AudioError::InvalidFormat("IMA ADPCM block is too large"))?;
+                    let byte_count =
+                        usize::try_from((*remaining_bytes).min(u64::from(block_align)))
+                            .map_err(|_| AudioError::InvalidFormat("ADPCM block is too large"))?;
                     let mut bytes = vec![0; byte_count];
                     self.reader.seek(SeekFrom::Start(*next_offset))?;
                     self.reader.read_exact(&mut bytes)?;
-                    let decoded =
-                        decode_ima_block(&bytes, self.spec.channels(), samples_per_block)?;
+                    let decoded = match &self.encoding {
+                        WaveEncoding::ImaAdpcm {
+                            samples_per_block, ..
+                        } => decode_ima_block(&bytes, self.spec.channels(), *samples_per_block)?,
+                        WaveEncoding::MsAdpcm { coefficients, .. } => {
+                            decode_ms_block(&bytes, self.spec.channels(), coefficients)?
+                        }
+                        _ => unreachable!("ADPCM reader is called only for ADPCM data"),
+                    };
                     let decoded_frames = decoded.len() / channels;
                     if decoded_frames as u64 > *remaining_frames {
                         return Err(AudioError::InvalidFormat(
-                            "IMA ADPCM block sample count exceeds its data segment",
+                            "ADPCM block sample count exceeds its data segment",
                         ));
                     }
                     *next_offset = next_offset
@@ -810,7 +840,7 @@ impl<R: Read + Seek> WavDecoder<R> {
     }
 }
 
-fn decode_samples(encoding: WaveEncoding, bytes: Vec<u8>) -> Result<Samples, AudioError> {
+fn decode_samples(encoding: &WaveEncoding, bytes: Vec<u8>) -> Result<Samples, AudioError> {
     let format = match encoding {
         WaveEncoding::Pcm(format) => format,
         WaveEncoding::ALaw => {
@@ -826,6 +856,11 @@ fn decode_samples(encoding: WaveEncoding, bytes: Vec<u8>) -> Result<Samples, Aud
         WaveEncoding::ImaAdpcm { .. } => {
             return Err(AudioError::InvalidData(
                 "IMA ADPCM data must be decoded one block at a time",
+            ));
+        }
+        WaveEncoding::MsAdpcm { .. } => {
+            return Err(AudioError::InvalidData(
+                "Microsoft ADPCM data must be decoded one block at a time",
             ));
         }
     };
@@ -879,7 +914,7 @@ fn decode_samples(encoding: WaveEncoding, bytes: Vec<u8>) -> Result<Samples, Aud
     })
 }
 
-fn initial_silence_frame(frame_bytes: u16, encoding: WaveEncoding) -> Vec<u8> {
+fn initial_silence_frame(frame_bytes: u16, encoding: &WaveEncoding) -> Vec<u8> {
     let fill = match encoding {
         WaveEncoding::Pcm(SampleFormat::PcmU8) => 0x80,
         WaveEncoding::ALaw => 0xd5,
@@ -956,6 +991,77 @@ fn parse_format(bytes: &[u8]) -> Result<(AudioSpec, u16, WaveEncoding), AudioErr
             WaveEncoding::ImaAdpcm {
                 block_align,
                 samples_per_block,
+            },
+        ));
+    }
+
+    if tag == 0x0002 {
+        if bytes.len() < 26
+            || u16::from_le_bytes(bytes[16..18].try_into().unwrap()) < 8
+            || bits != 4
+            || !(1..=2).contains(&channels)
+            || sample_rate == 0
+        {
+            return Err(AudioError::InvalidFormat(
+                "invalid Microsoft ADPCM WAVE format extension",
+            ));
+        }
+        let extension_size = usize::from(u16::from_le_bytes(bytes[16..18].try_into().unwrap()));
+        if extension_size > bytes.len() - 18 {
+            return Err(AudioError::InvalidFormat(
+                "truncated Microsoft ADPCM format extension",
+            ));
+        }
+        let samples_per_block = u16::from_le_bytes(bytes[18..20].try_into().unwrap());
+        let coefficient_count = usize::from(u16::from_le_bytes(bytes[20..22].try_into().unwrap()));
+        let coefficient_bytes =
+            coefficient_count
+                .checked_mul(4)
+                .ok_or(AudioError::InvalidFormat(
+                    "Microsoft ADPCM coefficient table overflow",
+                ))?;
+        if coefficient_count == 0
+            || coefficient_count > 256
+            || extension_size != 4 + coefficient_bytes
+            || bytes.len() != 18 + extension_size
+        {
+            return Err(AudioError::InvalidFormat(
+                "invalid Microsoft ADPCM coefficient table size",
+            ));
+        }
+        let mut coefficients = Vec::new();
+        coefficients
+            .try_reserve_exact(coefficient_count)
+            .map_err(|_| {
+                AudioError::InvalidFormat("Microsoft ADPCM coefficient table is too large")
+            })?;
+        for index in 0..coefficient_count {
+            let offset = 22 + index * 4;
+            coefficients.push(Coefficients {
+                first: i16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()),
+                second: i16::from_le_bytes(bytes[offset + 2..offset + 4].try_into().unwrap()),
+            });
+        }
+        let header = channels.checked_mul(7).ok_or(AudioError::InvalidFormat(
+            "Microsoft ADPCM header size overflow",
+        ))?;
+        let payload = block_align
+            .checked_sub(header)
+            .ok_or(AudioError::InvalidFormat(
+                "Microsoft ADPCM block is smaller than its header",
+            ))?;
+        if payload == 0 || samples_per_block != ms_adpcm::samples_per_block(block_align, channels)?
+        {
+            return Err(AudioError::InvalidFormat(
+                "invalid Microsoft ADPCM block geometry",
+            ));
+        }
+        return Ok((
+            AudioSpec::new(sample_rate, channels, SampleFormat::PcmI16)?,
+            block_align,
+            WaveEncoding::MsAdpcm {
+                block_align,
+                coefficients: Arc::from(coefficients),
             },
         ));
     }
