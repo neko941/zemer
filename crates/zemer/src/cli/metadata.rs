@@ -322,22 +322,19 @@ fn edit_audio_metadata(
             "flac" => flac::rewrite_metadata(input_file, &mut output_file, &metadata),
             "ogg-flac" => flac::rewrite_ogg_metadata(input_file, &mut output_file, &metadata),
             "ogg-vorbis" => vorbis::rewrite_metadata(input_file, &mut output_file, &metadata),
-            "wav" if !bext_options.is_empty() => {
-                (|| {
-                    let bext_file = File::open(&input)?;
-                    let existing = WavDecoder::new(bext_file)?;
-                    let updated_bext =
-                        bext_options.apply(existing.bext().cloned().unwrap_or_default());
-                    drop(existing);
-                    wav::rewrite_metadata_with_bext(
-                        input_file,
-                        &mut output_file,
-                        &metadata,
-                        &updated_bext,
-                    )
-                    .map(|_| ())
-                })()
-            }
+            "wav" if !bext_options.is_empty() => (|| {
+                let bext_file = File::open(&input)?;
+                let existing = WavDecoder::new(bext_file)?;
+                let updated_bext = bext_options.apply(existing.bext().cloned().unwrap_or_default());
+                drop(existing);
+                wav::rewrite_metadata_with_bext(
+                    input_file,
+                    &mut output_file,
+                    &metadata,
+                    &updated_bext,
+                )
+                .map(|_| ())
+            })(),
             "wav" => wav::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
             "aiff" | "aifc" => aiff::rewrite_metadata(input_file, &mut output_file, &metadata),
             "au" => au::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
