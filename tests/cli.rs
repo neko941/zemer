@@ -770,6 +770,100 @@ fn metadata_edit_updates_wave_info_without_reencoding_audio() {
 }
 
 #[test]
+fn metadata_edit_updates_bwf_fields_and_preserves_untouched_bytes() {
+    let input_path = temporary_path().with_extension("wav");
+    let output_path = temporary_path().with_extension("wav");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(48_000, 1, SampleFormat::PcmI16).unwrap(),
+        Samples::I16(vec![12, -34, 56]),
+    )
+    .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.insert("TITLE", "Keep title");
+    let mut bext = wav::BextChunk::default();
+    bext.description[..7].copy_from_slice(b"Old mix");
+    bext.originator[..5].copy_from_slice(b"Zemer");
+    bext.time_reference = 123;
+    bext.version = 2;
+    bext.umid[..4].copy_from_slice(&[1, 2, 3, 4]);
+    bext.reserved[..4].copy_from_slice(&[5, 6, 7, 8]);
+    bext.coding_history = b"A=PCM,F=48000\r\n".to_vec();
+    let mut writer = wav::WavWriter::new_with_metadata_and_bext_and_container(
+        Cursor::new(Vec::new()),
+        audio.spec(),
+        &metadata,
+        &bext,
+        wav::WavContainer::Riff,
+    )
+    .unwrap();
+    writer.write_block(&audio).unwrap();
+    fs::write(&input_path, writer.finish().unwrap().into_inner()).unwrap();
+
+    let output = Command::new(cli_path())
+        .args([
+            "metadata",
+            "edit",
+            "--set",
+            "ARTIST=Artist",
+            "--bext-description",
+            "Final mix",
+            "--bext-time-reference",
+            "9876543210",
+            "--json",
+        ])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"updated_fields\":3"));
+
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    let updated = decoder.bext().unwrap();
+    let mut expected = bext;
+    expected.description = [0; 256];
+    expected.description[..9].copy_from_slice(b"Final mix");
+    expected.time_reference = 9_876_543_210;
+    assert_eq!(updated, &expected);
+    assert_eq!(decoder.metadata().values("TITLE"), ["Keep title"]);
+    assert_eq!(decoder.metadata().values("ARTIST"), ["Artist"]);
+    assert_eq!(decoder.read_frames(8).unwrap().unwrap(), audio);
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+}
+
+#[test]
+fn metadata_edit_rejects_invalid_bwf_field_width() {
+    let input_path = temporary_path().with_extension("wav");
+    let output_path = temporary_path().with_extension("wav");
+    let audio = PcmBuffer::new(
+        AudioSpec::new(8_000, 1, SampleFormat::PcmU8).unwrap(),
+        Samples::U8(vec![128]),
+    )
+    .unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    let output = Command::new(cli_path())
+        .args([
+            "metadata",
+            "edit",
+            "--bext-originator",
+            "name longer than 32 bytes",
+        ])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!output_path.exists());
+    let _ = fs::remove_file(input_path);
+}
+
+#[test]
 fn inspect_json_reports_extensible_speaker_mask() {
     let path = temporary_path();
     let converted_path = temporary_path();

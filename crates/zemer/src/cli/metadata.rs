@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use wav::{BextChunk, WavDecoder};
 use zemer_core::{AudioError, Metadata};
 
 use super::{
@@ -20,6 +21,7 @@ pub(super) fn metadata_args(args: &[std::ffi::OsString]) -> Result<MetadataEditR
     let mut paths = Vec::new();
     let mut sets = Vec::new();
     let mut removes = Vec::new();
+    let mut bext = BextOptions::default();
     let mut index = 1;
     while index < args.len() {
         if args[index] == "--json" {
@@ -41,12 +43,43 @@ pub(super) fn metadata_args(args: &[std::ffi::OsString]) -> Result<MetadataEditR
             };
             removes.push(normalize_metadata_key(key)?);
             index += 1;
+        } else if let Some((flag, field)) = bext_flag(&args[index]) {
+            index += 1;
+            let Some(value) = args.get(index).and_then(|arg| arg.to_str()) else {
+                return Err(usage_error());
+            };
+            match field {
+                BextField::Description => bext.description = Some(fixed_ascii(value, flag)?),
+                BextField::Originator => bext.originator = Some(fixed_ascii(value, flag)?),
+                BextField::OriginatorReference => {
+                    bext.originator_reference = Some(fixed_ascii(value, flag)?)
+                }
+                BextField::OriginationDate => {
+                    bext.origination_date = Some(fixed_ascii(value, flag)?)
+                }
+                BextField::OriginationTime => {
+                    bext.origination_time = Some(fixed_ascii(value, flag)?)
+                }
+                BextField::TimeReference => {
+                    bext.time_reference = Some(value.parse().map_err(|_| invalid_bext_value(flag))?)
+                }
+                BextField::Version => {
+                    bext.version = Some(value.parse().map_err(|_| invalid_bext_value(flag))?)
+                }
+                BextField::CodingHistory => {
+                    if !value.is_ascii() {
+                        return Err(invalid_bext_value(flag));
+                    }
+                    bext.coding_history = Some(value.as_bytes().to_vec());
+                }
+            }
+            index += 1;
         } else {
             paths.push(PathBuf::from(&args[index]));
             index += 1;
         }
     }
-    if paths.len() != 2 || (sets.is_empty() && removes.is_empty()) {
+    if paths.len() != 2 || (sets.is_empty() && removes.is_empty() && bext.is_empty()) {
         return Err(usage_error());
     }
 
@@ -59,7 +92,121 @@ pub(super) fn metadata_args(args: &[std::ffi::OsString]) -> Result<MetadataEditR
     }
     let input = paths.remove(0);
     let output = paths.remove(0);
-    edit_audio_metadata(input, output, &sets, &removes)
+    edit_audio_metadata(input, output, &sets, &removes, &bext)
+}
+
+#[derive(Default)]
+struct BextOptions {
+    description: Option<[u8; 256]>,
+    originator: Option<[u8; 32]>,
+    originator_reference: Option<[u8; 32]>,
+    origination_date: Option<[u8; 10]>,
+    origination_time: Option<[u8; 8]>,
+    time_reference: Option<u64>,
+    version: Option<u16>,
+    coding_history: Option<Vec<u8>>,
+}
+
+impl BextOptions {
+    fn is_empty(&self) -> bool {
+        self.description.is_none()
+            && self.originator.is_none()
+            && self.originator_reference.is_none()
+            && self.origination_date.is_none()
+            && self.origination_time.is_none()
+            && self.time_reference.is_none()
+            && self.version.is_none()
+            && self.coding_history.is_none()
+    }
+
+    fn apply(&self, mut bext: BextChunk) -> BextChunk {
+        if let Some(value) = self.description {
+            bext.description = value;
+        }
+        if let Some(value) = self.originator {
+            bext.originator = value;
+        }
+        if let Some(value) = self.originator_reference {
+            bext.originator_reference = value;
+        }
+        if let Some(value) = self.origination_date {
+            bext.origination_date = value;
+        }
+        if let Some(value) = self.origination_time {
+            bext.origination_time = value;
+        }
+        if let Some(value) = self.time_reference {
+            bext.time_reference = value;
+        }
+        if let Some(value) = self.version {
+            bext.version = value;
+        }
+        if let Some(value) = &self.coding_history {
+            bext.coding_history.clone_from(value);
+        }
+        bext
+    }
+
+    fn count(&self) -> usize {
+        [
+            self.description.is_some(),
+            self.originator.is_some(),
+            self.originator_reference.is_some(),
+            self.origination_date.is_some(),
+            self.origination_time.is_some(),
+            self.time_reference.is_some(),
+            self.version.is_some(),
+            self.coding_history.is_some(),
+        ]
+        .into_iter()
+        .filter(|set| *set)
+        .count()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum BextField {
+    Description,
+    Originator,
+    OriginatorReference,
+    OriginationDate,
+    OriginationTime,
+    TimeReference,
+    Version,
+    CodingHistory,
+}
+
+fn bext_flag(arg: &std::ffi::OsStr) -> Option<(&'static str, BextField)> {
+    Some(match arg.to_str()? {
+        "--bext-description" => ("--bext-description", BextField::Description),
+        "--bext-originator" => ("--bext-originator", BextField::Originator),
+        "--bext-originator-reference" => (
+            "--bext-originator-reference",
+            BextField::OriginatorReference,
+        ),
+        "--bext-origination-date" => ("--bext-origination-date", BextField::OriginationDate),
+        "--bext-origination-time" => ("--bext-origination-time", BextField::OriginationTime),
+        "--bext-time-reference" => ("--bext-time-reference", BextField::TimeReference),
+        "--bext-version" => ("--bext-version", BextField::Version),
+        "--bext-coding-history" => ("--bext-coding-history", BextField::CodingHistory),
+        _ => return None,
+    })
+}
+
+fn fixed_ascii<const N: usize>(value: &str, flag: &str) -> Result<[u8; N], CliError> {
+    if !value.is_ascii() || value.as_bytes().contains(&0) || value.len() > N {
+        return Err(invalid_bext_value(flag));
+    }
+    let mut field = [0; N];
+    field[..value.len()].copy_from_slice(value.as_bytes());
+    Ok(field)
+}
+
+fn invalid_bext_value(flag: &str) -> CliError {
+    CliError {
+        kind: "invalid_data",
+        message: format!("invalid value for {flag}"),
+    }
 }
 
 fn normalize_metadata_key(key: &str) -> Result<String, CliError> {
@@ -82,9 +229,16 @@ fn edit_audio_metadata(
     output: PathBuf,
     sets: &[(String, String)],
     removes: &[String],
+    bext_options: &BextOptions,
 ) -> Result<MetadataEditReport, CliError> {
     if let Some((decoder, format @ ("dsf" | "dsdiff"), _, _, _)) = audio::open_dsd_decoder(&input)?
     {
+        if !bext_options.is_empty() {
+            return Err(CliError {
+                kind: "unsupported",
+                message: "BWF bext options are supported only for WAVE files".to_owned(),
+            });
+        }
         let (metadata, updated_fields) =
             apply_metadata_changes(decoder.metadata().clone(), sets, removes);
         drop(decoder);
@@ -142,8 +296,15 @@ fn edit_audio_metadata(
                 .to_owned(),
         });
     }
+    if !bext_options.is_empty() && format != "wav" {
+        return Err(CliError {
+            kind: "unsupported",
+            message: "BWF bext options are supported only for WAVE files".to_owned(),
+        });
+    }
     let (metadata, updated_fields) =
         apply_metadata_changes(decoder.metadata().clone(), sets, removes);
+    let updated_fields = updated_fields + bext_options.count();
     let input_file = File::open(&input).map_err(|error| CliError {
         kind: "io",
         message: format!("{}: {error}", input.display()),
@@ -161,6 +322,19 @@ fn edit_audio_metadata(
             "flac" => flac::rewrite_metadata(input_file, &mut output_file, &metadata),
             "ogg-flac" => flac::rewrite_ogg_metadata(input_file, &mut output_file, &metadata),
             "ogg-vorbis" => vorbis::rewrite_metadata(input_file, &mut output_file, &metadata),
+            "wav" if !bext_options.is_empty() => {
+                let bext_file = File::open(&input).map_err(AudioError::Io)?;
+                let existing = WavDecoder::new(bext_file)?;
+                let updated_bext = bext_options.apply(existing.bext().cloned().unwrap_or_default());
+                drop(existing);
+                wav::rewrite_metadata_with_bext(
+                    input_file,
+                    &mut output_file,
+                    &metadata,
+                    &updated_bext,
+                )
+                .map(|_| ())
+            }
             "wav" => wav::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
             "aiff" | "aifc" => aiff::rewrite_metadata(input_file, &mut output_file, &metadata),
             "au" => au::rewrite_metadata(input_file, &mut output_file, &metadata).map(|_| ()),
