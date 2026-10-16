@@ -39,12 +39,13 @@ pub(crate) struct RecursivePvqSplit {
 /// codeword order. It returns `None` for a leaf, or the decoded angle and the
 /// remaining budget for a split node. Angle precision and its coded-bit cost
 /// remain the caller's responsibility because those depend on CELT allocation
-/// state and transient handling.
+/// state and transient handling. The maximum split depth is fixed by the CELT
+/// frame duration as LM + 1.
 pub(crate) fn decode_recursive_pvq_shape(
     range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
     dimensions: usize,
     budget_eighth_bits: u32,
-    max_split_levels: u8,
     decode_split: &mut impl FnMut(
         &mut RangeDecoder<'_>,
         usize,
@@ -52,6 +53,7 @@ pub(crate) fn decode_recursive_pvq_shape(
         u8,
     ) -> Result<Option<RecursivePvqSplit>, RangeError>,
 ) -> Result<(Vec<f32>, u32), RangeError> {
+    let max_split_levels = pvq_split_level_limit(frame_samples_48k)?;
     decode_recursive_pvq_shape_at(
         range,
         dimensions,
@@ -60,6 +62,16 @@ pub(crate) fn decode_recursive_pvq_shape(
         0,
         decode_split,
     )
+}
+
+fn pvq_split_level_limit(frame_samples_48k: u16) -> Result<u8, RangeError> {
+    match frame_samples_48k {
+        120 => Ok(1),
+        240 => Ok(2),
+        480 => Ok(3),
+        960 => Ok(4),
+        _ => Err(RangeError::InvalidCeltEnergyLayout),
+    }
 }
 
 fn decode_recursive_pvq_shape_at(
@@ -804,9 +816,9 @@ mod tests {
         let mut calls = Vec::new();
         let (shape, pulses) = decode_recursive_pvq_shape(
             &mut range,
+            240,
             8,
             160,
-            1,
             &mut |_, dimensions, budget, depth| {
                 calls.push((dimensions, budget, depth));
                 Ok((depth == 0).then_some(RecursivePvqSplit {
@@ -845,7 +857,7 @@ mod tests {
         };
         let mut depth_range = RangeDecoder::new(&[0; 8]);
         assert_eq!(
-            decode_recursive_pvq_shape(&mut depth_range, 4, 80, 0, &mut |_, _, budget, _| {
+            decode_recursive_pvq_shape(&mut depth_range, 120, 4, 80, &mut |_, _, budget, _| {
                 Ok(Some(RecursivePvqSplit {
                     angle,
                     remaining_eighth_bits: budget,
@@ -856,13 +868,28 @@ mod tests {
 
         let mut odd_range = RangeDecoder::new(&[0; 8]);
         assert_eq!(
-            decode_recursive_pvq_shape(&mut odd_range, 3, 80, 1, &mut |_, _, budget, _| {
+            decode_recursive_pvq_shape(&mut odd_range, 240, 3, 80, &mut |_, _, budget, _| {
                 Ok(Some(RecursivePvqSplit {
                     angle,
                     remaining_eighth_bits: budget,
                 }))
             },),
             Err(RangeError::InvalidPvqLayout)
+        );
+    }
+
+    #[test]
+    fn recursive_pvq_split_depth_follows_celt_frame_lm() {
+        for (frame_samples_48k, expected) in [(120, 1), (240, 2), (480, 3), (960, 4)] {
+            assert_eq!(
+                super::pvq_split_level_limit(frame_samples_48k),
+                Ok(expected),
+                "frame_samples_48k={frame_samples_48k}"
+            );
+        }
+        assert_eq!(
+            super::pvq_split_level_limit(600),
+            Err(RangeError::InvalidCeltEnergyLayout)
         );
     }
 
