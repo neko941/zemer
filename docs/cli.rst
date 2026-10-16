@@ -14,7 +14,7 @@ installed):
 This installs ``zemer`` in Cargo's binary directory, usually ``~/.cargo/bin``.
 Alternatively, run it from a source checkout with ``cargo run -p zemer --``.
 
-Inspect a WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, DSF, DSDIFF, or WavPack file:
+Inspect a WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, DSF, DSDIFF, WavPack, or explicitly described raw PCM file:
 
 .. code-block:: console
 
@@ -26,6 +26,7 @@ Inspect a WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, DSF, DSDIFF, or WavPack fi
    cargo run -p zemer -- inspect input.wv
    cargo run -p zemer -- inspect input.dsf
    cargo run -p zemer -- inspect input.dff
+   cargo run -p zemer -- inspect --input-format raw_s16le --sample-rate 44100 --channels 2 input.raw
 
 For scripts and agents, request JSON:
 
@@ -69,6 +70,8 @@ Convert WAVE, AIFF/AIFC, AU, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF inpu
    cargo run -p zemer -- convert --format pcm_i16 input.flac output.wav
    cargo run -p zemer -- convert --format pcm_i16 input.wv output.wav
    cargo run -p zemer -- convert --format wavpack input.wav output.wv
+   cargo run -p zemer -- convert --format wavpack --input-format raw_s16le --sample-rate 44100 --channels 2 input.raw output.wv
+   cargo run -p zemer -- convert --format raw_s24be input.wav output.raw
    cargo run -p zemer -- convert --format wavpack --bitrate 128 input.wav output.wv
    cargo run -p zemer -- convert --format vorbis --bitrate 128 input.wav output.oga
    cargo run -p zemer -- convert --format flac input.wav output.flac
@@ -98,6 +101,13 @@ path when one is created.
 WAVE output carries ``TITLE``, ``ARTIST``, ``ALBUM``, ``DATE``, ``GENRE``, and
 ``COMMENT`` tags; other source comments have no WAVE INFO mapping and are
 omitted.
+
+Raw PCM has no header. When reading it, provide ``--input-format``
+(``raw_u8``, ``raw_s16le/be``, ``raw_s24le/be``, ``raw_s32le/be``,
+``raw_f32le/be``, or ``raw_f64le/be``), ``--sample-rate``, and ``--channels``
+together. Raw output uses the selected ``raw_*`` target format and preserves
+the input rate and channel count. A partial final sample frame is rejected.
+See :doc:`raw-pcm` for the complete format list.
 
 The same command can explicitly select G.711 output in WAVE, AIFF-C, or AU:
 

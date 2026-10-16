@@ -95,6 +95,93 @@ fn cli_converts_pcm_to_ms_adpcm_wave() {
     let _ = fs::remove_file(output_path);
 }
 
+#[test]
+fn cli_inspects_and_converts_explicit_raw_pcm() {
+    let raw_input = temporary_path();
+    let wav_output = temporary_path();
+    let raw_output = temporary_path();
+    let expected = [0_i16, 1_000, -2_000, i16::MAX];
+    fs::write(
+        &raw_input,
+        expected
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let inspected = Command::new(cli_path())
+        .args([
+            "inspect",
+            "--json",
+            "--input-format",
+            "raw_s16le",
+            "--sample-rate",
+            "48000",
+            "--channels",
+            "2",
+        ])
+        .arg(&raw_input)
+        .output()
+        .unwrap();
+    assert!(
+        inspected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&inspected.stderr)
+    );
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains("\"frames\":2"));
+    let missing_parameters = Command::new(cli_path())
+        .args(["inspect", "--input-format", "raw_s16le"])
+        .arg(&raw_input)
+        .output()
+        .unwrap();
+    assert!(!missing_parameters.status.success());
+
+    let converted = Command::new(cli_path())
+        .args([
+            "convert",
+            "--format",
+            "pcm_i16",
+            "--input-format",
+            "raw_s16le",
+            "--sample-rate",
+            "48000",
+            "--channels",
+            "2",
+        ])
+        .arg(&raw_input)
+        .arg(&wav_output)
+        .output()
+        .unwrap();
+    assert!(
+        converted.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted.stderr)
+    );
+    let mut decoder = wav::WavDecoder::new(File::open(&wav_output).unwrap()).unwrap();
+    let block = decoder.read_frames(8).unwrap().unwrap();
+    assert_eq!(block.samples(), &Samples::I16(expected.to_vec()));
+
+    let converted_back = Command::new(cli_path())
+        .args(["convert", "--format", "raw_s16be"])
+        .arg(&wav_output)
+        .arg(&raw_output)
+        .output()
+        .unwrap();
+    assert!(
+        converted_back.status.success(),
+        "{}",
+        String::from_utf8_lossy(&converted_back.stderr)
+    );
+    let expected_be = expected
+        .iter()
+        .flat_map(|sample| sample.to_be_bytes())
+        .collect::<Vec<_>>();
+    assert_eq!(fs::read(&raw_output).unwrap(), expected_be);
+    for path in [raw_input, wav_output, raw_output] {
+        let _ = fs::remove_file(path);
+    }
+}
+
 fn id3_private_tag() -> Vec<u8> {
     let payload = b"org.example\0opaque";
     let mut frame = Vec::from(&b"PRIV"[..]);
