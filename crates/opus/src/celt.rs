@@ -78,9 +78,19 @@ pub(crate) struct AllocationReservations {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BandAllocation {
+    pub(crate) start_band: u8,
+    pub(crate) end_band: u8,
     pub(crate) quality_q64: u16,
-    pub(crate) eighth_bits: [u16; 21],
+    pub(crate) eighth_bits: [u32; 21],
     pub(crate) total_eighth_bits: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ReallocatedBands {
+    pub(crate) coded_end_band: u8,
+    pub(crate) eighth_bits: [u32; 21],
+    pub(crate) intensity_band: u8,
+    pub(crate) dual_stereo: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -303,31 +313,163 @@ pub(crate) fn select_band_allocation(
     let thresholds = allocation_thresholds(frame_samples_48k, start_band, end_band, channels)?;
     let caps = allocation_caps(frame_samples_48k, end_band, channels)?;
     let mut best = None;
+    let floor = 8 * u32::from(channels);
     for quality_q64 in 0..=640 {
         let mut eighth_bits = [0; 21];
         let mut total_eighth_bits = 0_u32;
-        for band in start_band..end_band {
+        let mut done = false;
+        for band in (start_band..end_band).rev() {
             let band_index = usize::from(band);
-            let static_bits =
-                static_allocation(frame_samples_48k, band, channels, quality_q64)? as i64;
-            let adjusted = (static_bits
-                + i64::from(trim_offsets[band_index])
-                + i64::from(controls.band_boosts[band_index]))
-            .max(i64::from(thresholds[band_index]))
-            .min(i64::from(caps[band_index])) as u16;
-            eighth_bits[band_index] = adjusted;
-            total_eighth_bits += u32::from(adjusted);
+            let static_bits = static_allocation(frame_samples_48k, band, channels, quality_q64)?;
+            let tilted_bits = if static_bits > 0 {
+                (i64::from(static_bits) + i64::from(trim_offsets[band_index])).max(0) as u32
+            } else {
+                0
+            };
+            let adjusted = tilted_bits + u32::from(controls.band_boosts[band_index]);
+            let allocation = if adjusted >= u32::from(thresholds[band_index]) || done {
+                done = true;
+                adjusted.min(u32::from(caps[band_index]))
+            } else if adjusted >= floor {
+                floor
+            } else {
+                0
+            };
+            eighth_bits[band_index] = allocation;
+            total_eighth_bits += allocation;
         }
         if total_eighth_bits > available_eighth_bits {
             break;
         }
         best = Some(BandAllocation {
+            start_band,
+            end_band,
             quality_q64,
             eighth_bits,
             total_eighth_bits,
         });
     }
     Ok(best)
+}
+
+pub(crate) fn reallocate_skipped_bands(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    channels: u8,
+    controls: &AllocationControls,
+    reservations: AllocationReservations,
+    allocation: BandAllocation,
+) -> Result<ReallocatedBands, RangeError> {
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    let start_band = allocation.start_band;
+    let end_band = allocation.end_band;
+    if start_band >= end_band || end_band > 21 || !(1..=2).contains(&channels) {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let thresholds = allocation_thresholds(frame_samples_48k, start_band, end_band, channels)?;
+    let floor = 8 * u32::from(channels);
+    let skip_start = (start_band..end_band)
+        .rev()
+        .find(|&band| controls.band_boosts[usize::from(band)] > 0)
+        .unwrap_or(start_band);
+    let mut bits = allocation.eighth_bits;
+    let mut sum = i64::from(allocation.total_eighth_bits);
+    let mut total = i64::from(reservations.remaining_eighth_bits);
+    let mut intensity_reservation = i64::from(reservations.intensity_eighth_bits);
+    let dual_reservation = i64::from(reservations.dual_stereo_eighth_bits);
+    let mut coded_end_band = end_band;
+
+    let allocated_sum = allocation.eighth_bits[usize::from(start_band)..usize::from(end_band)]
+        .iter()
+        .map(|&bits| u64::from(bits))
+        .sum::<u64>();
+    if sum > total || allocated_sum != u64::from(allocation.total_eighth_bits) {
+        return Err(RangeError::CorruptFrame);
+    }
+
+    loop {
+        let band = coded_end_band - 1;
+        if band <= skip_start {
+            total += i64::from(reservations.skip_eighth_bits);
+            break;
+        }
+        if sum > total {
+            return Err(RangeError::CorruptFrame);
+        }
+
+        let span = i64::from(edges[usize::from(coded_end_band)] - edges[usize::from(start_band)]);
+        let left = total - sum;
+        let per_coefficient = left / span;
+        let remainder = left - span * per_coefficient;
+        let width_before = i64::from(edges[usize::from(band)] - edges[usize::from(start_band)]);
+        let width = i64::from(edges[usize::from(coded_end_band)] - edges[usize::from(band)]);
+        let mut band_bits = i64::from(bits[usize::from(band)])
+            + per_coefficient * width
+            + (remainder - width_before).max(0);
+
+        let skip_threshold = u32::from(thresholds[usize::from(band)]).max(floor + 8);
+        if band_bits >= i64::from(skip_threshold) {
+            if range.decode_bit_logp(1)? {
+                break;
+            }
+            sum += 8;
+            band_bits -= 8;
+        }
+
+        sum -= i64::from(bits[usize::from(band)]) + intensity_reservation;
+        if intensity_reservation > 0 {
+            intensity_reservation = i64::from(LOG2_FRAC_EIGHTHS[usize::from(band - start_band)]);
+        }
+        sum += intensity_reservation;
+        if band_bits >= i64::from(floor) {
+            sum += i64::from(floor);
+            bits[usize::from(band)] = floor;
+        } else {
+            bits[usize::from(band)] = 0;
+        }
+        coded_end_band -= 1;
+    }
+
+    let intensity_band = if intensity_reservation > 0 {
+        let choices = u32::from(coded_end_band - start_band) + 1;
+        start_band + range.decode_uint(choices)? as u8
+    } else {
+        0
+    };
+    let dual_stereo = if intensity_band <= start_band {
+        total += dual_reservation;
+        false
+    } else if dual_reservation > 0 {
+        range.decode_bit_logp(1)?
+    } else {
+        false
+    };
+
+    let coded_width =
+        i64::from(edges[usize::from(coded_end_band)] - edges[usize::from(start_band)]);
+    let mut left = total - sum;
+    if left < 0 || coded_width == 0 {
+        return Err(RangeError::CorruptFrame);
+    }
+    let per_coefficient = left / coded_width;
+    left -= coded_width * per_coefficient;
+    for band in start_band..coded_end_band {
+        let index = usize::from(band);
+        let width = i64::from(edges[index + 1] - edges[index]);
+        bits[index] += (per_coefficient * width) as u32;
+    }
+    for band in start_band..coded_end_band {
+        let index = usize::from(band);
+        let extra = left.min(i64::from(edges[index + 1] - edges[index]));
+        bits[index] += extra as u32;
+        left -= extra;
+    }
+    Ok(ReallocatedBands {
+        coded_end_band,
+        eighth_bits: bits,
+        intensity_band,
+        dual_stereo,
+    })
 }
 
 pub(crate) fn allocation_trim_offsets(
@@ -653,8 +795,8 @@ mod tests {
         AllocationControls, ENERGY_LAPLACE_MODELS, FrameHeader, allocation_caps,
         allocation_thresholds, allocation_trim_offsets, band_edges, decode_allocation_controls,
         decode_allocation_trim, decode_band_boosts, decode_coarse_energy_residuals,
-        decode_fine_energies, decode_header, predict_coarse_energies, reserve_allocation_bits,
-        select_band_allocation, static_allocation,
+        decode_fine_energies, decode_header, predict_coarse_energies, reallocate_skipped_bands,
+        reserve_allocation_bits, select_band_allocation, static_allocation,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -794,11 +936,114 @@ mod tests {
         assert_eq!(allocation.quality_q64, 48);
         assert_eq!(allocation.eighth_bits[0], 8);
         assert_eq!(allocation.total_eighth_bits, 8);
-        assert!(
-            select_band_allocation(120, 0, 1, 1, &controls, 7)
-                .unwrap()
-                .is_none()
+        let below_floor = select_band_allocation(120, 0, 1, 1, &controls, 7)
+            .unwrap()
+            .unwrap();
+        assert_eq!(below_floor.total_eighth_bits, 0);
+    }
+
+    #[test]
+    fn band_reallocation_obeys_skip_flags_and_reclaims_skipped_band_bits() {
+        let controls = AllocationControls {
+            band_boosts: [0; 21],
+            total_boost: 0,
+            trim: 5,
+        };
+        let mut eighth_bits = [0; 21];
+        eighth_bits[..3].copy_from_slice(&[8, 8, 8]);
+        let allocation = super::BandAllocation {
+            start_band: 0,
+            end_band: 3,
+            quality_q64: 0,
+            eighth_bits,
+            total_eighth_bits: 24,
+        };
+        let reservations = super::AllocationReservations {
+            remaining_eighth_bits: 64,
+            anti_collapse_eighth_bits: 0,
+            skip_eighth_bits: 8,
+            intensity_eighth_bits: 0,
+            dual_stereo_eighth_bits: 0,
+        };
+
+        let mut skip_all = RangeDecoder::new(&[0; 8]);
+        let skipped =
+            reallocate_skipped_bands(&mut skip_all, 120, 1, &controls, reservations, allocation)
+                .unwrap();
+        assert_eq!(skipped.coded_end_band, 1);
+        assert_eq!(&skipped.eighth_bits[1..3], &[8, 8]);
+
+        let mut keep_all = RangeDecoder::new(&[0xff; 8]);
+        let kept =
+            reallocate_skipped_bands(&mut keep_all, 120, 1, &controls, reservations, allocation)
+                .unwrap();
+        assert_eq!(kept.coded_end_band, 3);
+        assert!(kept.eighth_bits[..3].iter().all(|&bits| bits > 8));
+    }
+
+    #[test]
+    fn band_reallocation_rejects_an_inconsistent_allocation_budget() {
+        let controls = AllocationControls {
+            band_boosts: [0; 21],
+            total_boost: 0,
+            trim: 5,
+        };
+        let mut range = RangeDecoder::new(&[0; 8]);
+        let result = reallocate_skipped_bands(
+            &mut range,
+            120,
+            1,
+            &controls,
+            super::AllocationReservations {
+                remaining_eighth_bits: 64,
+                anti_collapse_eighth_bits: 0,
+                skip_eighth_bits: 8,
+                intensity_eighth_bits: 0,
+                dual_stereo_eighth_bits: 0,
+            },
+            super::BandAllocation {
+                start_band: 0,
+                end_band: 2,
+                quality_q64: 0,
+                eighth_bits: [0; 21],
+                total_eighth_bits: 8,
+            },
         );
+        assert_eq!(result, Err(RangeError::CorruptFrame));
+    }
+
+    #[test]
+    fn stereo_band_reallocation_keeps_intensity_and_dual_stereo_in_range() {
+        let controls = AllocationControls {
+            band_boosts: [0; 21],
+            total_boost: 0,
+            trim: 5,
+        };
+        let mut eighth_bits = [0; 21];
+        eighth_bits[..3].copy_from_slice(&[16, 16, 16]);
+        let allocation = super::BandAllocation {
+            start_band: 0,
+            end_band: 3,
+            quality_q64: 0,
+            eighth_bits,
+            total_eighth_bits: 48,
+        };
+        let reservations = super::AllocationReservations {
+            remaining_eighth_bits: 128,
+            anti_collapse_eighth_bits: 0,
+            skip_eighth_bits: 8,
+            intensity_eighth_bits: super::LOG2_FRAC_EIGHTHS[2],
+            dual_stereo_eighth_bits: 8,
+        };
+
+        for data in [[0; 8], [0xff; 8]] {
+            let mut range = RangeDecoder::new(&data);
+            let bands =
+                reallocate_skipped_bands(&mut range, 120, 2, &controls, reservations, allocation)
+                    .unwrap();
+            assert!((allocation.start_band..=bands.coded_end_band).contains(&bands.intensity_band));
+            assert!(bands.coded_end_band <= allocation.end_band);
+        }
     }
 
     #[test]
