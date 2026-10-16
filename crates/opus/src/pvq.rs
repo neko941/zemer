@@ -165,7 +165,29 @@ fn conservative_log2_eighths(value: u32) -> u16 {
     if value <= 1 {
         return 0;
     }
-    (f64::from(value).log2() * 8.0).ceil() as u16
+
+    // ceil(log2(value) * 8) is ceil(log2(value^8)). A codebook size is
+    // bounded to u32, so its eighth power fits in four u64 limbs.
+    let mut power = [1_u64, 0, 0, 0];
+    for _ in 0..8 {
+        let mut carry = 0_u128;
+        for limb in &mut power {
+            let product = u128::from(*limb) * u128::from(value) + carry;
+            *limb = product as u64;
+            carry = product >> u64::BITS;
+        }
+        debug_assert_eq!(carry, 0);
+    }
+
+    let highest_limb = power.iter().rposition(|&limb| limb != 0).unwrap_or(0);
+    let bit_length = highest_limb as u16 * u64::BITS as u16
+        + (u64::BITS - power[highest_limb].leading_zeros()) as u16;
+    let is_power_of_two = power.iter().map(|limb| limb.count_ones()).sum::<u32>() == 1;
+    if is_power_of_two {
+        bit_length - 1
+    } else {
+        bit_length
+    }
 }
 
 fn codebook_counts(dimensions: usize, pulses: usize) -> Result<Vec<Vec<u32>>, RangeError> {
@@ -286,5 +308,17 @@ mod tests {
                 codebook_eighth_bits: 8,
             })
         );
+    }
+
+    #[test]
+    fn codebook_cost_rounds_log2_up_without_float_math() {
+        for (size, expected) in [(1, 0), (2, 8), (3, 13), (4, 16), (8, 24), (9, 26), (16, 32)] {
+            assert_eq!(super::conservative_log2_eighths(size), expected);
+        }
+        assert_eq!(super::conservative_log2_eighths(u32::MAX), 256);
+        for size in 1..=10_000 {
+            let expected = (f64::from(size).log2() * 8.0).ceil() as u16;
+            assert_eq!(super::conservative_log2_eighths(size), expected, "{size}");
+        }
     }
 }
