@@ -67,6 +67,12 @@ const LOG2_FRAC_EIGHTHS: [u8; 21] = [
     0, 8, 12, 16, 18, 20, 22, 24, 25, 26, 27, 28, 29, 30, 31, 32, 32, 33, 33, 34, 35,
 ];
 
+const BAND_LOG2_EIGHTHS: [u8; 21] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 16, 16, 16, 21, 21, 24, 29, 34, 36,
+];
+const MAX_FINE_ENERGY_BITS: u8 = 8;
+const FINE_ENERGY_OFFSET_EIGHTHS: i64 = 21;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct AllocationReservations {
     pub(crate) remaining_eighth_bits: u32,
@@ -87,10 +93,28 @@ pub(crate) struct BandAllocation {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReallocatedBands {
+    pub(crate) start_band: u8,
     pub(crate) coded_end_band: u8,
     pub(crate) eighth_bits: [u32; 21],
     pub(crate) intensity_band: u8,
     pub(crate) dual_stereo: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FineShapeAllocation {
+    pub(crate) start_band: u8,
+    pub(crate) coded_end_band: u8,
+    pub(crate) shape_eighth_bits: [u32; 21],
+    pub(crate) fine_bits: [u8; 21],
+    pub(crate) fine_priority: [bool; 21],
+    pub(crate) balance_eighth_bits: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FinalFineEnergy {
+    pub(crate) energies_q15: [i32; 42],
+    pub(crate) fine_bits: [u8; 21],
+    pub(crate) remaining_bits: u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -465,10 +489,172 @@ pub(crate) fn reallocate_skipped_bands(
         left -= extra;
     }
     Ok(ReallocatedBands {
+        start_band,
         coded_end_band,
         eighth_bits: bits,
         intensity_band,
         dual_stereo,
+    })
+}
+
+pub(crate) fn split_fine_shape_allocation(
+    frame_samples_48k: u16,
+    channels: u8,
+    allocation: ReallocatedBands,
+) -> Result<FineShapeAllocation, RangeError> {
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    let start_band = allocation.start_band;
+    let end_band = allocation.coded_end_band;
+    if start_band >= end_band || end_band > 21 || !(1..=2).contains(&channels) {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+
+    let lm = u32::from(frame_samples_48k / 120).trailing_zeros();
+    let mut shape = allocation.eighth_bits;
+    let mut fine_bits = [0; 21];
+    let mut fine_priority = [false; 21];
+    let mut balance = 0_i64;
+    let channel_count = i64::from(channels);
+    let stereo = i64::from(channels == 2);
+    let allocation_floor = channel_count * 8;
+    let caps = allocation_caps(frame_samples_48k, end_band, channels)?;
+
+    for band in start_band..end_band {
+        let index = usize::from(band);
+        let width = u32::from(edges[index + 1] - edges[index]);
+        let bins = width << lm;
+        let mut bits = i64::from(shape[index]) + balance;
+        let mut excess: i64;
+
+        if bins > 1 {
+            excess = (bits - i64::from(caps[index])).max(0);
+            bits -= excess;
+
+            let joint_side_dof = i64::from(
+                channels == 2
+                    && bins > 2
+                    && !allocation.dual_stereo
+                    && band < allocation.intensity_band,
+            );
+            let denominator = channel_count * i64::from(bins) + joint_side_dof;
+            let log_n = i64::from(BAND_LOG2_EIGHTHS[index]) + i64::from(lm) * 8;
+            let n_log_n = denominator * log_n;
+            let mut offset = (n_log_n >> 1) - denominator * FINE_ENERGY_OFFSET_EIGHTHS;
+            if bins == 2 {
+                offset += denominator * 2;
+            }
+            if bits + offset < denominator * 16 {
+                offset += n_log_n >> 2;
+            } else if bits + offset < denominator * 24 {
+                offset += n_log_n >> 3;
+            }
+
+            let rounded = (bits + offset + denominator * 4) / (denominator * 8);
+            fine_bits[index] = rounded.max(0).min(i64::from(MAX_FINE_ENERGY_BITS)) as u8;
+            if channel_count * i64::from(fine_bits[index]) > (bits >> 3) {
+                fine_bits[index] = (bits >> stereo >> 3) as u8;
+            }
+            fine_priority[index] = i64::from(fine_bits[index]) * denominator * 8 >= bits + offset;
+            bits -= channel_count * i64::from(fine_bits[index]) * 8;
+        } else {
+            excess = (bits - allocation_floor).max(0);
+            bits -= excess;
+            fine_priority[index] = true;
+        }
+
+        if excess > 0 {
+            let extra_fine = (excess >> (stereo as u32 + 3))
+                .min(i64::from(MAX_FINE_ENERGY_BITS - fine_bits[index]));
+            fine_bits[index] += extra_fine as u8;
+            let extra_bits = extra_fine * channel_count * 8;
+            fine_priority[index] = extra_bits >= excess - balance;
+            excess -= extra_bits;
+        }
+        balance = excess;
+        if bits < 0 || fine_bits[index] > MAX_FINE_ENERGY_BITS {
+            return Err(RangeError::CorruptFrame);
+        }
+        shape[index] = bits as u32;
+    }
+
+    for band in end_band..21 {
+        let index = usize::from(band);
+        let bits = allocation.eighth_bits[index];
+        let divisor = channel_count * 8;
+        if i64::from(bits) % divisor != 0 {
+            return Err(RangeError::CorruptFrame);
+        }
+        let energy_bits = i64::from(bits) / divisor;
+        if energy_bits > i64::from(MAX_FINE_ENERGY_BITS) {
+            return Err(RangeError::CorruptFrame);
+        }
+        fine_bits[index] = energy_bits as u8;
+        shape[index] = 0;
+        fine_priority[index] = energy_bits < 1;
+    }
+
+    if balance < 0 || balance > i64::from(u32::MAX) {
+        return Err(RangeError::CorruptFrame);
+    }
+
+    Ok(FineShapeAllocation {
+        start_band,
+        coded_end_band: end_band,
+        shape_eighth_bits: shape,
+        fine_bits,
+        fine_priority,
+        balance_eighth_bits: balance as u32,
+    })
+}
+
+pub(crate) fn decode_final_fine_energy(
+    range: &mut RangeDecoder<'_>,
+    energies_q15: &[i32; 42],
+    allocation: FineShapeAllocation,
+    channels: u8,
+    mut remaining_bits: u32,
+) -> Result<FinalFineEnergy, RangeError> {
+    let start_band = allocation.start_band;
+    let end_band = allocation.coded_end_band;
+    if start_band >= end_band || end_band > 21 || !(1..=2).contains(&channels) {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    if allocation.fine_bits[usize::from(start_band)..usize::from(end_band)]
+        .iter()
+        .any(|&bits| bits > MAX_FINE_ENERGY_BITS)
+    {
+        return Err(RangeError::InvalidFineEnergyAllocation);
+    }
+
+    let mut energies = *energies_q15;
+    let mut final_bits = allocation.fine_bits;
+    for priority in [false, true] {
+        for band in start_band..end_band {
+            let index = usize::from(band);
+            if final_bits[index] >= MAX_FINE_ENERGY_BITS
+                || allocation.fine_priority[index] != priority
+                || remaining_bits < u32::from(channels)
+            {
+                continue;
+            }
+            let shift = 13 - final_bits[index];
+            for channel in 0..channels {
+                let bit = range.read_raw_bits(1)? as i32;
+                let correction = ((bit * 2) - 1) << shift;
+                let energy_index = index * 2 + usize::from(channel);
+                energies[energy_index] = energies[energy_index]
+                    .checked_add(correction)
+                    .ok_or(RangeError::CorruptFrame)?;
+                remaining_bits -= 1;
+            }
+            final_bits[index] += 1;
+        }
+    }
+
+    Ok(FinalFineEnergy {
+        energies_q15: energies,
+        fine_bits: final_bits,
+        remaining_bits,
     })
 }
 
@@ -620,16 +806,17 @@ fn multiply_q15(value: i64, coefficient: i32) -> i64 {
 pub(crate) fn decode_fine_energies(
     range: &mut RangeDecoder<'_>,
     coarse_energies_q15: &[i32; 42],
-    fine_bits: &[u8; 42],
+    fine_bits: &[u8; 21],
     end_band: u8,
     channels: u8,
 ) -> Result<[i32; 42], RangeError> {
     if !(1..=2).contains(&channels) || end_band == 0 || end_band > 21 {
         return Err(RangeError::InvalidCeltEnergyLayout);
     }
-    if (0..end_band).any(|band| {
-        (0..channels).any(|channel| fine_bits[usize::from(band) * 2 + usize::from(channel)] > 8)
-    }) {
+    if fine_bits[..usize::from(end_band)]
+        .iter()
+        .any(|&bits| bits > MAX_FINE_ENERGY_BITS)
+    {
         return Err(RangeError::InvalidFineEnergyAllocation);
     }
 
@@ -637,7 +824,7 @@ pub(crate) fn decode_fine_energies(
     for band in 0..end_band {
         for channel in 0..channels {
             let index = usize::from(band) * 2 + usize::from(channel);
-            let bits = fine_bits[index];
+            let bits = fine_bits[usize::from(band)];
             if bits == 0 {
                 continue;
             }
@@ -795,8 +982,9 @@ mod tests {
         AllocationControls, ENERGY_LAPLACE_MODELS, FrameHeader, allocation_caps,
         allocation_thresholds, allocation_trim_offsets, band_edges, decode_allocation_controls,
         decode_allocation_trim, decode_band_boosts, decode_coarse_energy_residuals,
-        decode_fine_energies, decode_header, predict_coarse_energies, reallocate_skipped_bands,
-        reserve_allocation_bits, select_band_allocation, static_allocation,
+        decode_final_fine_energy, decode_fine_energies, decode_header, predict_coarse_energies,
+        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
+        split_fine_shape_allocation, static_allocation,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1047,6 +1235,162 @@ mod tests {
     }
 
     #[test]
+    fn fine_shape_split_conserves_the_band_budget_for_all_frame_modes() {
+        for (frame_samples_48k, channels) in [(120, 1), (240, 2), (480, 1), (960, 2)] {
+            let source_bits = [256_u32; 21];
+            let split = split_fine_shape_allocation(
+                frame_samples_48k,
+                channels,
+                super::ReallocatedBands {
+                    start_band: 0,
+                    coded_end_band: 21,
+                    eighth_bits: source_bits,
+                    intensity_band: 10,
+                    dual_stereo: false,
+                },
+            )
+            .unwrap();
+            let shape_total: u64 = split
+                .shape_eighth_bits
+                .iter()
+                .map(|&bits| u64::from(bits))
+                .sum();
+            let fine_total: u64 = split
+                .fine_bits
+                .iter()
+                .map(|&bits| u64::from(bits) * u64::from(channels) * 8)
+                .sum();
+            assert_eq!(
+                shape_total + fine_total + u64::from(split.balance_eighth_bits),
+                source_bits.iter().map(|&bits| u64::from(bits)).sum::<u64>()
+            );
+            assert!(split.fine_bits.iter().all(|&bits| bits <= 8));
+        }
+    }
+
+    #[test]
+    fn fine_shape_split_maps_skipped_band_floor_to_fine_energy() {
+        let mut eighth_bits = [0; 21];
+        eighth_bits[1] = 8;
+        let split = split_fine_shape_allocation(
+            120,
+            1,
+            super::ReallocatedBands {
+                start_band: 0,
+                coded_end_band: 1,
+                eighth_bits,
+                intensity_band: 0,
+                dual_stereo: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(split.fine_bits[1], 1);
+        assert_eq!(split.shape_eighth_bits[1], 0);
+    }
+
+    #[test]
+    fn fine_shape_split_applies_the_width_two_offset_and_priority_rule() {
+        let mut eighth_bits = [0; 21];
+        eighth_bits[8] = 64;
+        let split = split_fine_shape_allocation(
+            120,
+            1,
+            super::ReallocatedBands {
+                start_band: 8,
+                coded_end_band: 9,
+                eighth_bits,
+                intensity_band: 20,
+                dual_stereo: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(split.fine_bits[8], 2);
+        assert_eq!(split.shape_eighth_bits[8], 48);
+        assert!(!split.fine_priority[8]);
+    }
+
+    #[test]
+    fn final_fine_energy_allocates_priority_zero_before_priority_one() {
+        let mut fine_bits = [0; 21];
+        fine_bits[1] = 1;
+        let mut priority = [false; 21];
+        priority[0] = true;
+        let mut range = RangeDecoder::new(&[0, 1]);
+        let finalised = decode_final_fine_energy(
+            &mut range,
+            &[0; 42],
+            super::FineShapeAllocation {
+                start_band: 0,
+                coded_end_band: 2,
+                shape_eighth_bits: [0; 21],
+                fine_bits,
+                fine_priority: priority,
+                balance_eighth_bits: 0,
+            },
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(finalised.fine_bits[0], 0);
+        assert_eq!(finalised.fine_bits[1], 2);
+        assert_eq!(finalised.energies_q15[2], 1 << 12);
+        assert_eq!(finalised.remaining_bits, 0);
+    }
+
+    #[test]
+    fn final_fine_energy_waits_for_a_full_stereo_pair() {
+        let mut fine_bits = [0; 21];
+        fine_bits[0] = 1;
+        let before = RangeDecoder::new(&[0, 1]);
+        let before_tell = before.tell_frac();
+        let mut range = before;
+        let finalised = decode_final_fine_energy(
+            &mut range,
+            &[0; 42],
+            super::FineShapeAllocation {
+                start_band: 0,
+                coded_end_band: 1,
+                shape_eighth_bits: [0; 21],
+                fine_bits,
+                fine_priority: [false; 21],
+                balance_eighth_bits: 0,
+            },
+            2,
+            1,
+        )
+        .unwrap();
+        assert_eq!(finalised.fine_bits[0], 1);
+        assert_eq!(finalised.remaining_bits, 1);
+        assert_eq!(range.tell_frac(), before_tell);
+    }
+
+    #[test]
+    fn split_allocation_drives_coarse_and_final_fine_energy_decoding() {
+        let mut eighth_bits = [0; 21];
+        eighth_bits[8] = 64;
+        let allocation = split_fine_shape_allocation(
+            120,
+            1,
+            super::ReallocatedBands {
+                start_band: 8,
+                coded_end_band: 9,
+                eighth_bits,
+                intensity_band: 20,
+                dual_stereo: false,
+            },
+        )
+        .unwrap();
+        let mut range = RangeDecoder::new(&[0, 1]);
+        let energies =
+            decode_fine_energies(&mut range, &[0; 42], &allocation.fine_bits, 9, 1).unwrap();
+        assert_eq!(energies[16], -4_096);
+        let finalised = decode_final_fine_energy(&mut range, &energies, allocation, 1, 1).unwrap();
+        assert_eq!(finalised.energies_q15[16], -6_144);
+        assert_eq!(finalised.fine_bits[8], 3);
+        assert_eq!(finalised.remaining_bits, 0);
+    }
+
+    #[test]
     fn zero_range_stream_decodes_regular_short_frame_header() {
         let mut range = RangeDecoder::new(&[0; 8]);
         assert_eq!(
@@ -1194,9 +1538,9 @@ mod tests {
         let mut coarse = [0; 42];
         coarse[0] = 1_000;
         coarse[2] = -500;
-        let mut fine_bits = [0; 42];
+        let mut fine_bits = [0; 21];
         fine_bits[0] = 1;
-        fine_bits[2] = 2;
+        fine_bits[1] = 2;
         let energies = decode_fine_energies(&mut range, &coarse, &fine_bits, 2, 1).unwrap();
         assert_eq!(energies[0], 1_000 + 8_192);
         assert_eq!(energies[2], -500 + 4_096);
@@ -1206,7 +1550,7 @@ mod tests {
     fn fine_energy_rejects_invalid_allocations_before_consuming_bits() {
         let mut range = RangeDecoder::new(&[0; 2]);
         let before = range.tell_frac();
-        let mut fine_bits = [0; 42];
+        let mut fine_bits = [0; 21];
         fine_bits[0] = 9;
         assert_eq!(
             decode_fine_energies(&mut range, &[0; 42], &fine_bits, 1, 1),
