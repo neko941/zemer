@@ -1,11 +1,13 @@
 //! CELT frame stages composed in normative range-coded order.
 
 use crate::celt::{
-    AllocationControls, AllocationReservations, BandAllocation, FineShapeAllocation, FrameHeader,
-    ReallocatedBands, TfResolution, decode_allocation_controls, decode_coarse_energy_residuals,
-    decode_fine_energies, decode_header, decode_spread, decode_tf_resolution,
-    predict_coarse_energies, reallocate_skipped_bands, reserve_allocation_bits,
-    select_band_allocation, split_fine_shape_allocation,
+    AllocationControls, AllocationReservations, BandAllocation, CeltSynthesis, FinalFineEnergy,
+    FineShapeAllocation, FrameHeader, MonoPvqShapes, ReallocatedBands, TfResolution,
+    decode_allocation_controls, decode_coarse_energy_residuals, decode_final_fine_energy,
+    decode_fine_energies, decode_header, decode_mono_pvq_shapes, decode_spread,
+    decode_tf_resolution, denormalize_mono_pvq_shapes, predict_coarse_energies,
+    reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
+    split_fine_shape_allocation,
 };
 use crate::range::{RangeDecoder, RangeError};
 
@@ -28,6 +30,16 @@ pub(crate) struct MonoCeltFramePrefix {
     pub(crate) reallocated: Option<ReallocatedBands>,
     pub(crate) fine_shape: Option<FineShapeAllocation>,
     pub(crate) energies_q15: [i32; 42],
+}
+
+/// Decoded mono CELT frame data after PVQ, final energy, and synthesis.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MonoCeltPcmFrame {
+    pub(crate) shapes: MonoPvqShapes,
+    pub(crate) final_energy: FinalFineEnergy,
+    pub(crate) spectrum: Vec<f32>,
+    pub(crate) samples: Option<Vec<f32>>,
+    pub(crate) final_range: u32,
 }
 
 /// Decodes the CELT header and mono coarse energy in bitstream order.
@@ -170,9 +182,71 @@ pub(crate) fn decode_mono_frame_prefix(
     }))
 }
 
+/// Decodes and synthesizes the unsplit, non-transient mono CELT frame tail.
+///
+/// Recursive PVQ splitting and transient anti-collapse need further frame
+/// logic, so those modes are rejected explicitly until their decode paths are
+/// validated. The caller retains `synthesis` across frames for overlap state.
+pub(crate) fn decode_mono_celt_frame(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    frame_bytes: usize,
+    prefix: &MonoCeltFramePrefix,
+    synthesis: &mut CeltSynthesis,
+) -> Result<MonoCeltPcmFrame, RangeError> {
+    if prefix.header.transient {
+        return Err(RangeError::UnsupportedCeltMode);
+    }
+    let allocation = prefix.fine_shape.ok_or(RangeError::UnsupportedCeltMode)?;
+    if prefix.band_allocation.is_none() || prefix.reallocated.is_none() {
+        return Err(RangeError::UnsupportedCeltMode);
+    }
+
+    let mut tf_adjustments = [0; 21];
+    let adjustment_count = prefix.tf_resolution.adjustments.len();
+    tf_adjustments[..adjustment_count].copy_from_slice(&prefix.tf_resolution.adjustments);
+    let shapes = decode_mono_pvq_shapes(
+        range,
+        frame_samples_48k,
+        allocation,
+        prefix.spread,
+        1,
+        &tf_adjustments,
+    )?;
+    let remaining_bits = frame_bytes
+        .saturating_mul(8)
+        .saturating_sub(range.tell() as usize)
+        .try_into()
+        .map_err(|_| RangeError::CorruptFrame)?;
+    let final_energy =
+        decode_final_fine_energy(range, &prefix.energies_q15, allocation, 1, remaining_bits)?;
+    let spectrum = denormalize_mono_pvq_shapes(
+        frame_samples_48k,
+        allocation,
+        &shapes,
+        &final_energy.energies_q15,
+    )?;
+    let samples = match synthesis
+        .synthesize_with_postfilter(std::slice::from_ref(&spectrum), prefix.header.postfilter)?
+    {
+        Some(mut channels) => Some(channels.pop().ok_or(RangeError::CorruptFrame)?),
+        None => None,
+    };
+    Ok(MonoCeltPcmFrame {
+        shapes,
+        final_energy,
+        spectrum,
+        samples,
+        final_range: range.final_range(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MonoCeltFramePrefix, decode_mono_energy_prefix, decode_mono_frame_prefix};
+    use super::{
+        MonoCeltFramePrefix, decode_mono_celt_frame, decode_mono_energy_prefix,
+        decode_mono_frame_prefix,
+    };
     use crate::celt::{
         FrameHeader, decode_allocation_controls, decode_coarse_energy_residuals,
         decode_fine_energies, decode_header, decode_spread, decode_tf_resolution,
@@ -324,6 +398,34 @@ mod tests {
         );
         assert!(decoded.reallocated.is_some());
         assert!(decoded.fine_shape.is_some());
+    }
+
+    #[test]
+    fn mono_frame_decodes_pvq_final_energy_and_stateful_pcm() {
+        let packet = [0; 256];
+        let mut synthesis = crate::celt::CeltSynthesis::default();
+        let mut previous_energies = [0; 42];
+
+        for frame_index in 0..2 {
+            let mut range = RangeDecoder::new(&packet);
+            let prefix =
+                decode_mono_frame_prefix(&mut range, 120, packet.len(), 1, &previous_energies)
+                    .unwrap()
+                    .unwrap();
+            let frame =
+                decode_mono_celt_frame(&mut range, 120, packet.len(), &prefix, &mut synthesis)
+                    .unwrap();
+
+            assert_eq!(frame.spectrum.len(), 120);
+            assert!(frame.spectrum.iter().all(|sample| sample.is_finite()));
+            assert_eq!(frame.final_range, range.final_range());
+            if frame_index == 0 {
+                assert_eq!(frame.samples, None);
+            } else {
+                assert_eq!(frame.samples.as_ref().map(Vec::len), Some(120));
+            }
+            previous_energies = frame.final_energy.energies_q15;
+        }
     }
 
     #[test]

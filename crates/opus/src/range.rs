@@ -9,6 +9,7 @@ pub(crate) enum RangeError {
     InvalidFineEnergyAllocation,
     InvalidPvqLayout,
     PvqCodebookTooLarge,
+    UnsupportedCeltMode,
     InvalidPvqSpread,
     InvalidPvqBlockCount,
     InvalidTotal,
