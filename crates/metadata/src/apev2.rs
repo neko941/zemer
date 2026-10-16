@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt};
 
-use crate::Metadata;
+use crate::{Metadata, Picture};
 
 const FOOTER_SIZE: usize = 32;
 // shortcut: stay within WavPack's documented interoperable tag size; revisit with a nonstandard opt-in.
@@ -167,6 +167,12 @@ impl ApeTag {
     pub fn metadata(&self) -> Metadata {
         let mut metadata = Metadata::default();
         for item in &self.items {
+            if item.item_type() == ApeItemType::Binary {
+                if let Some(picture) = item.picture() {
+                    metadata.add_picture(picture);
+                }
+                continue;
+            }
             if item.item_type() != ApeItemType::Text {
                 continue;
             }
@@ -180,6 +186,48 @@ impl ApeTag {
             }
         }
         metadata
+    }
+
+    /// Replaces text and WavPack front/back cover items, retaining other non-text items.
+    pub fn replace_metadata(&mut self, metadata: &Metadata) -> Result<(), ApeTagError> {
+        let mut pictures = Vec::new();
+        let mut picture_items_size = 0_usize;
+        for picture in metadata.pictures() {
+            let key = match picture.picture_type() {
+                3 => b"Cover Art (Front)".as_slice(),
+                4 => b"Cover Art (Back)".as_slice(),
+                _ => {
+                    return Err(ApeTagError(
+                        "APEv2 supports only front and back cover pictures",
+                    ));
+                }
+            };
+            let extension = picture_extension(picture)?;
+            let item_size = 9_usize
+                .checked_add(key.len())
+                .and_then(|size| size.checked_add(extension.len() + 1))
+                .and_then(|size| size.checked_add(picture.data().len()))
+                .ok_or(ApeTagError("APEv2 tag exceeds the 16 MiB limit"))?;
+            picture_items_size = picture_items_size
+                .checked_add(item_size)
+                .filter(|&size| size <= MAX_APEV2_TAG_SIZE - FOOTER_SIZE)
+                .ok_or(ApeTagError("APEv2 tag exceeds the 16 MiB limit"))?;
+            let mut value = Vec::new();
+            value.extend_from_slice(extension);
+            value.push(0);
+            value.extend_from_slice(picture.data());
+            pictures.push(ApeItem {
+                key: key.to_vec(),
+                flags: 2,
+                value,
+            });
+        }
+
+        self.replace_text_metadata(metadata)?;
+        self.items
+            .retain(|item| item.item_type() != ApeItemType::Binary || item.picture().is_none());
+        self.items.extend(pictures);
+        Ok(())
     }
 
     /// Replaces text items and retains binary, external, and reserved items.
@@ -242,6 +290,62 @@ impl ApeItem {
             2 => ApeItemType::External,
             _ => ApeItemType::Reserved,
         }
+    }
+
+    fn picture(&self) -> Option<Picture> {
+        let picture_type = cover_type(self.key())?;
+        let separator = self.value.iter().position(|&byte| byte == 0)?;
+        let filename = &self.value[..separator];
+        let data = &self.value[separator + 1..];
+        let extension = std::str::from_utf8(filename).ok()?;
+        let media_type = match extension.to_ascii_lowercase().as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "bmp" => "image/bmp",
+            "webp" => "image/webp",
+            "tif" | "tiff" => "image/tiff",
+            _ => return None,
+        };
+        Some(Picture::new(
+            picture_type,
+            media_type,
+            "",
+            0,
+            0,
+            0,
+            0,
+            data.to_vec(),
+        ))
+    }
+}
+
+fn cover_type(key: Option<&str>) -> Option<u32> {
+    match key? {
+        key if key.eq_ignore_ascii_case("Cover Art (Front)") => Some(3),
+        key if key.eq_ignore_ascii_case("Cover Art (Back)") => Some(4),
+        _ => None,
+    }
+}
+
+fn picture_extension(picture: &Picture) -> Result<&'static [u8], ApeTagError> {
+    if !picture.description().is_empty()
+        || picture.dimensions() != (0, 0)
+        || picture.color_depth() != 0
+        || picture.colors() != 0
+    {
+        return Err(ApeTagError(
+            "APEv2 cover items cannot store picture descriptions or dimensions",
+        ));
+    }
+    match picture.media_type().to_ascii_lowercase().as_str() {
+        "image/jpeg" => Ok(b"jpg"),
+        "image/png" => Ok(b"png"),
+        "image/gif" => Ok(b"gif"),
+        "image/bmp" => Ok(b"bmp"),
+        "image/webp" => Ok(b"webp"),
+        "image/tiff" => Ok(b"tif"),
+        _ => Err(ApeTagError("unsupported APEv2 cover image media type")),
     }
 }
 
@@ -311,7 +415,7 @@ mod tests {
     fn replacing_text_preserves_non_text_items() {
         let mut tag = ApeTag {
             items: vec![ApeItem {
-                key: b"Cover Art (Front)".to_vec(),
+                key: b"Custom Binary".to_vec(),
                 flags: 2,
                 value: b"jpg\0image".to_vec(),
             }],
@@ -323,6 +427,89 @@ mod tests {
         assert_eq!(parsed.items()[0].item_type(), ApeItemType::Binary);
         assert_eq!(parsed.items()[0].value(), b"jpg\0image");
         assert_eq!(parsed.metadata(), metadata);
+    }
+
+    #[test]
+    fn covers_round_trip_and_unknown_binary_items_stay_opaque() {
+        let mut tag = ApeTag {
+            items: vec![ApeItem {
+                key: b"Custom Binary".to_vec(),
+                flags: 2,
+                value: b"keep me".to_vec(),
+            }],
+        };
+        let mut metadata = Metadata::default();
+        metadata.add_picture(Picture::new(
+            3,
+            "image/jpeg",
+            "",
+            0,
+            0,
+            0,
+            0,
+            b"front".to_vec(),
+        ));
+        metadata.add_picture(Picture::new(
+            4,
+            "image/png",
+            "",
+            0,
+            0,
+            0,
+            0,
+            b"back".to_vec(),
+        ));
+        tag.replace_metadata(&metadata).unwrap();
+
+        let parsed = ApeTag::parse(&tag.encode().unwrap()).unwrap();
+        assert_eq!(parsed.metadata(), metadata);
+        assert_eq!(parsed.items()[0].key(), Some("Custom Binary"));
+        assert_eq!(parsed.items()[0].value(), b"keep me");
+        assert_eq!(parsed.items()[1].value(), b"jpg\0front");
+        assert_eq!(parsed.items()[2].value(), b"png\0back");
+    }
+
+    #[test]
+    fn rejects_picture_fields_apev2_cannot_represent_without_mutating_tag() {
+        let mut tag = ApeTag::new();
+        let mut original = Metadata::default();
+        original.insert("title", "unchanged");
+        tag.replace_text_metadata(&original).unwrap();
+        let before = tag.clone();
+
+        let mut unsupported = Metadata::default();
+        unsupported.add_picture(Picture::new(
+            3,
+            "image/jpeg",
+            "cover",
+            0,
+            0,
+            0,
+            0,
+            b"x".to_vec(),
+        ));
+        assert!(tag.replace_metadata(&unsupported).is_err());
+        assert_eq!(tag, before);
+    }
+
+    #[test]
+    fn rejects_cover_items_that_exceed_the_tag_limit_before_copying_them() {
+        let mut metadata = Metadata::default();
+        metadata.add_picture(Picture::new(
+            3,
+            "image/jpeg",
+            "",
+            0,
+            0,
+            0,
+            0,
+            vec![0; MAX_APEV2_TAG_SIZE],
+        ));
+
+        assert_eq!(
+            ApeTag::new().replace_metadata(&metadata).unwrap_err(),
+            ApeTagError("APEv2 tag exceeds the 16 MiB limit")
+        );
     }
 
     #[test]

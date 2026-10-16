@@ -4,10 +4,9 @@ use wavpack::{
     WavPackDecoder, WavPackDsdDecoder, WavPackDsdEncoder, WavPackEncoder, WavPackHybridEncoder,
 };
 use zemer_core::{
-    AudioDecoder, AudioEncoder, AudioSpec, DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, PcmBuffer,
-    SampleFormat, Samples,
+    AudioDecoder, AudioEncoder, AudioSpec, DsdBuffer, DsdDecoder, DsdEncoder, DsdSpec, Metadata,
+    PcmBuffer, Picture, SampleFormat, Samples,
 };
-
 struct FailOnceWriter {
     inner: Cursor<Vec<u8>>,
     bytes_before_failure: Option<usize>,
@@ -47,10 +46,30 @@ fn dsd_wavpack_encoder_round_trips_raw_octets_and_bit_rate() {
     let samples = vec![0x80, 0x7f, 0x55, 0xaa, 0xff, 0x00];
     let source = DsdBuffer::new(spec, samples.clone()).unwrap();
     let mut encoder = WavPackDsdEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+    let mut metadata = Metadata::default();
+    metadata.add_picture(Picture::new(
+        3,
+        "image/png",
+        "",
+        0,
+        0,
+        0,
+        0,
+        b"dsd-cover".to_vec(),
+    ));
+    encoder.set_metadata(&metadata).unwrap();
     encoder.write_dsd_octets(&source).unwrap();
     encoder.finish().unwrap();
 
     let bytes = encoder.into_inner().into_inner();
+    assert_eq!(
+        wavpack::read_apev2_tag(&mut Cursor::new(&bytes))
+            .unwrap()
+            .unwrap()
+            .metadata()
+            .pictures(),
+        metadata.pictures()
+    );
     let mut decoder = WavPackDsdDecoder::new(Cursor::new(bytes)).unwrap();
     assert_eq!(decoder.dsd_spec(), spec);
     assert_eq!(
@@ -238,12 +257,32 @@ fn wavpack_hybrid_pair_restores_integer_pcm_exactly() {
     let mut encoder =
         WavPackHybridEncoder::new(Cursor::new(Vec::new()), Cursor::new(Vec::new()), spec, 320)
             .unwrap();
+    let mut metadata = Metadata::default();
+    metadata.add_picture(Picture::new(
+        3,
+        "image/jpeg",
+        "",
+        0,
+        0,
+        0,
+        0,
+        b"cover".to_vec(),
+    ));
+    encoder.set_metadata(&metadata).unwrap();
     encoder.write_block(&source).unwrap();
     encoder.finish().unwrap();
     let (wv, wvc) = encoder.into_inner();
     let wv = wv.into_inner();
     let wvc = wvc.into_inner();
 
+    assert_eq!(
+        wavpack::read_apev2_tag(&mut Cursor::new(&wv))
+            .unwrap()
+            .unwrap()
+            .metadata()
+            .pictures(),
+        metadata.pictures()
+    );
     let mut lossy = WavPackDecoder::new(Cursor::new(wv.clone())).unwrap();
     assert!(lossy.read_frames(8192).unwrap().is_some());
 

@@ -11,7 +11,7 @@ pub fn read_apev2_tag<R: Read + Seek>(reader: &mut R) -> Result<Option<ApeTag>, 
     locate_tag(reader).map(|tag| tag.map(|(_, _, parsed)| parsed))
 }
 
-/// Rewrites APEv2 text items and copies WavPack audio and ID3v1 bytes unchanged.
+/// Rewrites APEv2 metadata and copies WavPack audio and ID3v1 bytes unchanged.
 ///
 /// Callers editing a file should write to a new temporary path and replace the original only after
 /// this function succeeds.
@@ -31,7 +31,7 @@ pub fn rewrite_metadata<R: Read + Seek, W: Write>(
     copy_exact(&mut reader, &mut writer, copy_end)?;
 
     let mut tag = tag_region.map_or_else(ApeTag::new, |(_, _, tag)| tag);
-    tag.replace_text_metadata(metadata)
+    tag.replace_metadata(metadata)
         .map_err(|error| AudioError::InvalidData(error.0))?;
     if !tag.items().is_empty() {
         writer.write_all(
@@ -154,7 +154,7 @@ mod tests {
     use std::io::{Cursor, Read, Seek, SeekFrom};
 
     use super::*;
-    use zemer_metadata::apev2::ApeTag;
+    use zemer_metadata::{Picture, apev2::ApeTag};
 
     fn file_with_tag(tag: &ApeTag, id3v1: bool) -> Vec<u8> {
         let mut bytes = b"a small fake WavPack audio stream".to_vec();
@@ -267,6 +267,37 @@ mod tests {
                 .metadata(),
             metadata
         );
+    }
+
+    #[test]
+    fn rewriting_text_keeps_parsed_cover_art_and_audio_bytes() {
+        let audio = b"a small fake WavPack audio stream";
+        let mut original = Metadata::default();
+        original.insert("title", "Old");
+        original.add_picture(Picture::new(
+            3,
+            "image/jpeg",
+            "",
+            0,
+            0,
+            0,
+            0,
+            b"cover".to_vec(),
+        ));
+        let mut tag = ApeTag::new();
+        tag.replace_metadata(&original).unwrap();
+        let source = file_with_tag(&tag, false);
+
+        let mut updated = tag.metadata();
+        updated.remove("title");
+        updated.insert("title", "New");
+        let mut output = Vec::new();
+        rewrite_metadata(Cursor::new(&source), &mut output, &updated).unwrap();
+
+        assert!(output.starts_with(audio));
+        let parsed = read_apev2_tag(&mut Cursor::new(&output)).unwrap().unwrap();
+        assert_eq!(parsed.metadata().values("TITLE"), ["New"]);
+        assert_eq!(parsed.metadata().pictures(), original.pictures());
     }
 
     #[test]
