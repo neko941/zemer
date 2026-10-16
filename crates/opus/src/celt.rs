@@ -189,6 +189,42 @@ fn multiply_q15(value: i64, coefficient: i32) -> i64 {
     }
 }
 
+pub(crate) fn decode_fine_energies(
+    range: &mut RangeDecoder<'_>,
+    coarse_energies_q15: &[i32; 42],
+    fine_bits: &[u8; 42],
+    end_band: u8,
+    channels: u8,
+) -> Result<[i32; 42], RangeError> {
+    if !(1..=2).contains(&channels) || end_band == 0 || end_band > 21 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    if (0..end_band).any(|band| {
+        (0..channels).any(|channel| fine_bits[usize::from(band) * 2 + usize::from(channel)] > 8)
+    }) {
+        return Err(RangeError::InvalidFineEnergyAllocation);
+    }
+
+    let mut energies_q15 = *coarse_energies_q15;
+    for band in 0..end_band {
+        for channel in 0..channels {
+            let index = usize::from(band) * 2 + usize::from(channel);
+            let bits = fine_bits[index];
+            if bits == 0 {
+                continue;
+            }
+            let value = i32::try_from(range.read_raw_bits(bits)?)
+                .map_err(|_| RangeError::InvalidFineEnergyAllocation)?;
+            let correction_numerator = 2 * value + 1 - (1 << bits);
+            let correction_q15 = correction_numerator << (14 - bits);
+            energies_q15[index] = energies_q15[index]
+                .checked_add(correction_q15)
+                .ok_or(RangeError::CorruptFrame)?;
+        }
+    }
+    Ok(energies_q15)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PostFilter {
     pub(crate) period: u16,
@@ -242,7 +278,7 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 mod tests {
     use super::{
         ENERGY_LAPLACE_MODELS, FrameHeader, band_edges, decode_coarse_energy_residuals,
-        decode_header, predict_coarse_energies,
+        decode_fine_energies, decode_header, predict_coarse_energies,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -398,5 +434,32 @@ mod tests {
             predict_coarse_energies(&[0; 42], &[0; 42], 120, false, 22, 1),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
+    }
+
+    #[test]
+    fn fine_energy_refinement_uses_centered_unsigned_steps() {
+        let mut range = RangeDecoder::new(&[0, 0b0000_0101]);
+        let mut coarse = [0; 42];
+        coarse[0] = 1_000;
+        coarse[2] = -500;
+        let mut fine_bits = [0; 42];
+        fine_bits[0] = 1;
+        fine_bits[2] = 2;
+        let energies = decode_fine_energies(&mut range, &coarse, &fine_bits, 2, 1).unwrap();
+        assert_eq!(energies[0], 1_000 + 8_192);
+        assert_eq!(energies[2], -500 + 4_096);
+    }
+
+    #[test]
+    fn fine_energy_rejects_invalid_allocations_before_consuming_bits() {
+        let mut range = RangeDecoder::new(&[0; 2]);
+        let before = range.tell_frac();
+        let mut fine_bits = [0; 42];
+        fine_bits[0] = 9;
+        assert_eq!(
+            decode_fine_energies(&mut range, &[0; 42], &fine_bits, 1, 1),
+            Err(RangeError::InvalidFineEnergyAllocation)
+        );
+        assert_eq!(range.tell_frac(), before);
     }
 }
