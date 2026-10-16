@@ -1359,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn aifc_dwvw_round_trips_every_depth_for_mono_and_stereo() {
+    fn aifc_dwvw_round_trips_every_depth_across_channel_counts() {
         for bits in 2_u16..=32 {
             let (container_bits, format) = match bits {
                 2..=8 => (8_u16, SampleFormat::PcmU8),
@@ -1368,7 +1368,7 @@ mod tests {
                 _ => (32, SampleFormat::PcmI32),
             };
             let half = 1_i64 << (bits - 1);
-            for channels in [1_u16, 2] {
+            for channels in 1_u16..=8 {
                 let spec = AudioSpec::new(44_100, channels, format).unwrap();
                 let values: Vec<_> = (0..17 * usize::from(channels))
                     .map(|index| {
