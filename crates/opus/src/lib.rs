@@ -5,6 +5,8 @@
 
 #[allow(dead_code)]
 mod celt;
+#[allow(dead_code)]
+mod frame;
 mod ogg;
 mod packet;
 #[allow(dead_code)]
