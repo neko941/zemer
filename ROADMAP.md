@@ -155,9 +155,11 @@ These are related tools, not interchangeable audio formats:
   extraction, and conversion to supported layouts. Nero describes NRG as its
   proprietary image format for uses that include audio CDs and mixed-mode
   discs ([Nero manual](https://www.nero.com/eng/downloads/test-files/test-pdf.pdf));
-  implementation starts only if reliable format details and original test
-  images are available. Treat image creation as a later, separately validated
-  capability.
+  libcdio states its layout is undocumented and its interpretation inferred
+  ([format documentation](https://libcdio.github.io/libcdio.html)). Do not
+  implement from inferred third-party code; start only if reliable public
+  format details and independently generated, rights-cleared test images are
+  available. Treat image creation as a later, separately validated capability.
 - **Useful combined workflows:** extract a ZIP that contains audio or disc
   files; package a completed CUE/BIN or ISO set into ZIP; create an ISO from an
   extracted directory; generate a CUE sheet alongside authored BIN track data;
