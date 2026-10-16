@@ -15,6 +15,7 @@ use crate::comment::{AiffComment, parse_comments};
 use crate::dwvw_spool::map_dwvw_error;
 use crate::instrument::{AiffInstrument, parse_instrument, validate_instrument_markers};
 use crate::marker::{AiffMarker, parse_markers};
+use crate::saxel::{AiffSaxel, parse_saxels, validate_saxel_markers};
 
 const MAX_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_COMM_BYTES: u64 = 1024;
@@ -41,6 +42,7 @@ pub struct AiffDecoder<R> {
     id3_tag: Option<Vec<u8>>,
     comments: Vec<AiffComment>,
     markers: Vec<AiffMarker>,
+    saxels: Vec<AiffSaxel>,
     instrument: Option<AiffInstrument>,
     audio_recording: Option<AiffAudioRecording>,
     aifc: bool,
@@ -99,6 +101,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
         let mut id3_tag = None;
         let mut comments = None;
         let mut markers = None;
+        let mut saxels = Vec::new();
         let mut instrument = None;
         let mut audio_recording = None;
         let mut g726_rate_hint = None;
@@ -289,6 +292,27 @@ impl<R: Read + Seek> AiffDecoder<R> {
                     reader.read_exact(&mut bytes)?;
                     markers = Some(parse_markers(&bytes)?);
                 }
+                b"SAXL" if aifc => {
+                    metadata_bytes = metadata_bytes
+                        .checked_add(size)
+                        .ok_or(AudioError::InvalidFormat("AIFF metadata size overflow"))?;
+                    if metadata_bytes > MAX_METADATA_BYTES {
+                        return Err(AudioError::InvalidFormat("AIFF metadata exceeds 16 MiB"));
+                    }
+                    let read_size = usize::try_from(size)
+                        .map_err(|_| AudioError::InvalidFormat("AIFF SAXL is too large"))?;
+                    let mut bytes = Vec::new();
+                    bytes
+                        .try_reserve_exact(read_size)
+                        .map_err(|_| AudioError::InvalidFormat("AIFF SAXL is too large"))?;
+                    bytes.resize(read_size, 0);
+                    reader.read_exact(&mut bytes)?;
+                    let parsed = parse_saxels(&bytes)?;
+                    saxels
+                        .try_reserve(parsed.len())
+                        .map_err(|_| AudioError::InvalidFormat("AIFF SAXL is too large"))?;
+                    saxels.extend(parsed);
+                }
                 b"INST" if size == 20 => {
                     if instrument.is_some() {
                         return Err(AudioError::InvalidFormat("duplicate AIFF INST chunk"));
@@ -426,6 +450,8 @@ impl<R: Read + Seek> AiffDecoder<R> {
             )
         };
         let markers = markers.unwrap_or_default();
+        validate_saxel_markers(&saxels, &markers)
+            .map_err(|_| AudioError::InvalidFormat("AIFF SAXL references a missing marker"))?;
         if markers
             .iter()
             .any(|marker| u64::from(marker.position) > decoded_frames)
@@ -495,6 +521,7 @@ impl<R: Read + Seek> AiffDecoder<R> {
             id3_tag,
             comments: comments.unwrap_or_default(),
             markers,
+            saxels,
             instrument,
             audio_recording,
             aifc,
@@ -529,6 +556,11 @@ impl<R: Read + Seek> AiffDecoder<R> {
     /// Returns all typed MARK records in file order.
     pub fn markers(&self) -> &[AiffMarker] {
         &self.markers
+    }
+
+    /// Returns codec-specific AIFC SAXL payloads in file and record order.
+    pub fn saxels(&self) -> &[AiffSaxel] {
+        &self.saxels
     }
 
     /// Returns the standard 20-byte AIFF/AIFC Instrument chunk, if present.
