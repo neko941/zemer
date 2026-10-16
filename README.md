@@ -137,7 +137,7 @@ cargo run -p zemer -- convert --format dsdiff_dst input.dsf output.dff
 cargo run -p zemer -- convert --format wavpack input.dsf output.wv
 ```
 
-Edit RIFF INFO tags in WAVE, AIFF/AIFC text chunks, native/Ogg-FLAC/Ogg Vorbis comments,
+Edit RIFF INFO and BWF `bext` fields in WAVE, AIFF/AIFC text chunks, native/Ogg-FLAC/Ogg Vorbis comments,
 or WavPack APEv2 text tags while keeping unmentioned tags. Repeated `--set` values for the same key create repeated
 fields; `--remove` removes all values for a key. The output path must be new.
 Metadata editing preserves encoded audio without decoding or re-encoding it:
@@ -145,6 +145,7 @@ Metadata editing preserves encoded audio without decoding or re-encoding it:
 ```sh
 zemer metadata edit --set "TITLE=New title" --set "ARTIST=Artist" --remove COMMENT input.flac updated.flac --json
 zemer metadata edit --set "TITLE=New title" input.wav updated.wav --json
+zemer metadata edit --bext-description "Final mix" --bext-time-reference 12345 input.wav updated.wav --json
 zemer metadata edit --set "TITLE=New title" input.aiff updated.aiff --json
 zemer metadata edit --set "TITLE=New title" input.dsf updated.dsf --json
 zemer metadata edit --set "TITLE=New title" input.dff updated.dff --json

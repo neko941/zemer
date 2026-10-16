@@ -157,7 +157,7 @@ does not convert between DSD and PCM.
 Metadata editing
 ----------------
 
-Update RIFF INFO tags in WAVE, NAME/AUTH/(c)/ANNO and ID3 text in AIFF/AIFC, AU
+Update RIFF INFO tags and BWF ``bext`` fields in WAVE, NAME/AUTH/(c)/ANNO and ID3 text in AIFF/AIFC, AU
 COMMENT annotations, DSF ID3 text frames, DSDIFF title/artist/general comments,
 Vorbis comments in native
 FLAC or Ogg-FLAC, or APEv2 text items in WavPack while preserving tags that are
@@ -175,6 +175,7 @@ audio conversion writes a new container and omits source-only unknown chunks.
 
    zemer metadata edit --set "TITLE=New title" --set "ARTIST=Artist" --remove COMMENT input.flac updated.flac --json
    zemer metadata edit --set "TITLE=New title" input.wav updated.wav --json
+   zemer metadata edit --bext-description "Final mix" --bext-originator "Studio" --bext-time-reference 12345 input.wav updated.wav --json
    zemer metadata edit --set "TITLE=New title" input.aiff updated.aiff --json
    zemer metadata edit --set "COMMENT=New note" input.au updated.au --json
    zemer metadata edit --set "TITLE=New title" input.caf updated.caf --json
@@ -185,7 +186,14 @@ audio conversion writes a new container and omits source-only unknown chunks.
 
 AU maps only COMMENT into its annotation. If the comment stays unchanged, the
 original annotation bytes are retained. CAF edits preserve encoded audio packets and metadata chunks other than the replaced ``info`` chunk. FLAC keys may use printable ASCII other than ``=``; WAVE supports TITLE,
-ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO; AIFF/AIFC native
+ARTIST, ALBUM, DATE, GENRE, and COMMENT through RIFF INFO. WAVE BWF fields can
+be set with ``--bext-description`` (256 ASCII bytes), ``--bext-originator`` and
+``--bext-originator-reference`` (32 bytes each), ``--bext-origination-date``
+(10 bytes), ``--bext-origination-time`` (8 bytes), ``--bext-time-reference``
+(unsigned 64-bit sample count), ``--bext-version`` (unsigned 16-bit value),
+and ``--bext-coding-history`` (ASCII). Unspecified fields and opaque UMID and
+reserved bytes are preserved; if the input has no ``bext`` chunk, one is added.
+AIFF/AIFC native
 chunks support ASCII TITLE, ARTIST, and COMMENT, while the non-standard ID3
 chunk supports common UTF-8 ID3 text and APIC/PIC picture mapping. DSF writes ID3v2.4 UTF-8 text and APIC pictures; text edits preserve existing pictures and opaque frames. DSDIFF title, artist, and
 comment text is printable ASCII. WAVE edits preserve unrecognized
