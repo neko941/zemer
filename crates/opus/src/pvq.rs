@@ -114,6 +114,52 @@ pub(crate) fn combine_split_shapes(
     Ok(shape)
 }
 
+/// Reconstructs normalized left and right vectors from normalized mid/side vectors.
+///
+/// Quantization can make the decoded mid and side vectors non-orthogonal, so
+/// each reconstructed channel is normalized independently after rotation.
+pub(crate) fn combine_mid_side_shapes(
+    mid: &[f32],
+    side: &[f32],
+    angle: SplitAngle,
+) -> Result<(Vec<f32>, Vec<f32>), RangeError> {
+    if mid.is_empty()
+        || mid.len() != side.len()
+        || mid.len() > MAX_PVQ_DIMENSIONS
+        || mid.iter().chain(side).any(|value| !value.is_finite())
+    {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+
+    let mut left = Vec::with_capacity(mid.len());
+    let mut right = Vec::with_capacity(mid.len());
+    for (&mid_value, &side_value) in mid.iter().zip(side) {
+        left.push(mid_value * angle.left_gain + side_value * angle.right_gain);
+        right.push(mid_value * angle.left_gain - side_value * angle.right_gain);
+    }
+    normalize_shape(&mut left)?;
+    normalize_shape(&mut right)?;
+    Ok((left, right))
+}
+
+fn normalize_shape(shape: &mut [f32]) -> Result<(), RangeError> {
+    let norm_squared = shape
+        .iter()
+        .map(|&value| f64::from(value) * f64::from(value))
+        .sum::<f64>();
+    if !norm_squared.is_finite() {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+    if norm_squared == 0.0 {
+        return Ok(());
+    }
+    let inverse_norm = norm_squared.sqrt().recip() as f32;
+    for value in shape {
+        *value *= inverse_norm;
+    }
+    Ok(())
+}
+
 /// Splits a remaining shape budget between equal-dimension PVQ children.
 ///
 /// The budget is measured after coding the split angle, in 1/8-bit units.
@@ -445,8 +491,8 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        codebook_size, decode_codeword, decode_split_angle, normalize_pulses,
-        pulses_for_allocation, split_shape_budget, spread_shape, unrank_codeword,
+        codebook_size, combine_mid_side_shapes, decode_codeword, decode_split_angle,
+        normalize_pulses, pulses_for_allocation, split_shape_budget, spread_shape, unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -661,6 +707,55 @@ mod tests {
         assert_eq!(combined.len(), 4);
         assert!(super::combine_split_shapes(&left[..1], &right, split).is_err());
         assert!(super::combine_split_shapes(&left, &[f32::NAN, 1.0], split).is_err());
+    }
+
+    #[test]
+    fn mid_side_reconstruction_rotates_and_renormalizes_channels() {
+        let angle = super::SplitAngle {
+            resolution: 2,
+            index: 1,
+            angle_q14: 8_192,
+            left_gain: std::f32::consts::FRAC_1_SQRT_2,
+            right_gain: std::f32::consts::FRAC_1_SQRT_2,
+        };
+        let mid = [1.0, 0.0];
+        let side = [0.0, 1.0];
+        let (left, right) = combine_mid_side_shapes(&mid, &side, angle).unwrap();
+        let expected = std::f32::consts::FRAC_1_SQRT_2;
+        for (actual, wanted) in left.iter().zip([expected, expected]) {
+            assert!((actual - wanted).abs() < 1e-7);
+        }
+        for (actual, wanted) in right.iter().zip([expected, -expected]) {
+            assert!((actual - wanted).abs() < 1e-7);
+        }
+
+        let non_orthogonal_side = [0.5, 0.866_025_4];
+        let (left, right) = combine_mid_side_shapes(&mid, &non_orthogonal_side, angle).unwrap();
+        for channel in [left, right] {
+            let norm_squared = channel
+                .iter()
+                .map(|&value| f64::from(value) * f64::from(value))
+                .sum::<f64>();
+            assert!((norm_squared - 1.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn mid_side_reconstruction_rejects_invalid_vectors() {
+        let angle = super::SplitAngle {
+            resolution: 2,
+            index: 1,
+            angle_q14: 8_192,
+            left_gain: std::f32::consts::FRAC_1_SQRT_2,
+            right_gain: std::f32::consts::FRAC_1_SQRT_2,
+        };
+        assert!(combine_mid_side_shapes(&[], &[], angle).is_err());
+        assert!(combine_mid_side_shapes(&[1.0], &[1.0, 0.0], angle).is_err());
+        assert!(combine_mid_side_shapes(&[f32::INFINITY], &[1.0], angle).is_err());
+        assert_eq!(
+            combine_mid_side_shapes(&[0.0], &[0.0], angle),
+            Ok((vec![0.0], vec![0.0]))
+        );
     }
 
     #[test]
