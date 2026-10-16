@@ -33,7 +33,13 @@ Crate ``zemer-metadata``
 ------------------------
 
 * ``Metadata`` — format-independent, case-insensitive text tags with repeated
-  values; ``remove()`` removes all values for a key.
+  values and an ordered collection of embedded ``Picture`` values;
+  ``remove()`` removes all values for a key, while ``clear_pictures()`` removes
+  the embedded pictures.
+* ``Picture`` — picture type, media type, description, dimensions, color depth,
+  indexed-color count, and owned image or URI bytes. Native and Ogg-FLAC map
+  PICTURE blocks to this shared value and write pictures supplied through it;
+  encoders without picture support reject nonempty picture collections.
 * ``apev2::ApeTag`` — bounded APEv2 footer parsing/writing, UTF-8 text mapping,
   and text replacement that retains non-text items.
 

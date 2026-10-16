@@ -1,7 +1,7 @@
 use std::{error::Error, fmt, io};
 
 pub use zemer_dsd::{DsdBuffer, DsdError, DsdSpec};
-pub use zemer_metadata::Metadata;
+pub use zemer_metadata::{Metadata, Picture};
 pub use zemer_pcm::{AudioSpec, PcmBuffer, PcmError, SampleFormat, Samples, convert_sample_format};
 
 pub trait AudioDecoder {
@@ -33,7 +33,7 @@ pub trait DsdEncoder {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
-        if metadata.iter().next().is_some() {
+        if metadata.iter().next().is_some() || !metadata.pictures().is_empty() {
             return Err(AudioError::Unsupported(
                 "DSD encoder does not support audio metadata",
             ));
@@ -61,7 +61,7 @@ pub trait AudioEncoder {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
-        if metadata.iter().next().is_some() {
+        if metadata.iter().next().is_some() || !metadata.pictures().is_empty() {
             return Err(AudioError::Unsupported(
                 "encoder does not support audio metadata",
             ));
@@ -209,6 +209,30 @@ impl From<PcmError> for AudioError {
 mod tests {
     use super::*;
 
+    struct DefaultAudioEncoder;
+
+    impl AudioEncoder for DefaultAudioEncoder {
+        fn spec(&self) -> AudioSpec {
+            AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap()
+        }
+
+        fn write_block(&mut self, _: &PcmBuffer) -> Result<(), AudioError> {
+            Ok(())
+        }
+    }
+
+    struct DefaultDsdEncoder;
+
+    impl DsdEncoder for DefaultDsdEncoder {
+        fn dsd_spec(&self) -> DsdSpec {
+            DsdSpec::new(2_822_400, 2).unwrap()
+        }
+
+        fn write_dsd_octets(&mut self, _: &DsdBuffer) -> Result<(), AudioError> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn pcm_buffer_rejects_mismatched_storage_and_partial_frames() {
         let spec = AudioSpec::new(48_000, 2, SampleFormat::PcmI16).unwrap();
@@ -222,6 +246,14 @@ mod tests {
         metadata.insert("artist", "One");
         metadata.insert("ARTIST", "Two");
         assert_eq!(metadata.values("Artist"), ["One", "Two"]);
+    }
+
+    #[test]
+    fn default_encoders_reject_unhandled_embedded_pictures() {
+        let mut metadata = Metadata::default();
+        metadata.add_picture(Picture::new(3, "image/png", "cover", 0, 0, 0, 0, [1, 2, 3]));
+        assert!(DefaultAudioEncoder.set_metadata(&metadata).is_err());
+        assert!(DefaultDsdEncoder.set_metadata(&metadata).is_err());
     }
 
     #[test]

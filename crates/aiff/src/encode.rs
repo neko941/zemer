@@ -1129,6 +1129,11 @@ impl<W: Write + Seek> AudioEncoder for AiffEncoder<W> {
         AiffEncoder::finish(self).map(|_| ())
     }
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
+        if !metadata.pictures().is_empty() {
+            return Err(AudioError::Unsupported(
+                "AIFF writer does not support embedded pictures",
+            ));
+        }
         if self.frames != 0 || self.finished {
             return Err(AudioError::InvalidData(
                 "AIFF metadata must be set before audio samples",
@@ -1149,6 +1154,11 @@ impl<W: Write + Seek> AudioEncoder for AiffEncoder<W> {
 }
 
 pub(super) fn validate_metadata(metadata: &Metadata) -> Result<(), AudioError> {
+    if !metadata.pictures().is_empty() {
+        return Err(AudioError::Unsupported(
+            "AIFF writer does not support embedded pictures",
+        ));
+    }
     if metadata.values("TITLE").len() > 1
         || metadata.values("ARTIST").len() > 1
         || metadata.values("COPYRIGHT").len() > 1
@@ -1253,7 +1263,9 @@ fn validate_combined_metadata(
 mod tests {
     use std::io::Cursor;
 
-    use zemer_core::{AudioDecoder, AudioSpec, PcmBuffer, SampleFormat, Samples};
+    use zemer_core::{
+        AudioDecoder, AudioSpec, Metadata, PcmBuffer, Picture, SampleFormat, Samples,
+    };
 
     use crate::{AiffDecoder, AiffEncoder};
 
@@ -1263,6 +1275,14 @@ mod tests {
         0x01, 0x8f, 0x85, 0xe0, 0x08, 0x31, 0x8f, 0x68, 0x36, 0xc1, 0x5f, 0xe8, 0xdf, 0x36, 0x28,
         0xdb, 0x40, 0x4d, 0x13, 0xd7,
     ];
+
+    #[test]
+    fn constructor_rejects_pictures_it_cannot_store() {
+        let spec = AudioSpec::new(8_000, 1, SampleFormat::PcmI16).unwrap();
+        let mut metadata = Metadata::default();
+        metadata.add_picture(Picture::new(3, "image/png", "cover", 0, 0, 0, 0, [1]));
+        assert!(AiffEncoder::new_with_metadata(Cursor::new(Vec::new()), spec, &metadata).is_err());
+    }
 
     #[test]
     fn aggregate_metadata_limit_includes_id3_and_native_chunks() {

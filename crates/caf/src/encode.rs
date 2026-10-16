@@ -360,6 +360,11 @@ impl<W: Write + Seek> AudioEncoder for CafEncoder<W> {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
+        if !metadata.pictures().is_empty() {
+            return Err(AudioError::Unsupported(
+                "CAF writer does not support embedded pictures",
+            ));
+        }
         if self.finished {
             return Err(AudioError::InvalidData(
                 "CAF metadata cannot be changed after finishing",

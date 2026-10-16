@@ -6,6 +6,7 @@ use zemer_core::{AudioEncoder, AudioError, AudioSpec, Metadata, PcmBuffer, Sampl
 
 use crate::{
     encode::encode_frame,
+    metadata::{encode_picture, validate_picture},
     rewrite::{DEFAULT_VENDOR, encode_comments},
 };
 
@@ -78,6 +79,15 @@ impl<W: Write> OggFlacEncoder<W> {
         if self.started {
             return Ok(());
         }
+        let metadata_packet_count = self
+            .metadata
+            .pictures()
+            .len()
+            .checked_add(1)
+            .and_then(|count| u16::try_from(count).ok())
+            .ok_or(AudioError::InvalidData(
+                "too many Ogg-FLAC metadata packets",
+            ))?;
         let mut metadata = self.metadata.clone();
         if let Some(mask) = self.spec.speaker_mask() {
             metadata.remove("WAVEFORMATEXTENSIBLE_CHANNEL_MASK");
@@ -87,7 +97,7 @@ impl<W: Write> OggFlacEncoder<W> {
 
         let mut header = Vec::with_capacity(51);
         header.extend_from_slice(b"\x7fFLAC\x01\x00");
-        header.extend_from_slice(&1_u16.to_be_bytes());
+        header.extend_from_slice(&metadata_packet_count.to_be_bytes());
         header.extend_from_slice(b"fLaC");
         header.extend_from_slice(&[0, 0, 0, 34]);
         let mut streaminfo = [0_u8; 34];
@@ -103,10 +113,28 @@ impl<W: Write> OggFlacEncoder<W> {
         let comment_length = u32::try_from(comments.len())
             .map_err(|_| AudioError::InvalidData("FLAC comment block is too large"))?;
         let mut comment_packet = Vec::with_capacity(comments.len() + 4);
-        comment_packet.push(0x84);
+        comment_packet.push(if self.metadata.pictures().is_empty() {
+            0x84
+        } else {
+            0x04
+        });
         comment_packet.extend_from_slice(&comment_length.to_be_bytes()[1..]);
         comment_packet.extend_from_slice(&comments);
         self.writer.write_packet(&comment_packet, 0)?;
+        for (index, picture) in self.metadata.pictures().iter().enumerate() {
+            let encoded = encode_picture(picture)?;
+            let length = u32::try_from(encoded.len())
+                .map_err(|_| AudioError::InvalidData("FLAC picture block is too large"))?;
+            let mut packet = Vec::with_capacity(encoded.len() + 4);
+            packet.push(if index + 1 == self.metadata.pictures().len() {
+                0x86
+            } else {
+                0x06
+            });
+            packet.extend_from_slice(&length.to_be_bytes()[1..]);
+            packet.extend_from_slice(&encoded);
+            self.writer.write_packet(&packet, 0)?;
+        }
         self.started = true;
         Ok(())
     }
@@ -165,6 +193,9 @@ impl<W: Write> AudioEncoder for OggFlacEncoder<W> {
             return Err(AudioError::InvalidData(
                 "Ogg-FLAC metadata cannot change after audio output starts",
             ));
+        }
+        for picture in metadata.pictures() {
+            validate_picture(picture)?;
         }
         self.metadata = metadata.clone();
         Ok(())
@@ -245,7 +276,7 @@ mod tests {
     use std::io::Cursor;
 
     use zemer_core::{
-        AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples,
+        AudioDecoder, AudioEncoder, AudioSpec, Metadata, PcmBuffer, Picture, SampleFormat, Samples,
     };
 
     use crate::{OggFlacDecoder, OggFlacEncoder};
@@ -287,5 +318,24 @@ mod tests {
         }
         assert_eq!(decoded, samples);
         assert!(decoder.read_frames(1).unwrap().is_none());
+    }
+
+    #[test]
+    fn round_trips_shared_picture_metadata_in_ogg_flac() {
+        let spec = AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap();
+        let audio = PcmBuffer::new(spec, Samples::I16(vec![1, -2, 3])).unwrap();
+        let picture = Picture::new(3, "image/png", "cover", 1, 1, 24, 0, b"PNG!".to_vec());
+        let mut metadata = Metadata::default();
+        metadata.add_picture(picture.clone());
+        let mut encoder = OggFlacEncoder::new(Cursor::new(Vec::new()), spec).unwrap();
+        encoder.set_metadata(&metadata).unwrap();
+        encoder.write_block(&audio).unwrap();
+        encoder.finish().unwrap();
+
+        let decoder = OggFlacDecoder::new(Cursor::new(encoder.into_inner().into_inner())).unwrap();
+        assert_eq!(
+            decoder.metadata().pictures(),
+            std::slice::from_ref(&picture)
+        );
     }
 }

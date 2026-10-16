@@ -265,6 +265,11 @@ impl<W: Write + Seek> DsdEncoder for WavPackDsdEncoder<W> {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
+        if !metadata.pictures().is_empty() {
+            return Err(AudioError::Unsupported(
+                "WavPack writer does not support embedded pictures",
+            ));
+        }
         if self.finished {
             return Err(AudioError::InvalidData(
                 "WavPack encoder is already finished",

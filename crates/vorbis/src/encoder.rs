@@ -333,6 +333,11 @@ impl<W: Write> AudioEncoder for VorbisEncoder<W> {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
+        if !metadata.pictures().is_empty() {
+            return Err(AudioError::Unsupported(
+                "Vorbis encoder does not support embedded pictures",
+            ));
+        }
         if self.finished || self.failed || self.initialized {
             return Err(AudioError::InvalidData(
                 "Vorbis metadata must be set before audio encoding starts",

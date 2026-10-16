@@ -3,7 +3,9 @@ use std::{
     io::{BufReader, Read, Seek, SeekFrom},
 };
 
-use zemer_core::{AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, SampleFormat, Samples};
+use zemer_core::{
+    AudioDecoder, AudioError, AudioSpec, Metadata, PcmBuffer, Picture, SampleFormat, Samples,
+};
 
 use crate::{
     bitstream::BitReader,
@@ -32,7 +34,22 @@ pub struct FlacDecoder<R> {
 impl<R: Read> FlacDecoder<R> {
     pub fn new(reader: R) -> Result<Self, AudioError> {
         let mut reader = BufReader::new(reader);
-        let (info, metadata, metadata_blocks) = read_metadata(&mut reader)?;
+        let (info, mut metadata, metadata_blocks) = read_metadata(&mut reader)?;
+        for block in &metadata_blocks {
+            // Keep malformed picture blocks available through the raw API without rejecting audio.
+            if let Ok(Some(picture)) = block.picture() {
+                metadata.add_picture(Picture::new(
+                    picture.picture_type,
+                    picture.media_type,
+                    picture.description,
+                    picture.width,
+                    picture.height,
+                    picture.color_depth,
+                    picture.colors,
+                    picture.data.to_vec(),
+                ));
+            }
+        }
         let format = output_format(info.bits_per_sample());
         let speaker_mask = metadata
             .values("WAVEFORMATEXTENSIBLE_CHANNEL_MASK")

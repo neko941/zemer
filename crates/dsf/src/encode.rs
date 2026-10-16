@@ -280,6 +280,11 @@ impl<W: Write + Seek> DsdEncoder for DsfEncoder<W> {
     }
 
     fn set_metadata(&mut self, metadata: &Metadata) -> Result<(), AudioError> {
+        if !metadata.pictures().is_empty() {
+            return Err(AudioError::Unsupported(
+                "DSF writer does not support embedded pictures",
+            ));
+        }
         if self.finished {
             return Err(AudioError::InvalidData("DSF encoder is already finished"));
         }
