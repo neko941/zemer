@@ -57,6 +57,7 @@ Convert WAVE, AIFF/AIFC, AU, CAF, native FLAC, Ogg-FLAC, WavPack, DSF, or DSDIFF
 .. code-block:: console
 
    cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
+   cargo run -p zemer -- convert --format pcm_i16 --output-sample-rate 48000 input.wav output-48k.wav
    cargo run -p zemer -- convert --format aiff input.wav output.aiff
    cargo run -p zemer -- convert --format aiff --valid-bits 12 input.wav output.aiff
    cargo run -p zemer -- convert --format aifc --valid-bits 12 input.wav output.aifc
@@ -134,8 +135,10 @@ AU G.721 output is available for mono 8 kHz signed 16-bit input:
    cargo run -p zemer -- convert --format au_g721 voice.wav voice-g721.au
 
 The output file must not already exist. Conversion keeps the input sample rate
-and channel count and carries text tags supported by both formats. It does not
-resample or remix.
+and channel count by default and carries text tags supported by both formats.
+Use ``--output-sample-rate <Hz>`` to opt into streaming windowed-sinc
+resampling; channel count and speaker mask remain unchanged. Resampling accepts
+rate ratios up to 64:1. It does not remix channels.
 Integer conversion rounds to the nearest sample without dithering. Float to
 integer conversion fails for non-finite values or samples outside ``[-1, 1]``.
 Float input converted to native FLAC, Ogg-FLAC, or AIFF uses 24-bit integer

@@ -1,0 +1,10 @@
+[package]
+name = "zemer-resample"
+description = "Streaming windowed-sinc PCM sample-rate conversion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+zemer-pcm.workspace = true

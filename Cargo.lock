@@ -34,6 +34,7 @@ dependencies = [
  "zemer-iso9660",
  "zemer-ogg",
  "zemer-raw-pcm",
+ "zemer-resample",
  "zemer-vorbis",
  "zemer-wav",
  "zemer-wavpack",
@@ -177,6 +178,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zemer-resample"
+version = "0.7.0"
+dependencies = [
+ "zemer-pcm",
+]
+
+[[package]]
 name = "zemer-tests"
 version = "0.7.0"
 dependencies = [
@@ -195,6 +203,7 @@ dependencies = [
  "zemer-iso9660",
  "zemer-ogg",
  "zemer-raw-pcm",
+ "zemer-resample",
  "zemer-vorbis",
  "zemer-wav",
  "zemer-wavpack",
@@ -215,6 +224,7 @@ dependencies = [
  "encoding_rs",
  "zemer-core",
  "zemer-g711",
+ "zemer-id3",
  "zemer-ima-adpcm",
  "zemer-ms-adpcm",
 ]

@@ -107,6 +107,44 @@ fn cli_converts_pcm_to_ms_adpcm_wave() {
 }
 
 #[test]
+fn cli_resamples_pcm_and_reports_the_output_rate_and_duration() {
+    let input_path = temporary_path();
+    let output_path = temporary_path();
+    let spec = AudioSpec::new(44_100, 1, SampleFormat::PcmI16).unwrap();
+    let audio = PcmBuffer::new(spec, Samples::I16(vec![1_000; 441])).unwrap();
+    write_wav(File::create(&input_path).unwrap(), &audio).unwrap();
+
+    let output = Command::new(cli_path())
+        .args([
+            "convert",
+            "--format",
+            "pcm_i16",
+            "--output-sample-rate",
+            "48000",
+            "--json",
+        ])
+        .arg(&input_path)
+        .arg(&output_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"sample_rate\":48000"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("\"frames\":480"));
+    let mut decoder = wav::WavDecoder::new(File::open(&output_path).unwrap()).unwrap();
+    assert_eq!(decoder.spec().sample_rate(), 48_000);
+    let decoded = decoder.read_frames(8192).unwrap().unwrap();
+    assert_eq!(decoded.frames(), 480);
+
+    for path in [input_path, output_path] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
 fn cli_inspects_and_converts_explicit_raw_pcm() {
     let raw_input = temporary_path();
     let wav_output = temporary_path();

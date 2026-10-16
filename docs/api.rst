@@ -13,6 +13,14 @@ Format-independent PCM types and sample-format conversion:
 * ``convert_sample_format`` — conversion between integer PCM and IEEE float
   sample formats without resampling or channel remixing.
 
+Crate ``zemer-resample``
+------------------------
+
+* ``StreamingResampler`` — incrementally converts interleaved PCM to a caller-
+  selected sample rate with a 32-tap windowed-sinc low-pass filter. Output is
+  Float64 PCM, retains the input channel count and speaker mask, and is flushed
+  with edge extension at end of stream. Rate ratios above 64:1 are rejected.
+
 Crate ``zemer-raw-pcm``
 -----------------------
 

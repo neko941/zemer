@@ -15,6 +15,7 @@ use flac::{FlacDecoder, FlacEncoder, OggFlacDecoder, OggFlacEncoder};
 use g711::G711Encoding;
 use ogg::OggPacketReader;
 use raw_pcm::{RawPcmDecoder, RawPcmEncoder, RawPcmFormat};
+use resample::StreamingResampler;
 use vorbis::{VorbisDecoder, VorbisEncoder};
 use wav::{WavContainer, WavDecoder, WavWriter};
 use wavpack::{
@@ -44,6 +45,14 @@ pub(super) struct RawPcmOptions {
     pub(super) format: RawPcmFormat,
     pub(super) sample_rate: u32,
     pub(super) channels: u16,
+}
+
+pub(super) struct ConversionOptions {
+    pub(super) container: WavContainer,
+    pub(super) bitrate_kbps: Option<u32>,
+    pub(super) valid_bits: Option<u16>,
+    pub(super) raw: Option<RawPcmOptions>,
+    pub(super) output_sample_rate: Option<u32>,
 }
 
 pub(super) type DsdInput = (
@@ -222,11 +231,15 @@ pub(super) fn convert_audio(
     input: PathBuf,
     output: PathBuf,
     format: OutputFormat,
-    container: WavContainer,
-    bitrate_kbps: Option<u32>,
-    valid_bits: Option<u16>,
-    raw: Option<RawPcmOptions>,
+    options: ConversionOptions,
 ) -> Result<Report, CliError> {
+    let ConversionOptions {
+        container,
+        bitrate_kbps,
+        valid_bits,
+        raw,
+        output_sample_rate,
+    } = options;
     let AudioInput {
         mut decoder,
         aiff_comments,
@@ -238,31 +251,43 @@ pub(super) fn convert_audio(
         ..
     } = open_decoder(&input, raw)?;
     let input_spec = decoder.spec();
+    let output_sample_rate = output_sample_rate.unwrap_or(input_spec.sample_rate());
     let spec = if let OutputFormat::RawPcm(raw_format) = format {
         AudioSpec::new(
-            input_spec.sample_rate(),
+            output_sample_rate,
             input_spec.channels(),
             raw_format.sample_format(),
         )
         .map_err(|error| cli_audio_error(error.into(), &input))?
     } else if matches!(format, OutputFormat::Vorbis) {
         AudioSpec::new(
-            input_spec.sample_rate(),
+            output_sample_rate,
             input_spec.channels(),
             SampleFormat::Float32,
         )
         .map_err(|error| cli_audio_error(error.into(), &input))?
     } else if let Some(sample_format) = format.input_sample_format(input_spec.sample_format()) {
         AudioSpec::new_with_speaker_mask(
-            input_spec.sample_rate(),
+            output_sample_rate,
             input_spec.channels(),
             sample_format,
             input_spec.speaker_mask(),
         )
         .map_err(|error| cli_audio_error(error.into(), &input))?
     } else {
-        input_spec
+        AudioSpec::new_with_speaker_mask(
+            output_sample_rate,
+            input_spec.channels(),
+            input_spec.sample_format(),
+            input_spec.speaker_mask(),
+        )
+        .map_err(|error| cli_audio_error(error.into(), &input))?
     };
+    let mut resampler = (output_sample_rate != input_spec.sample_rate())
+        .then(|| StreamingResampler::new(input_spec, output_sample_rate))
+        .transpose()
+        .map_err(|error| cli_audio_error(AudioError::InvalidData(error.0), &input))?;
+    let resampling = resampler.is_some();
     let output_file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -711,30 +736,61 @@ pub(super) fn convert_audio(
             }
         };
         let mut frames = 0_u64;
-        while let Some(block) = decoder
-            .read_frames(8192)
-            .map_err(|error| cli_audio_error(error, &input))?
+        let input_block_frames = if resampling {
+            (8192_u64 * u64::from(input_spec.sample_rate()) / u64::from(output_sample_rate))
+                .clamp(1, 8192) as usize
+        } else {
+            8192
+        };
         {
-            let block_frames = block.frames() as u64;
-            let mut converted = if let Some(sample_format) =
-                format.input_sample_format(input_spec.sample_format())
-            {
-                convert_sample_format(&block, sample_format)
-                    .map_err(|error| cli_audio_error(error.into(), &input))?
-            } else {
-                block
+            let mut write_block = |block: &zemer_core::PcmBuffer| -> Result<(), CliError> {
+                if block.frames() == 0 {
+                    return Ok(());
+                }
+                let mut converted = if resampling {
+                    convert_sample_format(block, spec.sample_format())
+                        .map_err(|error| cli_audio_error(error.into(), &input))?
+                } else if let Some(sample_format) =
+                    format.input_sample_format(input_spec.sample_format())
+                {
+                    convert_sample_format(block, sample_format)
+                        .map_err(|error| cli_audio_error(error.into(), &input))?
+                } else {
+                    block.clone()
+                };
+                if matches!(format, OutputFormat::Vorbis) {
+                    converted = vorbis_channel_order(&converted, spec)
+                        .map_err(|error| cli_audio_error(error, &input))?;
+                }
+                frames = frames
+                    .checked_add(converted.frames() as u64)
+                    .ok_or_else(|| CliError {
+                        kind: "invalid_data",
+                        message: "converted frame count overflow".to_owned(),
+                    })?;
+                encoder
+                    .write_block(&converted)
+                    .map_err(|error| cli_audio_error(error, &output))
             };
-            if matches!(format, OutputFormat::Vorbis) {
-                converted = vorbis_channel_order(&converted, spec)
-                    .map_err(|error| cli_audio_error(error, &input))?;
+            while let Some(block) = decoder
+                .read_frames(input_block_frames)
+                .map_err(|error| cli_audio_error(error, &input))?
+            {
+                if let Some(resampler) = &mut resampler {
+                    let converted = resampler.push(&block).map_err(|error| {
+                        cli_audio_error(AudioError::InvalidData(error.0), &input)
+                    })?;
+                    write_block(&converted)?;
+                } else {
+                    write_block(&block)?;
+                }
             }
-            encoder
-                .write_block(&converted)
-                .map_err(|error| cli_audio_error(error, &output))?;
-            frames = frames.checked_add(block_frames).ok_or_else(|| CliError {
-                kind: "invalid_data",
-                message: "converted frame count overflow".to_owned(),
-            })?;
+            if let Some(resampler) = &mut resampler {
+                let tail = resampler
+                    .finish()
+                    .map_err(|error| cli_audio_error(AudioError::InvalidData(error.0), &input))?;
+                write_block(&tail)?;
+            }
         }
         encoder
             .finish()

@@ -56,6 +56,7 @@ The WAV reader concatenates top-level `data` and `LIST/wavl` audio segments in f
 - [`zemer-iso9660`](crates/iso9660/): clean-room ISO 9660 image inspection and safe single-volume extraction, including Joliet names.
 - [`zemer-ogg`](crates/ogg/): bounded Ogg page/packet reader and writer with page CRC, sequence, and continuation validation.
 - [`zemer-pcm`](crates/pcm/): reusable PCM sample types and sample-format conversion.
+- [`zemer-resample`](crates/resample/): streaming windowed-sinc sample-rate conversion for interleaved PCM with channel and speaker-mask preservation.
 - [`zemer-raw-pcm`](crates/raw-pcm/): headerless PCM reader and writer with explicit format, byte order, and bounded streaming.
 - [`zemer-wav`](crates/wav/) (Rust crate `wav`): RIFF/WAVE PCM/float/G.711, 1–8 channel IMA ADPCM, and mono/stereo Microsoft ADPCM reader/writer.
 - [`zemer-ima-adpcm`](crates/ima-adpcm/): shared clean-room IMA ADPCM predictor and Apple IMA4 packet codec used by WAVE, AIFC, and CAF.
@@ -108,10 +109,11 @@ cargo run -p zemer -- inspect --json input.wav
 Errors are emitted as a JSON object on stderr with a non-zero exit status when `--json` is set.
 The inspection JSON includes `speaker_mask` as a number or `null` so scripts can retain known channel positions.
 
-Convert to another supported WAVE sample format or explicitly encode G.711 (no resampling or channel remixing):
+Convert to another format while keeping the source sample rate and channel layout, or opt into resampling with `--output-sample-rate`:
 
 ```sh
 cargo run -p zemer -- convert --format pcm_i16 input.wav output.wav
+cargo run -p zemer -- convert --format pcm_i16 --output-sample-rate 48000 input.wav output-48k.wav
 cargo run -p zemer -- convert --format pcm_i16 --container rf64 input.wav large-output.wav
 cargo run -p zemer -- convert --format g711_alaw input.wav voice-alaw.wav
 cargo run -p zemer -- convert --format g711_mulaw input.wav voice-mulaw.wav
@@ -164,7 +166,7 @@ zemer cue split album.cue album-tracks
 zemer cue create album.cue "album-tracks/01 - Intro.wav" "album-tracks/02 - Song.wav"
 ```
 
-Conversion preserves supported RIFF INFO tags. It refuses to overwrite an existing output file, rounds integer quantization to the nearest sample, and errors when float samples are non-finite or outside `[-1, 1]` for integer output. Float input converted to native FLAC, Ogg-FLAC, or AIFF becomes 24-bit integer PCM; AIFC can retain IEEE float. No dither is applied.
+Conversion preserves supported RIFF INFO tags. It refuses to overwrite an existing output file and rounds integer quantization to the nearest sample. Explicit sample-rate conversion uses a streaming 32-tap windowed-sinc low-pass filter and is limited to rate ratios up to 64:1; its Float64 intermediate is converted to the selected output format, and integer conversion errors rather than clipping samples outside `[-1, 1]`. Float input converted to native FLAC, Ogg-FLAC, or AIFF becomes 24-bit integer PCM; AIFC can retain IEEE float. No dither is applied.
 
 ## Supported platforms
 
