@@ -55,6 +55,14 @@ const ENERGY_LAPLACE_MODELS: [[[u8; 42]; 2]; 4] = [
     ],
 ];
 
+const ENERGY_PREDICTION_COEFFICIENTS: [(i32, i32); 4] = [
+    (29_440, 30_147),
+    (26_112, 22_282),
+    (21_248, 12_124),
+    (16_384, 6_554),
+];
+const ENERGY_INTRA_BETA_Q15: i32 = 4_915;
+
 pub(crate) fn band_edges(frame_samples_48k: u16) -> Option<[u16; 22]> {
     let scale = match frame_samples_48k {
         120 => 1,
@@ -108,12 +116,77 @@ pub(crate) fn decode_coarse_energy_residuals(
             } else {
                 -1
             };
-            let index =
-                usize::from(band - start_band) * usize::from(channels) + usize::from(channel);
+            let index = usize::from(band) * 2 + usize::from(channel);
             residuals[index] = residual as i16;
         }
     }
     Ok(residuals)
+}
+
+pub(crate) fn predict_coarse_energies(
+    residuals: &[i16; 42],
+    previous_final_energies_q15: &[i32; 42],
+    frame_samples_48k: u16,
+    intra: bool,
+    end_band: u8,
+    channels: u8,
+) -> Result<[i32; 42], RangeError> {
+    let lm = match frame_samples_48k {
+        120 => 0,
+        240 => 1,
+        480 => 2,
+        960 => 3,
+        _ => return Err(RangeError::InvalidCeltEnergyLayout),
+    };
+    if !(1..=2).contains(&channels) || end_band == 0 || end_band > 21 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+
+    let (alpha, inter_beta) = ENERGY_PREDICTION_COEFFICIENTS[lm];
+    let beta = if intra {
+        ENERGY_INTRA_BETA_Q15
+    } else {
+        inter_beta
+    };
+    let alpha = if intra { 0 } else { alpha };
+    let mut energies = [0; 42];
+    let mut previous_residual_q15 = [0_i64; 2];
+
+    // Solve the RFC's 2-D prediction filter from low to high band.
+    for band in 0..end_band {
+        for channel in 0..channels {
+            let index = usize::from(band) * 2 + usize::from(channel);
+            let previous_band_index = index.saturating_sub(2);
+            let current_frequency_prediction = if band == 0 {
+                0_i64
+            } else {
+                i64::from(energies[previous_band_index])
+            };
+            let previous_frame_band = i64::from(previous_final_energies_q15[index]);
+            let previous_frame_frequency = if band == 0 {
+                0_i64
+            } else {
+                i64::from(previous_final_energies_q15[previous_band_index])
+            };
+            let temporal_prediction =
+                multiply_q15(previous_frame_band - previous_frame_frequency, alpha);
+            let residual_q15 = i64::from(residuals[index]) << 15;
+            let energy = current_frequency_prediction + temporal_prediction + residual_q15
+                - multiply_q15(previous_residual_q15[usize::from(channel)], beta);
+            energies[index] = energy.try_into().map_err(|_| RangeError::CorruptFrame)?;
+            previous_residual_q15[usize::from(channel)] = residual_q15;
+        }
+    }
+    Ok(energies)
+}
+
+fn multiply_q15(value: i64, coefficient: i32) -> i64 {
+    let product = value * i64::from(coefficient);
+    if product >= 0 {
+        (product + (1 << 14)) >> 15
+    } else {
+        -((-product + (1 << 14)) >> 15)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,7 +242,7 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 mod tests {
     use super::{
         ENERGY_LAPLACE_MODELS, FrameHeader, band_edges, decode_coarse_energy_residuals,
-        decode_header,
+        decode_header, predict_coarse_energies,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -284,6 +357,45 @@ mod tests {
         );
         assert_eq!(
             decode_coarse_energy_residuals(&mut range, 120, false, 4, 4, 1, 2),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+    }
+
+    #[test]
+    fn coarse_energy_prediction_matches_the_z_transform_recurrence() {
+        let mut residuals = [0; 42];
+        residuals[0] = 2;
+        let previous = [0; 42];
+        let intra = predict_coarse_energies(&residuals, &previous, 120, true, 2, 1).unwrap();
+        assert_eq!(intra[0], 2 << 15);
+        assert_eq!(intra[2], (2 << 15) - 9_830);
+
+        let mut previous = [0; 42];
+        previous[0] = 2 << 15;
+        previous[2] = 4 << 15;
+        residuals = [0; 42];
+        let inter = predict_coarse_energies(&residuals, &previous, 120, false, 2, 1).unwrap();
+        assert_eq!(inter[0], 58_880);
+        assert_eq!(inter[2], 117_760);
+
+        for (frame_samples, alpha) in [(120, 29_440), (240, 26_112), (480, 21_248), (960, 16_384)] {
+            let mut previous = [0; 42];
+            previous[0] = 1 << 15;
+            residuals = [0; 42];
+            let energies =
+                predict_coarse_energies(&residuals, &previous, frame_samples, false, 1, 1).unwrap();
+            assert_eq!(energies[0], alpha);
+        }
+    }
+
+    #[test]
+    fn coarse_energy_prediction_rejects_invalid_layouts() {
+        assert_eq!(
+            predict_coarse_energies(&[0; 42], &[0; 42], 120, false, 1, 0),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(
+            predict_coarse_energies(&[0; 42], &[0; 42], 120, false, 22, 1),
             Err(RangeError::InvalidCeltEnergyLayout)
         );
     }
