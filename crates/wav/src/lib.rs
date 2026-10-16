@@ -7,6 +7,7 @@ mod ima_adpcm;
 mod info;
 mod rewrite;
 mod sampler;
+mod tags;
 
 pub use bext::BextChunk;
 pub use cue::{WavCueChunk, WavCuePoint};

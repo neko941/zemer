@@ -8,6 +8,7 @@ use crate::cset::{decode_info_value, read_code_page};
 use crate::encode::WavContainer;
 use crate::ima_adpcm::{decode_block as decode_ima_block, frames_in_block};
 use crate::info::key_from_id;
+use crate::tags::{MAX_ID3_CHUNK_BYTES, merge_id3, read_id3};
 use crate::{BextChunk, WavCueChunk, WavSamplerChunk};
 use g711::{decode_alaw, decode_mulaw};
 use ms_adpcm::{
@@ -369,6 +370,7 @@ impl<R: Read + Seek> WavDecoder<R> {
         let mut bext = None;
         let mut cue = None;
         let mut sampler = None;
+        let mut id3_tag = None;
         let mut info_metadata_bytes = 0;
         let mut info_metadata_values = 0;
         loop {
@@ -439,6 +441,14 @@ impl<R: Read + Seek> WavDecoder<R> {
                         AudioError::InvalidFormat("WAVE sampler chunk is too large")
                     })?;
                     sampler = Some(WavSamplerChunk::read(&mut reader, size)?);
+                }
+                b"id3 " | b"ID3 " => {
+                    if id3_tag.is_some() || chunk_size > MAX_ID3_CHUNK_BYTES {
+                        return Err(AudioError::InvalidFormat(
+                            "duplicate or oversized WAVE ID3 chunk",
+                        ));
+                    }
+                    id3_tag = Some(read_id3(&mut reader, chunk_size)?);
                 }
                 b"fmt " if parsed_spec.is_none() => {
                     if chunk_size > u64::from(MAX_FORMAT_CHUNK) {
@@ -560,6 +570,9 @@ impl<R: Read + Seek> WavDecoder<R> {
         }
         if !has_audio {
             return Err(AudioError::InvalidFormat("missing data or wavl audio"));
+        }
+        if let Some(tag) = &id3_tag {
+            merge_id3(&mut metadata, tag)?;
         }
 
         Ok(Self {

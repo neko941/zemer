@@ -15,3 +15,4 @@ encoding_rs.workspace = true
 g711.workspace = true
 ima-adpcm.workspace = true
 ms-adpcm.workspace = true
+id3.workspace = true
