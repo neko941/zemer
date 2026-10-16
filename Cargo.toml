@@ -25,6 +25,7 @@ members = [
     "crates/resample",
     "crates/iso9660",
     "crates/vorbis",
+    "crates/opus",
     "crates/zemer",
 ]
 resolver = "2"

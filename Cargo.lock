@@ -167,6 +167,10 @@ name = "zemer-ogg"
 version = "0.7.0"
 
 [[package]]
+name = "zemer-opus"
+version = "0.7.0"
+
+[[package]]
 name = "zemer-pcm"
 version = "0.7.0"
 

@@ -1,0 +1,10 @@
+[package]
+name = "zemer-opus"
+description = "Clean-room Opus packet framing and decoder for Zemer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "opus"
