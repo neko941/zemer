@@ -814,3 +814,17 @@ library automatically. Run it with:
 ZEMER_SNDFILE_PYTHON=python3 cargo test -p zemer-tests --test aiff_interop \
   interoperates_stereo_aifc_dwvw_channels_with_libsndfile -- --ignored --exact
 ```
+
+# CAF reference vectors
+
+`caf/ffmpeg-1.0-s16be.caf` is a 512-frame, 48-kHz stereo signed 16-bit CAF
+written by FFmpeg 8.1 from the paired synthetic `caf/oracle.s16le` input. The
+input uses the deterministic sample sequence `(((i * 811 + 17) mod 65536) -
+32768)` for interleaved sample index `i`; the regression checks that Zemer
+decodes every sample exactly. This vector covers the CAF big-endian PCM profile.
+Both files are generated test data with no third-party audio content.
+
+| File | SHA-256 |
+|---|---|
+| `caf/ffmpeg-1.0-s16be.caf` | `cac875ac6419ede2a75b5f7e65100dacb65b7139eaae86a982f88219825d1176` |
+| `caf/oracle.s16le` | `e3fdb4f17ac761ce4250a30b31ac6e16931a98803c8ce44a08e26f047d9f806c` |
