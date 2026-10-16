@@ -78,6 +78,7 @@ const BAND_LOG2_EIGHTHS: [u8; 21] = [
 const MAX_FINE_ENERGY_BITS: u8 = 8;
 const FINE_ENERGY_OFFSET_EIGHTHS: i64 = 21;
 const CELT_OVERLAP_SAMPLES: usize = 120;
+const DEEMPHASIS_ALPHA: f64 = 0.850_006_103_5;
 
 /// Builds the CELT low-overlap window for one long or short inverse MDCT.
 ///
@@ -136,12 +137,14 @@ fn inverse_mdct_windowed(spectrum: &[f32]) -> Result<Vec<f32>, RangeError> {
 pub(crate) struct CeltSynthesis {
     previous: Option<Vec<Vec<f32>>>,
     postfilter: crate::postfilter::CeltPostFilter,
+    deemphasis: CeltDeemphasis,
 }
 
 impl CeltSynthesis {
     pub(crate) fn reset(&mut self) {
         self.previous = None;
         self.postfilter.reset();
+        self.deemphasis.reset();
     }
 
     /// Denormalizes one mono CELT band set and feeds its spectrum into synthesis.
@@ -223,7 +226,7 @@ impl CeltSynthesis {
         Ok(Some(output))
     }
 
-    /// Synthesizes one CELT frame and post-filters its overlap-add PCM output.
+    /// Synthesizes one CELT frame, then applies the post-filter and de-emphasis.
     pub(crate) fn synthesize_with_postfilter(
         &mut self,
         spectra: &[Vec<f32>],
@@ -232,8 +235,70 @@ impl CeltSynthesis {
         let mut output = self.synthesize(spectra)?;
         if let Some(samples) = output.as_mut() {
             self.postfilter.process(samples, postfilter)?;
+            self.deemphasis.process(samples)?;
         }
         Ok(output)
+    }
+}
+
+/// Stateful inverse of CELT's encoder pre-emphasis filter.
+#[derive(Default)]
+struct CeltDeemphasis {
+    previous_output: Vec<f32>,
+}
+
+impl CeltDeemphasis {
+    fn reset(&mut self) {
+        self.previous_output.clear();
+    }
+
+    fn process(&mut self, channels: &mut [Vec<f32>]) -> Result<(), RangeError> {
+        if channels.is_empty()
+            || channels[0].is_empty()
+            || channels.iter().any(|channel| {
+                channel.len() != channels[0].len() || channel.iter().any(|x| !x.is_finite())
+            })
+            || (!self.previous_output.is_empty() && self.previous_output.len() != channels.len())
+        {
+            return Err(RangeError::InvalidCeltEnergyLayout);
+        }
+
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(channels.len())
+            .map_err(|_| RangeError::CorruptFrame)?;
+        let mut next_state = Vec::new();
+        next_state
+            .try_reserve_exact(channels.len())
+            .map_err(|_| RangeError::CorruptFrame)?;
+        for (channel_index, input) in channels.iter().enumerate() {
+            let mut previous = f64::from(
+                self.previous_output
+                    .get(channel_index)
+                    .copied()
+                    .unwrap_or(0.0),
+            );
+            let mut filtered = Vec::new();
+            filtered
+                .try_reserve_exact(input.len())
+                .map_err(|_| RangeError::CorruptFrame)?;
+            for &sample in input {
+                let value = f64::from(sample) + DEEMPHASIS_ALPHA * previous;
+                let value = value as f32;
+                if !value.is_finite() {
+                    return Err(RangeError::CorruptFrame);
+                }
+                filtered.push(value);
+                previous = f64::from(value);
+            }
+            next_state.push(previous as f32);
+            output.push(filtered);
+        }
+        for (destination, source) in channels.iter_mut().zip(output) {
+            destination.copy_from_slice(&source);
+        }
+        self.previous_output = next_state;
+        Ok(())
     }
 }
 
@@ -1594,18 +1659,67 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 #[cfg(test)]
 mod tests {
     use super::{
-        AllocationControls, ENERGY_LAPLACE_MODELS, FineShapeAllocation, FrameHeader, MonoPvqShapes,
-        PostFilter, allocation_caps, allocation_thresholds, allocation_trim_offsets,
-        apply_tf_adjustment, band_edges, candidate_recursive_pvq_angle_context,
-        celt_low_overlap_window, decode_allocation_controls, decode_allocation_trim,
-        decode_band_boosts, decode_coarse_energy_residuals, decode_final_fine_energy,
-        decode_fine_energies, decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes,
-        decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes, hadamard_tf_axis,
-        hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
+        AllocationControls, CeltDeemphasis, DEEMPHASIS_ALPHA, ENERGY_LAPLACE_MODELS,
+        FineShapeAllocation, FrameHeader, MonoPvqShapes, PostFilter, allocation_caps,
+        allocation_thresholds, allocation_trim_offsets, apply_tf_adjustment, band_edges,
+        candidate_recursive_pvq_angle_context, celt_low_overlap_window, decode_allocation_controls,
+        decode_allocation_trim, decode_band_boosts, decode_coarse_energy_residuals,
+        decode_final_fine_energy, decode_fine_energies, decode_header, decode_mid_side_pvq_band,
+        decode_mono_pvq_shapes, decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes,
+        hadamard_tf_axis, hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
         reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
         split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
+
+    #[test]
+    fn deemphasis_applies_the_inverse_preemphasis_recurrence_and_keeps_state() {
+        let mut deemphasis = CeltDeemphasis::default();
+        let mut first = vec![vec![1.0, -0.5], vec![0.25, 0.0]];
+        deemphasis.process(&mut first).unwrap();
+        assert_eq!(first[0][0], 1.0);
+        assert!((first[0][1] - (-0.5 + DEEMPHASIS_ALPHA as f32)).abs() < 1e-7);
+        assert_eq!(first[1][0], 0.25);
+        assert!((first[1][1] - 0.25 * DEEMPHASIS_ALPHA as f32).abs() < 1e-7);
+
+        let previous_left = first[0][1];
+        let previous_right = first[1][1];
+        let mut second = vec![vec![0.0], vec![0.0]];
+        deemphasis.process(&mut second).unwrap();
+        assert!((second[0][0] - previous_left * DEEMPHASIS_ALPHA as f32).abs() < 1e-7);
+        assert!((second[1][0] - previous_right * DEEMPHASIS_ALPHA as f32).abs() < 1e-7);
+    }
+
+    #[test]
+    fn deemphasis_reset_clears_history_and_rejects_invalid_audio() {
+        let mut deemphasis = CeltDeemphasis::default();
+        let mut first = vec![vec![1.0]];
+        deemphasis.process(&mut first).unwrap();
+        deemphasis.reset();
+        let mut after_reset = vec![vec![0.0]];
+        deemphasis.process(&mut after_reset).unwrap();
+        assert_eq!(after_reset[0], [0.0]);
+
+        let mut invalid = vec![vec![f32::NAN]];
+        assert_eq!(
+            deemphasis.process(&mut invalid),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert!(invalid[0][0].is_nan());
+    }
+
+    #[test]
+    fn deemphasis_rejects_channel_count_changes_before_modifying_samples() {
+        let mut deemphasis = CeltDeemphasis::default();
+        let mut mono = vec![vec![0.5]];
+        deemphasis.process(&mut mono).unwrap();
+        let mut stereo = vec![vec![0.25], vec![-0.25]];
+        assert_eq!(
+            deemphasis.process(&mut stereo),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert_eq!(stereo, [vec![0.25], vec![-0.25]]);
+    }
 
     #[test]
     fn recursive_split_angle_context_tracks_band_width_and_remaining_lm() {
@@ -1768,7 +1882,12 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(plain[0].len(), filtered[0].len());
-        assert_ne!(plain, filtered);
+        let mut expected = plain;
+        crate::postfilter::CeltPostFilter::default()
+            .process(&mut expected, Some(params))
+            .unwrap();
+        CeltDeemphasis::default().process(&mut expected).unwrap();
+        assert_eq!(filtered, expected);
     }
 
     #[test]
