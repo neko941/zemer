@@ -3,6 +3,8 @@
 //! The decoder is under development. No reference implementation code is
 //! copied, translated, linked, or vendored.
 
+#[allow(dead_code)]
+mod celt;
 mod packet;
 // These primitives are staged for the decoder frame pipeline.
 #[allow(dead_code)]
