@@ -175,11 +175,11 @@ fn wav_writer_rejects_metadata_it_cannot_represent() {
 }
 
 #[test]
-fn wav_ima_adpcm_streams_mono_and_stereo_with_fact_trimming() {
-    for channels in [1, 2] {
+fn wav_ima_adpcm_streams_one_through_eight_channels_with_fact_trimming() {
+    for channels in 1..=8 {
         let spec = AudioSpec::new(32_000, channels, SampleFormat::PcmI16).unwrap();
         let source: Vec<i16> = (0..257 * usize::from(channels))
-            .map(|index| ((index * 97) as i32 - 12_000).clamp(-32_768, 32_767) as i16)
+            .map(|index| ((index * 31) as i32 - 4_000).clamp(-32_768, 32_767) as i16)
             .collect();
         let audio = PcmBuffer::new(spec, Samples::I16(source.clone())).unwrap();
         let mut metadata = Metadata::default();
@@ -226,6 +226,11 @@ fn wav_ima_adpcm_streams_mono_and_stereo_with_fact_trimming() {
             ),
             257
         );
+        let fmt = bytes.windows(4).position(|chunk| chunk == b"fmt ").unwrap();
+        assert_eq!(
+            u16::from_le_bytes(bytes[fmt + 20..fmt + 22].try_into().unwrap()),
+            256 * channels
+        );
 
         let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
         assert_eq!(decoder.spec(), spec);
@@ -246,6 +251,19 @@ fn wav_ima_adpcm_streams_mono_and_stereo_with_fact_trimming() {
             .unwrap();
         assert!(max_error < 3_000, "maximum IMA ADPCM error was {max_error}");
     }
+}
+
+#[test]
+fn wav_ima_adpcm_writer_checks_block_alignment_channel_limit() {
+    let maximum_spec = AudioSpec::new(32_000, 255, SampleFormat::PcmI16).unwrap();
+    let writer = WavWriter::new_ima_adpcm(Cursor::new(Vec::new()), maximum_spec).unwrap();
+    let bytes = writer.finish().unwrap().into_inner();
+    let mut decoder = WavDecoder::new(Cursor::new(bytes)).unwrap();
+    assert_eq!(decoder.spec(), maximum_spec);
+    assert!(decoder.read_frames(1).unwrap().is_none());
+
+    let too_many_channels = AudioSpec::new(32_000, 256, SampleFormat::PcmI16).unwrap();
+    assert!(WavWriter::new_ima_adpcm(Cursor::new(Vec::new()), too_many_channels).is_err());
 }
 
 #[test]

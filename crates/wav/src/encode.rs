@@ -254,12 +254,15 @@ impl<W: Write + Seek> WavWriter<W> {
         };
         let start = writer.stream_position()?;
         if (ima_adpcm || ms_adpcm)
-            && (spec.sample_format() != SampleFormat::PcmI16
-                || !(1..=2).contains(&spec.channels())
-                || spec.speaker_mask().is_some())
+            && (spec.sample_format() != SampleFormat::PcmI16 || spec.speaker_mask().is_some())
         {
             return Err(AudioError::InvalidData(
-                "WAVE ADPCM encoding requires mono/stereo signed 16-bit PCM without a speaker mask",
+                "WAVE ADPCM encoding requires signed 16-bit PCM without a speaker mask",
+            ));
+        }
+        if ms_adpcm && !(1..=2).contains(&spec.channels()) {
+            return Err(AudioError::InvalidData(
+                "Microsoft ADPCM WAVE encoding requires mono or stereo PCM",
             ));
         }
         let (legacy_tag, bits_per_sample) = if ima_adpcm || ms_adpcm {
@@ -282,7 +285,13 @@ impl<W: Write + Seek> WavWriter<W> {
             }
         };
         let block_align = if ima_adpcm || ms_adpcm {
-            if ms_adpcm && spec.channels() == 2 {
+            if ima_adpcm {
+                spec.channels()
+                    .checked_mul(256)
+                    .ok_or(AudioError::Unsupported(
+                        "WAVE IMA ADPCM channel count exceeds the block alignment limit",
+                    ))?
+            } else if spec.channels() == 2 {
                 512
             } else {
                 256
@@ -295,7 +304,9 @@ impl<W: Write + Seek> WavWriter<W> {
         let samples_per_block = if ms_adpcm {
             ms_adpcm::samples_per_block(block_align, spec.channels())?
         } else if ima_adpcm {
-            1 + (block_align - 4 * spec.channels()) * 2 / spec.channels()
+            let channels = u32::from(spec.channels());
+            u16::try_from(1 + (u32::from(block_align) - 4 * channels) * 2 / channels)
+                .map_err(|_| AudioError::InvalidData("WAVE IMA ADPCM block is too large"))?
         } else {
             0
         };

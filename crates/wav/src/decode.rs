@@ -957,7 +957,7 @@ fn parse_format(bytes: &[u8]) -> Result<(AudioSpec, u16, WaveEncoding), AudioErr
         if bytes.len() < 20
             || extension_size.is_none_or(|size| size < 2 || usize::from(size) > bytes.len() - 18)
             || bits != 4
-            || !(1..=2).contains(&channels)
+            || channels == 0
             || sample_rate == 0
         {
             return Err(AudioError::InvalidFormat(
@@ -982,8 +982,8 @@ fn parse_format(bytes: &[u8]) -> Result<(AudioSpec, u16, WaveEncoding), AudioErr
                 "invalid IMA ADPCM block alignment",
             ));
         }
-        let expected_samples = 1 + payload_size * 2 / channels;
-        if samples_per_block != expected_samples {
+        let expected_samples = 1 + u32::from(payload_size) * 2 / u32::from(channels);
+        if u32::from(samples_per_block) != expected_samples {
             return Err(AudioError::InvalidFormat(
                 "inconsistent IMA ADPCM samples per block",
             ));
@@ -1537,6 +1537,21 @@ mod tests {
         let riff_size = (bytes.len() - 8) as u32;
         bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
         assert!(WavDecoder::new(Cursor::new(bytes)).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_ima_block_geometry_without_integer_overflow() {
+        let mut format = Vec::new();
+        format.extend_from_slice(&0x0011_u16.to_le_bytes());
+        format.extend_from_slice(&1_u16.to_le_bytes());
+        format.extend_from_slice(&48_000_u32.to_le_bytes());
+        format.extend_from_slice(&0_u32.to_le_bytes());
+        format.extend_from_slice(&65_532_u16.to_le_bytes());
+        format.extend_from_slice(&4_u16.to_le_bytes());
+        format.extend_from_slice(&2_u16.to_le_bytes());
+        format.extend_from_slice(&1_u16.to_le_bytes());
+
+        assert!(parse_format(&format).is_err());
     }
 
     #[test]
