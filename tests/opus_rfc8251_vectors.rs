@@ -3,7 +3,8 @@
 //! Set `ZEMER_OPUS_TESTVECTORS` to the extracted `opus_newvectors` directory,
 //! then run `cargo test -p zemer-tests --test opus_rfc8251_vectors -- --ignored`.
 //! The corpus stays outside the repository; this test validates packet
-//! framing decisions only, not Opus audio decoding.
+//! framing and encoder final-range fields, not Opus audio decoding or
+//! decoder-state conformance.
 
 use std::{env, fs, path::Path};
 
@@ -29,6 +30,13 @@ fn rfc8251_packet_framing_matches_baseline() {
                 panic!("{}: truncated packet record at {cursor}", path.display())
             });
             let packet_bytes = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+            let encoder_final_range = u32::from_be_bytes(header[4..].try_into().unwrap());
+            assert_ne!(
+                encoder_final_range,
+                0,
+                "{}: missing encoder final range at {cursor}",
+                path.display()
+            );
             let packet_start = header_end;
             let packet_end = packet_start
                 .checked_add(packet_bytes)
