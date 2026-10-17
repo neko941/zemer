@@ -746,4 +746,65 @@ mod tests {
         assert!(normalized_rms < 10.0, "RMS error: {normalized_rms}");
         assert!(normalized_peak < 32.0, "peak error: {normalized_peak}");
     }
+
+    #[test]
+    #[ignore = "requires the external RFC 8251 opus_newvectors corpus"]
+    fn rfc8251_vector07_stops_at_a_transient_recursive_pvq_split() {
+        use crate::packet::{Mode, OpusPacket};
+        use std::{env, fs, path::Path};
+
+        let path =
+            Path::new(&env::var_os("ZEMER_OPUS_TESTVECTORS").unwrap()).join("testvector07.bit");
+        let bytes = fs::read(path).unwrap();
+        let mut cursor = 0;
+        let mut history = MonoCeltEnergyHistory::default();
+        let mut synthesis = crate::celt::CeltSynthesis::default();
+        let mut matched_ranges = 0;
+
+        while cursor + 8 <= bytes.len() {
+            let packet_bytes =
+                u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+            let expected_range =
+                u32::from_be_bytes(bytes[cursor + 4..cursor + 8].try_into().unwrap());
+            let end = cursor + 8 + packet_bytes;
+            assert!(end <= bytes.len(), "truncated vector record at {cursor}");
+            let packet = OpusPacket::parse(&bytes[cursor + 8..end]).unwrap();
+            let toc = packet.toc();
+            assert_eq!(toc.mode(), Mode::Celt);
+            assert!(!toc.stereo);
+            assert_eq!(toc.frame_code, 0);
+            let frame = packet.frames()[0];
+            let mut prefix_range = RangeDecoder::new(frame);
+            let prefix = history
+                .decode_prefix(&mut prefix_range, toc.frame_samples_48k, frame.len(), 21)
+                .unwrap()
+                .expect("vector 07 frame must be active CELT");
+            let mut range = RangeDecoder::new(frame);
+            match history.decode_active_frame(
+                &mut range,
+                toc.frame_samples_48k,
+                frame.len(),
+                21,
+                &mut synthesis,
+            ) {
+                Ok(decoded) => {
+                    assert_eq!(decoded.final_range, expected_range, "record at {cursor}");
+                    matched_ranges += 1;
+                }
+                Err(RangeError::UnsupportedCeltMode) => {
+                    assert_eq!(cursor, 756);
+                    assert_eq!(expected_range, 0x1565_2100);
+                    assert_eq!(toc.configuration, 31);
+                    assert_eq!(toc.frame_samples_48k, 960);
+                    assert!(prefix.header.transient);
+                    assert_eq!(matched_ranges, 18);
+                    return;
+                }
+                Err(error) => panic!("unexpected frame error at {cursor}: {error:?}"),
+            }
+            cursor = end;
+        }
+
+        panic!("vector 07 did not reach its known recursive-split packet");
+    }
 }

@@ -779,8 +779,8 @@ pub(crate) fn pulses_for_target_allocation(
     Ok(best)
 }
 
-/// Reports whether the node allocation exceeds the largest codebook plus the
-/// 1.5-bit margin CELT reserves before splitting a band.
+/// Reports whether the node allocation passes CELT's cached-codebook split
+/// threshold, including its 12-eighth-bit reserve.
 pub(crate) fn pvq_allocation_requires_split(
     dimensions: usize,
     available_eighth_bits: u32,
@@ -793,7 +793,9 @@ pub(crate) fn pvq_allocation_requires_split(
     }
 
     let maximum_codebook_cost = largest_fitting_codebook_cost(dimensions)?;
-    let split_threshold = u32::from(maximum_codebook_cost) + 12;
+    // CELT's pulse cache stores the rounded codebook cost minus one eighth-bit,
+    // then adds 12 before comparing with a strict greater-than boundary.
+    let split_threshold = u32::from(maximum_codebook_cost) + 11;
     Ok(available_eighth_bits > split_threshold)
 }
 
@@ -1488,14 +1490,14 @@ mod tests {
     #[test]
     fn pvq_split_trigger_keeps_margin_after_largest_representable_codebook() {
         assert_eq!(super::largest_fitting_codebook_cost(4), Ok(256));
+        assert!(!pvq_allocation_requires_split(4, 266).unwrap());
         assert!(!pvq_allocation_requires_split(4, 267).unwrap());
-        assert!(!pvq_allocation_requires_split(4, 268).unwrap());
-        assert!(pvq_allocation_requires_split(4, 269).unwrap());
+        assert!(pvq_allocation_requires_split(4, 268).unwrap());
 
         for dimensions in [4, 8, 16, 32, 64, 128, 176] {
             let maximum_codebook_cost =
                 u32::from(super::largest_fitting_codebook_cost(dimensions).unwrap());
-            let threshold = maximum_codebook_cost + 12;
+            let threshold = maximum_codebook_cost + 11;
 
             assert!(
                 !pvq_allocation_requires_split(dimensions, threshold).unwrap(),
@@ -1522,7 +1524,7 @@ mod tests {
     fn allocation_driven_recursive_shape_decodes_angle_before_children() {
         let mut range = RangeDecoder::new(&[0; 4]);
         let mut contexts = Vec::new();
-        let budget = u32::from(super::largest_fitting_codebook_cost(4).unwrap()) + 13;
+        let budget = u32::from(super::largest_fitting_codebook_cost(4).unwrap()) + 12;
         let (shape, pulses) = decode_recursive_pvq_shape_for_allocation(
             &mut range,
             120,
