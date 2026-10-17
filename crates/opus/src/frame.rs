@@ -609,7 +609,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires the external RFC 8251 opus_newvectors corpus"]
-    fn rfc8251_vector07_transient_prefix_matches_allocation_trace() {
+    fn rfc8251_vector07_transient_frame_matches_final_range() {
         use crate::packet::OpusPacket;
         use std::{env, fs, path::Path};
         let root =
@@ -645,5 +645,30 @@ mod tests {
         );
         assert_eq!(range.tell_frac(), 790);
         assert_eq!(range.final_range(), 0x0a3f_ee00);
+
+        let mut tf_adjustments = [0; 21];
+        tf_adjustments[..prefix.tf_resolution.adjustments.len()]
+            .copy_from_slice(&prefix.tf_resolution.adjustments);
+        super::decode_mono_pvq_shapes_bounded(
+            &mut range,
+            960,
+            fine,
+            prefix.spread,
+            8,
+            &tf_adjustments,
+            u32::try_from(frame.len() * 64).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(range.tell_frac(), 2_989);
+
+        let anti_collapse_on = prefix.reservations.anti_collapse_eighth_bits > 0
+            && range.read_raw_bits(1).unwrap() != 0;
+        let remaining_bits = u32::try_from(frame.len() * 8)
+            .unwrap()
+            .saturating_sub(range.tell());
+        super::decode_final_fine_energy(&mut range, &prefix.energies_q15, fine, 1, remaining_bits)
+            .unwrap();
+        assert_eq!(range.final_range(), expected_packet_range);
+        assert!(anti_collapse_on);
     }
 }
