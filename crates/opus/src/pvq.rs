@@ -779,10 +779,8 @@ pub(crate) fn pulses_for_target_allocation(
     Ok(best)
 }
 
-/// Reports whether a fitting pseudo-pulse codebook crosses the 32-bit limit.
-///
-/// A candidate only triggers a split when its conservative codebook cost is
-/// both larger than 32 bits and no larger than the current node allocation.
+/// Reports whether the node allocation exceeds the largest codebook plus the
+/// 1.5-bit margin CELT reserves before splitting a band.
 pub(crate) fn pvq_allocation_requires_split(
     dimensions: usize,
     available_eighth_bits: u32,
@@ -790,26 +788,28 @@ pub(crate) fn pvq_allocation_requires_split(
     if dimensions == 0 || dimensions > MAX_PVQ_DIMENSIONS {
         return Err(RangeError::InvalidPvqLayout);
     }
-    if dimensions == 1 {
+    if dimensions <= 2 {
         return Ok(false);
     }
 
+    let maximum_codebook_cost = largest_fitting_codebook_cost(dimensions)?;
+    let split_threshold = u32::from(maximum_codebook_cost) + 12;
+    Ok(available_eighth_bits > split_threshold)
+}
+
+fn largest_fitting_codebook_cost(dimensions: usize) -> Result<u16, RangeError> {
+    let mut maximum_codebook_cost = None;
     for pseudo in 1..=MAX_PVQ_PSEUDO_PULSES {
         let Some(pulses) = pseudo_pulse_count(pseudo) else {
             break;
         };
-        let Some(size) = codebook_size_u64(dimensions, pulses) else {
-            return Err(RangeError::PvqCodebookTooLarge);
-        };
-        let cost = u32::from(conservative_log2_eighths_u64(size));
-        if cost > available_eighth_bits {
-            return Ok(false);
-        }
-        if cost > 32 * 8 {
-            return Ok(true);
+        match codebook_size(dimensions, pulses) {
+            Ok(size) => maximum_codebook_cost = Some(conservative_log2_eighths(size)),
+            Err(RangeError::PvqCodebookTooLarge) => break,
+            Err(error) => return Err(error),
         }
     }
-    Ok(false)
+    maximum_codebook_cost.ok_or(RangeError::PvqCodebookTooLarge)
 }
 
 fn codebook_size_u64(dimensions: usize, pulses: usize) -> Option<u64> {
@@ -1486,11 +1486,27 @@ mod tests {
     }
 
     #[test]
-    fn pvq_split_trigger_uses_the_first_fitting_codebook_over_32_bits() {
-        // For N=2, V(2,K)=4K. The last pseudo-pulse candidate at or below
-        // 32 bits has cost 256 eighth-bits; the next candidate costs 258.
-        assert!(!pvq_allocation_requires_split(2, 257).unwrap());
-        assert!(pvq_allocation_requires_split(2, 258).unwrap());
+    fn pvq_split_trigger_keeps_margin_after_largest_representable_codebook() {
+        assert_eq!(super::largest_fitting_codebook_cost(4), Ok(256));
+        assert!(!pvq_allocation_requires_split(4, 267).unwrap());
+        assert!(!pvq_allocation_requires_split(4, 268).unwrap());
+        assert!(pvq_allocation_requires_split(4, 269).unwrap());
+
+        for dimensions in [4, 8, 16, 32, 64, 128, 176] {
+            let maximum_codebook_cost =
+                u32::from(super::largest_fitting_codebook_cost(dimensions).unwrap());
+            let threshold = maximum_codebook_cost + 12;
+
+            assert!(
+                !pvq_allocation_requires_split(dimensions, threshold).unwrap(),
+                "dimensions={dimensions}"
+            );
+            assert!(
+                pvq_allocation_requires_split(dimensions, threshold + 1).unwrap(),
+                "dimensions={dimensions}"
+            );
+        }
+        assert!(!pvq_allocation_requires_split(2, u32::MAX).unwrap());
         assert!(!pvq_allocation_requires_split(1, u32::MAX).unwrap());
         assert_eq!(
             pvq_allocation_requires_split(0, 258),
@@ -1506,11 +1522,12 @@ mod tests {
     fn allocation_driven_recursive_shape_decodes_angle_before_children() {
         let mut range = RangeDecoder::new(&[0; 4]);
         let mut contexts = Vec::new();
+        let budget = u32::from(super::largest_fitting_codebook_cost(4).unwrap()) + 13;
         let (shape, pulses) = decode_recursive_pvq_shape_for_allocation(
             &mut range,
             120,
-            2,
-            258,
+            4,
+            budget,
             &mut |dimensions, budget, depth| {
                 contexts.push((dimensions, budget, depth));
                 Ok(RecursivePvqAngleContext {
@@ -1522,9 +1539,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(contexts, [(2, 258, 0)]);
-        assert_eq!(pulses, 2);
-        assert_eq!(shape, [1.0, 0.0]);
+        assert_eq!(contexts, [(4, budget, 0)]);
+        assert!(pulses > 0);
+        assert_eq!(shape.len(), 4);
+        let norm = shape.iter().map(|value| value * value).sum::<f32>();
+        assert!((norm - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -1532,7 +1551,7 @@ mod tests {
         let mut range = RangeDecoder::new(&[0; 16]);
         let mut angle_context_calls = 0;
         assert_eq!(
-            decode_recursive_pvq_shape_for_allocation(&mut range, 120, 4, 1_024, &mut |_, _, _| {
+            decode_recursive_pvq_shape_for_allocation(&mut range, 120, 8, 1_024, &mut |_, _, _| {
                 angle_context_calls += 1;
                 Ok(RecursivePvqAngleContext {
                     pulse_cap_eighth_bits: 0,
