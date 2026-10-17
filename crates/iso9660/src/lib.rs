@@ -634,9 +634,11 @@ fn validate_output_component(component: &str) -> Result<(), IsoError> {
         .unwrap_or(component)
         .to_ascii_uppercase();
     if matches!(base.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (base.len() == 4
-            && (base.starts_with("COM") || base.starts_with("LPT"))
-            && matches!(base.as_bytes()[3], b'1'..=b'9'))
+        || ((base.starts_with("COM") || base.starts_with("LPT"))
+            && (matches!(
+                base.as_str(),
+                "COM¹" | "COM²" | "COM³" | "LPT¹" | "LPT²" | "LPT³"
+            ) || (base.len() == 4 && matches!(base.as_bytes()[3], b'1'..=b'9'))))
     {
         return Err(IsoError::Unsupported("file name is reserved on Windows"));
     }
@@ -646,6 +648,23 @@ fn validate_output_component(component: &str) -> Result<(), IsoError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_path_rejects_superscript_windows_device_names() {
+        for name in [
+            "COM¹",
+            "com².txt",
+            "COM³.log",
+            "LPT¹",
+            "lpt².txt",
+            "LPT³.wav",
+        ] {
+            assert!(matches!(
+                validate_output_component(name),
+                Err(IsoError::Unsupported("file name is reserved on Windows"))
+            ));
+        }
+    }
 
     #[test]
     fn output_path_preflight_handles_maximum_flat_directory() {
