@@ -1558,7 +1558,8 @@ pub(crate) fn decode_band_boosts(
         while boost < usize::from(caps[usize::from(band)]) {
             let tell = range.tell_frac() as usize;
             let symbol_cost = usize::from(loop_logp) * 8;
-            if tell.saturating_add(symbol_cost) >= total_bits.saturating_add(total_boost) {
+            let remaining_bits = total_bits.saturating_sub(total_boost);
+            if tell.saturating_add(symbol_cost) >= remaining_bits {
                 break;
             }
             if !range.decode_bit_logp(loop_logp)? {
@@ -3126,6 +3127,16 @@ mod tests {
         let mut trim = RangeDecoder::new(&[0; 8]);
         assert_eq!(decode_allocation_trim(&mut trim, 8, 0), Ok(0));
         assert_eq!(decode_allocation_trim(&mut trim, 0, 0), Ok(5));
+    }
+
+    #[test]
+    fn band_boosts_consume_the_remaining_frame_budget() {
+        let caps = [u16::MAX; 21];
+        let mut range = RangeDecoder::new(&[0xff; 8]);
+        let (_, total_boost) = decode_band_boosts(&mut range, 120, 0, 1, 1, &caps).unwrap();
+
+        assert!(total_boost < 64);
+        assert!(range.tell_frac() + total_boost <= 64);
     }
 
     #[test]
