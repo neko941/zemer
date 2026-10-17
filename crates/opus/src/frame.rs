@@ -76,9 +76,8 @@ impl MonoCeltEnergyHistory {
         )
     }
 
-    /// Decodes one supported active mono CELT frame and commits its energy
-    /// history only after the frame tail succeeds. Silence and recursive PVQ
-    /// splits are not yet handled by this path.
+    /// Decodes one active mono CELT frame and commits its energy history only
+    /// after the frame tail succeeds. Silence is handled by the caller.
     pub(crate) fn decode_active_frame(
         &mut self,
         range: &mut RangeDecoder<'_>,
@@ -267,8 +266,7 @@ pub(crate) fn decode_mono_frame_prefix(
 }
 
 /// Decodes and synthesizes the mono CELT frame tail, retaining synthesis and
-/// anti-collapse state across frames. Recursive split packet conformance is
-/// still being validated against the RFC corpus.
+/// anti-collapse state across frames.
 pub(crate) fn decode_mono_celt_frame(
     range: &mut RangeDecoder<'_>,
     frame_samples_48k: u16,
