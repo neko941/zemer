@@ -3,9 +3,9 @@
 use crate::celt::{
     AllocationControls, AllocationReservations, BandAllocation, CeltSynthesis, FinalFineEnergy,
     FineShapeAllocation, FrameHeader, MonoPvqShapes, ReallocatedBands, TfResolution,
-    decode_allocation_controls, decode_coarse_energy_residuals, decode_final_fine_energy,
-    decode_fine_energies, decode_header, decode_mono_pvq_shapes_bounded, decode_spread,
-    decode_tf_resolution, denormalize_mono_pvq_shapes, predict_coarse_energies,
+    apply_mono_anti_collapse, decode_allocation_controls, decode_coarse_energy_residuals,
+    decode_final_fine_energy, decode_fine_energies, decode_header, decode_mono_pvq_shapes_bounded,
+    decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes, predict_coarse_energies,
     reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
     split_fine_shape_allocation,
 };
@@ -39,12 +39,16 @@ pub(crate) struct MonoCeltFramePrefix {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct MonoCeltEnergyHistory {
     previous_final_energies_q15: [i32; 42],
+    previous_previous_final_energies_q15: [i32; 42],
+    anti_collapse_seed: u32,
 }
 
 impl Default for MonoCeltEnergyHistory {
     fn default() -> Self {
         Self {
             previous_final_energies_q15: [0; 42],
+            previous_previous_final_energies_q15: [0; 42],
+            anti_collapse_seed: 0,
         }
     }
 }
@@ -52,6 +56,8 @@ impl Default for MonoCeltEnergyHistory {
 impl MonoCeltEnergyHistory {
     pub(crate) fn reset(&mut self) {
         self.previous_final_energies_q15 = [0; 42];
+        self.previous_previous_final_energies_q15 = [0; 42];
+        self.anti_collapse_seed = 0;
     }
 
     pub(crate) fn decode_prefix(
@@ -71,8 +77,8 @@ impl MonoCeltEnergyHistory {
     }
 
     /// Decodes one supported active mono CELT frame and commits its energy
-    /// history only after the frame tail succeeds. Silence, transient frames,
-    /// and recursive PVQ splits are not yet handled by this path.
+    /// history only after the frame tail succeeds. Silence and recursive PVQ
+    /// splits are not yet handled by this path.
     pub(crate) fn decode_active_frame(
         &mut self,
         range: &mut RangeDecoder<'_>,
@@ -84,14 +90,27 @@ impl MonoCeltEnergyHistory {
         let prefix = self
             .decode_prefix(range, frame_samples_48k, frame_bytes, end_band)?
             .ok_or(RangeError::UnsupportedCeltMode)?;
-        let frame =
-            decode_mono_celt_frame(range, frame_samples_48k, frame_bytes, &prefix, synthesis)?;
+        let prior_energies = [
+            self.previous_final_energies_q15,
+            self.previous_previous_final_energies_q15,
+        ];
+        let frame = decode_mono_celt_frame(
+            range,
+            frame_samples_48k,
+            frame_bytes,
+            &prefix,
+            synthesis,
+            &prior_energies,
+            self.anti_collapse_seed,
+        )?;
         self.commit(&frame);
         Ok(frame)
     }
 
     pub(crate) fn commit(&mut self, frame: &MonoCeltPcmFrame) {
+        self.previous_previous_final_energies_q15 = self.previous_final_energies_q15;
         self.previous_final_energies_q15 = frame.final_energy.energies_q15;
+        self.anti_collapse_seed = frame.anti_collapse_seed;
     }
 }
 
@@ -103,6 +122,7 @@ pub(crate) struct MonoCeltPcmFrame {
     pub(crate) spectrum: Vec<f32>,
     pub(crate) samples: Option<Vec<f32>>,
     pub(crate) final_range: u32,
+    anti_collapse_seed: u32,
 }
 
 /// Decodes the CELT header and mono coarse energy in bitstream order.
@@ -245,21 +265,19 @@ pub(crate) fn decode_mono_frame_prefix(
     }))
 }
 
-/// Decodes and synthesizes the unsplit, non-transient mono CELT frame tail.
+/// Decodes and synthesizes the unsplit mono CELT frame tail.
 ///
-/// Recursive PVQ splitting and transient anti-collapse need further frame
-/// logic, so those modes are rejected explicitly until their decode paths are
-/// validated. The caller retains `synthesis` across frames for overlap state.
+/// Recursive PVQ splitting remains unsupported. The caller retains synthesis
+/// and anti-collapse state across frames.
 pub(crate) fn decode_mono_celt_frame(
     range: &mut RangeDecoder<'_>,
     frame_samples_48k: u16,
     frame_bytes: usize,
     prefix: &MonoCeltFramePrefix,
     synthesis: &mut CeltSynthesis,
+    previous_energies_q15: &[[i32; 42]; 2],
+    anti_collapse_seed: u32,
 ) -> Result<MonoCeltPcmFrame, RangeError> {
-    if prefix.header.transient {
-        return Err(RangeError::UnsupportedCeltMode);
-    }
     let allocation = prefix.fine_shape.ok_or(RangeError::UnsupportedCeltMode)?;
     if prefix.band_allocation.is_none() || prefix.reallocated.is_none() {
         return Err(RangeError::UnsupportedCeltMode);
@@ -272,15 +290,25 @@ pub(crate) fn decode_mono_celt_frame(
         .saturating_mul(64)
         .try_into()
         .map_err(|_| RangeError::CorruptFrame)?;
-    let shapes = decode_mono_pvq_shapes_bounded(
+    let blocks = if prefix.header.transient {
+        u8::try_from(frame_samples_48k / 120).map_err(|_| RangeError::InvalidCeltEnergyLayout)?
+    } else {
+        1
+    };
+    if frame_samples_48k % 120 != 0 || ![1, 2, 4, 8].contains(&blocks) {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let mut shapes = decode_mono_pvq_shapes_bounded(
         range,
         frame_samples_48k,
         allocation,
         prefix.spread,
-        1,
+        blocks,
         &tf_adjustments,
         frame_eighth_bits,
     )?;
+    let anti_collapse_on =
+        prefix.reservations.anti_collapse_eighth_bits > 0 && range.read_raw_bits(1)? != 0;
     let remaining_bits = frame_bytes
         .saturating_mul(8)
         .saturating_sub(range.tell() as usize)
@@ -288,15 +316,35 @@ pub(crate) fn decode_mono_celt_frame(
         .map_err(|_| RangeError::CorruptFrame)?;
     let final_energy =
         decode_final_fine_energy(range, &prefix.energies_q15, allocation, 1, remaining_bits)?;
+    let anti_collapse_seed = if anti_collapse_on {
+        apply_mono_anti_collapse(
+            &mut shapes,
+            frame_samples_48k,
+            allocation,
+            &final_energy.energies_q15,
+            previous_energies_q15,
+            anti_collapse_seed,
+        )?
+    } else {
+        anti_collapse_seed
+    };
     let spectrum = denormalize_mono_pvq_shapes(
         frame_samples_48k,
         allocation,
         &shapes,
         &final_energy.energies_q15,
     )?;
-    let samples = match synthesis
-        .synthesize_with_postfilter(std::slice::from_ref(&spectrum), prefix.header.postfilter)?
-    {
+    let synthesis_result = if prefix.header.transient {
+        synthesis.synthesize_transient_with_postfilter(
+            std::slice::from_ref(&spectrum),
+            usize::from(blocks),
+            prefix.header.postfilter,
+        )?
+    } else {
+        synthesis
+            .synthesize_with_postfilter(std::slice::from_ref(&spectrum), prefix.header.postfilter)?
+    };
+    let samples = match synthesis_result {
         Some(mut channels) => Some(channels.pop().ok_or(RangeError::CorruptFrame)?),
         None => None,
     };
@@ -306,6 +354,7 @@ pub(crate) fn decode_mono_celt_frame(
         spectrum,
         samples,
         final_range: range.final_range(),
+        anti_collapse_seed,
     })
 }
 
@@ -601,15 +650,22 @@ mod tests {
         );
         assert_eq!(range.tell_frac(), 801);
         let mut synthesis = crate::celt::CeltSynthesis::default();
-        let decoded =
-            super::decode_mono_celt_frame(&mut range, 960, frame.len(), &prefix, &mut synthesis)
-                .unwrap();
+        let decoded = super::decode_mono_celt_frame(
+            &mut range,
+            960,
+            frame.len(),
+            &prefix,
+            &mut synthesis,
+            &[[0; 42]; 2],
+            0,
+        )
+        .unwrap();
         assert_eq!(decoded.final_range, expected);
     }
 
     #[test]
     #[ignore = "requires the external RFC 8251 opus_newvectors corpus"]
-    fn rfc8251_vector07_transient_frame_matches_final_range() {
+    fn rfc8251_vector07_transient_frame_matches_range_and_pcm() {
         use crate::packet::OpusPacket;
         use std::{env, fs, path::Path};
         let root =
@@ -645,30 +701,41 @@ mod tests {
         );
         assert_eq!(range.tell_frac(), 790);
         assert_eq!(range.final_range(), 0x0a3f_ee00);
-
-        let mut tf_adjustments = [0; 21];
-        tf_adjustments[..prefix.tf_resolution.adjustments.len()]
-            .copy_from_slice(&prefix.tf_resolution.adjustments);
-        super::decode_mono_pvq_shapes_bounded(
-            &mut range,
-            960,
-            fine,
-            prefix.spread,
-            8,
-            &tf_adjustments,
-            u32::try_from(frame.len() * 64).unwrap(),
+        let mut history = MonoCeltEnergyHistory::default();
+        let mut synthesis = crate::celt::CeltSynthesis::default();
+        assert!(synthesis.synthesize(&[vec![0.0; 960]]).unwrap().is_none());
+        let mut decode_range = RangeDecoder::new(frame);
+        let decoded = history
+            .decode_active_frame(&mut decode_range, 960, frame.len(), 21, &mut synthesis)
+            .unwrap();
+        assert_eq!(decoded.final_range, expected_packet_range);
+        assert!(decoded.shapes.collapse_masks.iter().any(|&mask| mask != 0));
+        let samples = decoded.samples.unwrap();
+        assert_eq!(samples.len(), 960);
+        assert!(samples.iter().all(|sample| sample.is_finite()));
+        assert!(samples.iter().any(|&sample| sample != 0.0));
+        let pcm = fs::read(
+            Path::new(&env::var_os("ZEMER_OPUS_TESTVECTORS").unwrap()).join("testvector07.dec"),
         )
         .unwrap();
-        assert_eq!(range.tell_frac(), 2_989);
-
-        let anti_collapse_on = prefix.reservations.anti_collapse_eighth_bits > 0
-            && range.read_raw_bits(1).unwrap() != 0;
-        let remaining_bits = u32::try_from(frame.len() * 8)
-            .unwrap()
-            .saturating_sub(range.tell());
-        super::decode_final_fine_energy(&mut range, &prefix.energies_q15, fine, 1, remaining_bits)
-            .unwrap();
-        assert_eq!(range.final_range(), expected_packet_range);
-        assert!(anti_collapse_on);
+        let reference: Vec<_> = pcm
+            .chunks_exact(4)
+            .take(960)
+            .map(|frame| i16::from_le_bytes([frame[0], frame[1]]))
+            .collect();
+        let normalized_errors: Vec<_> = samples
+            .iter()
+            .zip(&reference)
+            .map(|(&actual, &expected)| (f64::from(actual) * 32_768.0 - f64::from(expected)).abs())
+            .collect();
+        let normalized_rms = (normalized_errors
+            .iter()
+            .map(|error| error.powi(2))
+            .sum::<f64>()
+            / normalized_errors.len() as f64)
+            .sqrt();
+        let normalized_peak = normalized_errors.iter().copied().fold(0.0_f64, f64::max);
+        assert!(normalized_rms < 10.0, "RMS error: {normalized_rms}");
+        assert!(normalized_peak < 32.0, "peak error: {normalized_peak}");
     }
 }

@@ -316,7 +316,25 @@ impl CeltSynthesis {
         spectra: &[Vec<f32>],
         postfilter: Option<PostFilter>,
     ) -> Result<Option<Vec<Vec<f32>>>, RangeError> {
-        let mut output = self.synthesize(spectra)?;
+        self.synthesize_blocks_with_postfilter(spectra, None, postfilter)
+    }
+
+    pub(crate) fn synthesize_transient_with_postfilter(
+        &mut self,
+        spectra: &[Vec<f32>],
+        blocks: usize,
+        postfilter: Option<PostFilter>,
+    ) -> Result<Option<Vec<Vec<f32>>>, RangeError> {
+        self.synthesize_blocks_with_postfilter(spectra, Some(blocks), postfilter)
+    }
+
+    fn synthesize_blocks_with_postfilter(
+        &mut self,
+        spectra: &[Vec<f32>],
+        blocks: Option<usize>,
+        postfilter: Option<PostFilter>,
+    ) -> Result<Option<Vec<Vec<f32>>>, RangeError> {
+        let mut output = self.synthesize_with_blocks(spectra, blocks)?;
         if let Some(samples) = output.as_mut() {
             self.postfilter.process(samples, postfilter)?;
             self.deemphasis.process(samples)?;
@@ -430,6 +448,7 @@ pub(crate) struct FineShapeAllocation {
 pub(crate) struct MonoPvqShapes {
     pub(crate) vectors: [Vec<f32>; 21],
     pub(crate) pulses: [u32; 21],
+    pub(crate) collapse_masks: [u8; 21],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -798,6 +817,7 @@ pub(crate) fn decode_mono_pvq_shapes_bounded(
 
     let mut shapes = std::array::from_fn(|_| Vec::new());
     let mut pulse_counts = [0; 21];
+    let mut collapse_masks = [0; 21];
     let mut balance = i64::from(allocation.balance_eighth_bits);
     for band in start_band..end_band {
         let index = usize::from(band);
@@ -819,6 +839,7 @@ pub(crate) fn decode_mono_pvq_shapes_bounded(
             };
             shapes[index] = vec![if sign == 0 { 1.0 } else { -1.0 }];
             pulse_counts[index] = 1;
+            collapse_masks[index] = 1;
         } else {
             if pvq_allocation_requires_split(dimensions, budget)? {
                 return Err(RangeError::UnsupportedCeltMode);
@@ -830,6 +851,11 @@ pub(crate) fn decode_mono_pvq_shapes_bounded(
             } else {
                 decode_codeword(range, dimensions, pulse_allocation.pulses as usize)?
             };
+            for (dimension, &pulse) in pulses.iter().enumerate() {
+                if pulse != 0 {
+                    collapse_masks[index] |= 1 << (dimension % usize::from(blocks));
+                }
+            }
             shapes[index] = normalize_pulses(&pulses)?;
         }
         spread_shape(&mut shapes[index], pulse_counts[index], spread, blocks)?;
@@ -839,7 +865,80 @@ pub(crate) fn decode_mono_pvq_shapes_bounded(
     Ok(MonoPvqShapes {
         vectors: shapes,
         pulses: pulse_counts,
+        collapse_masks,
     })
+}
+
+/// Restores energy to empty short blocks in transient mono CELT bands.
+pub(crate) fn apply_mono_anti_collapse(
+    shapes: &mut MonoPvqShapes,
+    frame_samples_48k: u16,
+    allocation: FineShapeAllocation,
+    energies_q15: &[i32; 42],
+    previous_energies_q15: &[[i32; 42]; 2],
+    seed: u32,
+) -> Result<u32, RangeError> {
+    let lm = frame_lm(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    if lm < 2 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let blocks = 1_usize << lm;
+    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    let mut seed = seed;
+    for band in allocation.start_band..allocation.coded_end_band {
+        let index = usize::from(band);
+        let width = usize::from(edges[index + 1] - edges[index]) / blocks;
+        let shape = &mut shapes.vectors[index];
+        if width == 0 || shape.len() != width * blocks {
+            return Err(RangeError::InvalidPvqLayout);
+        }
+        let block_mask = (1_u16 << blocks) - 1;
+        if u16::from(shapes.collapse_masks[index]) & block_mask == block_mask {
+            continue;
+        }
+        let depth = (shapes.pulses[index] + 1)
+            .checked_div(u32::try_from(width).map_err(|_| RangeError::InvalidPvqLayout)?)
+            .ok_or(RangeError::InvalidPvqLayout)?
+            >> lm;
+        let threshold = 0.5_f64 * 2.0_f64.powf(-f64::from(depth) / 8.0);
+        let previous = previous_energies_q15[0][index].min(previous_energies_q15[1][index]);
+        let energy_delta = (energies_q15[index] - previous).max(0) as f64 / 32_768.0;
+        let mut amplitude = threshold.min(2.0 * 2.0_f64.powf(-energy_delta));
+        if lm == 3 {
+            amplitude *= std::f64::consts::SQRT_2;
+        }
+        amplitude /= ((width * blocks) as f64).sqrt();
+        let amplitude = amplitude as f32;
+        let mut inserted = false;
+        for block in 0..blocks {
+            if shapes.collapse_masks[index] & (1 << block) != 0 {
+                continue;
+            }
+            for frequency in 0..width {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                shape[frequency * blocks + block] = if seed & 0x8000 != 0 {
+                    amplitude
+                } else {
+                    -amplitude
+                };
+            }
+            inserted = true;
+        }
+        if inserted {
+            let norm = shape
+                .iter()
+                .map(|value| f64::from(*value).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            if !norm.is_finite() || norm == 0.0 {
+                return Err(RangeError::CorruptFrame);
+            }
+            for value in shape {
+                *value = (f64::from(*value) / norm) as f32;
+            }
+        }
+    }
+    Ok(seed)
 }
 
 /// Decodes a CELT stereo band from its normalized mid/side PVQ vectors.
@@ -1836,15 +1935,15 @@ mod tests {
     use super::{
         AllocationControls, CeltDeemphasis, DEEMPHASIS_ALPHA, ENERGY_LAPLACE_MODELS,
         FineShapeAllocation, FrameHeader, MonoPvqShapes, PostFilter, ReallocatedBands,
-        allocation_caps, allocation_thresholds, allocation_trim_offsets, apply_tf_adjustment,
-        band_edges, candidate_recursive_pvq_angle_context, celt_low_overlap_window,
-        decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
-        decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
-        decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes, decode_spread,
-        decode_tf_resolution, denormalize_mono_pvq_shapes, hadamard_tf_axis, hadamard_tf_vector,
-        inverse_mdct_windowed, predict_coarse_energies, reallocate_skipped_bands,
-        reserve_allocation_bits, select_band_allocation, split_fine_shape_allocation,
-        static_allocation, tf_adjustment,
+        allocation_caps, allocation_thresholds, allocation_trim_offsets, apply_mono_anti_collapse,
+        apply_tf_adjustment, band_edges, candidate_recursive_pvq_angle_context,
+        celt_low_overlap_window, decode_allocation_controls, decode_allocation_trim,
+        decode_band_boosts, decode_coarse_energy_residuals, decode_final_fine_energy,
+        decode_fine_energies, decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes,
+        decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes, hadamard_tf_axis,
+        hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
+        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
+        split_fine_shape_allocation, static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -2135,6 +2234,7 @@ mod tests {
         let shapes = MonoPvqShapes {
             vectors,
             pulses: [1; 21],
+            collapse_masks: [1; 21],
         };
         let energies = [0; 42];
         let mut synthesis = CeltSynthesis::default();
@@ -2171,12 +2271,14 @@ mod tests {
         let valid = MonoPvqShapes {
             vectors: valid_vectors,
             pulses: [1; 21],
+            collapse_masks: [1; 21],
         };
         let mut invalid_vectors: [Vec<f32>; 21] = std::array::from_fn(|_| Vec::new());
         invalid_vectors[0] = vec![1.0, 0.0];
         let invalid = MonoPvqShapes {
             vectors: invalid_vectors,
             pulses: [1; 21],
+            collapse_masks: [1; 21],
         };
         let energies = [0; 42];
         let mut synthesis = CeltSynthesis::default();
@@ -2267,6 +2369,50 @@ mod tests {
             Err(RangeError::InvalidCeltEnergyLayout)
         );
         assert!(synthesis.synthesize(&[vec![0.0; 960]]).unwrap().is_none());
+    }
+
+    #[test]
+    fn transient_anti_collapse_fills_empty_short_blocks_deterministically() {
+        let allocation = FineShapeAllocation {
+            start_band: 12,
+            coded_end_band: 13,
+            shape_eighth_bits: [0; 21],
+            fine_bits: [0; 21],
+            fine_priority: [false; 21],
+            balance_eighth_bits: 0,
+        };
+        let mut shapes = MonoPvqShapes {
+            vectors: std::array::from_fn(|band| {
+                if band == 12 {
+                    let mut vector = vec![0.0; 16];
+                    vector[0] = 1.0;
+                    vector
+                } else {
+                    Vec::new()
+                }
+            }),
+            pulses: [0; 21],
+            collapse_masks: [0; 21],
+        };
+        shapes.pulses[12] = 3;
+        shapes.collapse_masks[12] = 0b0001;
+        let mut repeated = shapes.clone();
+        let seed =
+            apply_mono_anti_collapse(&mut shapes, 480, allocation, &[0; 42], &[[0; 42]; 2], 0)
+                .unwrap();
+        let repeated_seed =
+            apply_mono_anti_collapse(&mut repeated, 480, allocation, &[0; 42], &[[0; 42]; 2], 0)
+                .unwrap();
+        assert_eq!(seed, repeated_seed);
+        assert_eq!(shapes.vectors[12], repeated.vectors[12]);
+        assert_eq!(shapes.vectors[12].len(), 16);
+        assert!(shapes.vectors[12][1..].iter().any(|&value| value != 0.0));
+        let norm = shapes.vectors[12]
+            .iter()
+            .map(|value| f64::from(*value).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        assert!((norm - 1.0).abs() < 1e-6);
     }
 
     #[test]
@@ -2362,6 +2508,7 @@ mod tests {
         let shapes = MonoPvqShapes {
             vectors,
             pulses: [0; 21],
+            collapse_masks: [0; 21],
         };
         let mut energies = [0; 42];
         energies[16] = 32_768;
@@ -2394,6 +2541,7 @@ mod tests {
         let shapes = MonoPvqShapes {
             vectors,
             pulses: [0; 21],
+            collapse_masks: [0; 21],
         };
         assert_eq!(
             denormalize_mono_pvq_shapes(120, allocation, &shapes, &[0; 42]),
