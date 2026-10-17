@@ -984,6 +984,41 @@ pub(crate) fn static_allocation(
     Ok(u32::from(channels) * width * interpolated_q64 * (1 << lm) / 256)
 }
 
+fn trimmed_static_allocation(
+    frame_samples_48k: u16,
+    band: u8,
+    channels: u8,
+    quality_q64: u16,
+    trim_offset: i32,
+    dynamic_offset: u16,
+) -> Result<u32, RangeError> {
+    let column = (quality_q64 / 64).min(9);
+    let fraction = if quality_q64 == 640 {
+        64
+    } else {
+        u32::from(quality_q64 % 64)
+    };
+    let lower = static_allocation(frame_samples_48k, band, channels, column * 64)?;
+    let upper = static_allocation(frame_samples_48k, band, channels, (column + 1) * 64)?;
+    let adjust = |allocation: u32| -> Result<u32, RangeError> {
+        if allocation == 0 {
+            return Ok(0);
+        }
+        (i64::from(allocation) + i64::from(trim_offset))
+            .max(0)
+            .try_into()
+            .map_err(|_| RangeError::InvalidCeltQuality)
+    };
+    let mut lower = adjust(lower)?;
+    let mut upper = adjust(upper)?;
+    if column > 0 {
+        lower = lower.saturating_add(u32::from(dynamic_offset));
+    }
+    upper = upper.saturating_add(u32::from(dynamic_offset));
+    let delta = upper.saturating_sub(lower);
+    Ok(lower + ((fraction * delta) >> 6))
+}
+
 pub(crate) fn allocation_thresholds(
     frame_samples_48k: u16,
     start_band: u8,
@@ -1103,13 +1138,14 @@ pub(crate) fn select_band_allocation(
         let mut done = false;
         for band in (start_band..end_band).rev() {
             let band_index = usize::from(band);
-            let static_bits = static_allocation(frame_samples_48k, band, channels, quality_q64)?;
-            let tilted_bits = if static_bits > 0 {
-                (i64::from(static_bits) + i64::from(trim_offsets[band_index])).max(0) as u32
-            } else {
-                0
-            };
-            let adjusted = tilted_bits + u32::from(controls.band_boosts[band_index]);
+            let adjusted = trimmed_static_allocation(
+                frame_samples_48k,
+                band,
+                channels,
+                quality_q64,
+                trim_offsets[band_index],
+                controls.band_boosts[band_index],
+            )?;
             let allocation = if adjusted >= u32::from(thresholds[band_index]) || done {
                 done = true;
                 adjusted.min(u32::from(caps[band_index]))
@@ -2758,6 +2794,17 @@ mod tests {
     }
 
     #[test]
+    fn trimmed_static_allocation_trims_prototypes_before_interpolation() {
+        // For the 20 ms mono band-16 boundary, the neighboring static
+        // allocations are 48 and 204 eighth-bits. The -96 trim offset clamps
+        // those endpoints to 0 and 108 before the 46/64 interpolation.
+        assert_eq!(
+            super::trimmed_static_allocation(960, 16, 1, 238, -96, 0),
+            Ok(77)
+        );
+    }
+
+    #[test]
     fn static_allocation_rejects_invalid_inputs() {
         assert_eq!(
             static_allocation(60, 0, 1, 0),
@@ -2867,7 +2914,7 @@ mod tests {
         let allocation = select_band_allocation(120, 0, 1, 1, &controls, 8)
             .unwrap()
             .unwrap();
-        assert_eq!(allocation.quality_q64, 48);
+        assert_eq!(allocation.quality_q64, 41);
         assert_eq!(allocation.eighth_bits[0], 8);
         assert_eq!(allocation.total_eighth_bits, 8);
         let below_floor = select_band_allocation(120, 0, 1, 1, &controls, 7)

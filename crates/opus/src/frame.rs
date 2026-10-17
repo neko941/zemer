@@ -606,4 +606,44 @@ mod tests {
                 .unwrap();
         assert_eq!(decoded.final_range, expected);
     }
+
+    #[test]
+    #[ignore = "requires the external RFC 8251 opus_newvectors corpus"]
+    fn rfc8251_vector07_transient_prefix_matches_allocation_trace() {
+        use crate::packet::OpusPacket;
+        use std::{env, fs, path::Path};
+        let root =
+            Path::new(&env::var_os("ZEMER_OPUS_TESTVECTORS").unwrap()).join("testvector07.bit");
+        let bytes = fs::read(root).unwrap();
+        let cursor = 0;
+        let length = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+        let expected_packet_range =
+            u32::from_be_bytes(bytes[cursor + 4..cursor + 8].try_into().unwrap());
+        assert_eq!(expected_packet_range, 0x2c33_ee00);
+        let packet = OpusPacket::parse(&bytes[cursor + 8..cursor + 8 + length]).unwrap();
+        let frame = packet.frames()[0];
+        let mut range = RangeDecoder::new(frame);
+        let prefix = decode_mono_frame_prefix(&mut range, 960, frame.len(), 21, &[0; 42])
+            .unwrap()
+            .unwrap();
+
+        assert!(prefix.header.transient);
+        let reallocated = prefix.reallocated.unwrap();
+        assert_eq!(reallocated.coded_end_band, 15);
+        assert_eq!(
+            &reallocated.eighth_bits[..15],
+            &[
+                175, 164, 154, 141, 128, 120, 112, 106, 198, 182, 166, 150, 260, 210, 167
+            ]
+        );
+        let fine = prefix.fine_shape.unwrap();
+        assert_eq!(
+            fine.fine_bits,
+            [
+                2, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 0, 0, 0
+            ]
+        );
+        assert_eq!(range.tell_frac(), 790);
+        assert_eq!(range.final_range(), 0x0a3f_ee00);
+    }
 }
