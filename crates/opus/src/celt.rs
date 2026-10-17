@@ -1363,7 +1363,9 @@ pub(crate) fn allocation_trim_offsets(
     }
     let mut offsets = [0; 21];
     for band in start_band..end_band {
-        let remaining_bands = i32::from(end_band - band);
+        // The tilt applies across bands above this one; the current band is
+        // excluded (RFC 6716 §4.3.3 uses `end - band - 1`).
+        let remaining_bands = i32::from(end_band - band - 1);
         let base_width = i32::from(BAND_WIDTHS_2_5_MS[usize::from(band)]);
         let adjustment = ((i32::from(trim) - 5 - lm as i32)
             * i32::from(channels)
@@ -2594,7 +2596,7 @@ mod tests {
         let neutral = allocation_trim_offsets(120, 0, 2, 1, 5).unwrap();
         assert_eq!(&neutral[..2], &[-8, -8]);
         let high = allocation_trim_offsets(240, 0, 2, 1, 10).unwrap();
-        assert_eq!(&high[..2], &[2, 1]);
+        assert_eq!(&high[..2], &[1, 0]);
 
         let caps = allocation_caps(120, 2, 1).unwrap();
         assert_eq!(&caps[..2], &[72, 72]);
