@@ -605,7 +605,7 @@ pub(crate) fn spread_shape(
     if shape.len() % block_count != 0 {
         return Err(RangeError::InvalidPvqBlockCount);
     }
-    if spread == 0 || shape.len() < 2 {
+    if spread == 0 || shape.len() < 2 || u64::from(pulse_count) * 2 >= shape.len() as u64 {
         return Ok(());
     }
 
@@ -1571,6 +1571,23 @@ mod tests {
         assert_eq!(super::rounded_sqrt(8), 3);
         assert_eq!(super::rounded_sqrt(15), 4);
         assert_eq!(super::rounded_sqrt(16), 4);
+    }
+
+    #[test]
+    fn spreading_skips_rotation_when_pulses_are_dense() {
+        let original = [
+            0.0,
+            0.0,
+            0.288_675_13,
+            0.0,
+            0.0,
+            0.288_675_13,
+            -0.866_025_4,
+            -0.288_675_13,
+        ];
+        let mut shape = original;
+        spread_shape(&mut shape, 4, 2, 1).unwrap();
+        assert_eq!(shape, original);
     }
 
     #[test]

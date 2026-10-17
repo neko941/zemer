@@ -77,9 +77,16 @@ const BAND_LOG2_EIGHTHS: [u8; 21] = [
     0, 0, 0, 0, 0, 0, 0, 0, 8, 8, 8, 8, 16, 16, 16, 21, 21, 24, 29, 34, 36,
 ];
 const MAX_FINE_ENERGY_BITS: u8 = 8;
+/// Per-band mean log-energy offsets, in six-decibel units with four
+/// fractional bits. The CELT envelope codes a residual around these means.
+const BAND_ENERGY_MEAN_Q4: [i16; 21] = [
+    103, 100, 92, 85, 81, 77, 72, 70, 78, 75, 73, 71, 78, 74, 69, 72, 70, 74, 76, 71, 60,
+];
 const FINE_ENERGY_OFFSET_EIGHTHS: i64 = 21;
 const CELT_OVERLAP_SAMPLES: usize = 120;
 const DEEMPHASIS_ALPHA: f64 = 0.850_006_103_5;
+// CELT's internal synthesis scale is converted to normalized Float32 here.
+const CELT_FLOAT_OUTPUT_SCALE: f32 = 1.0 / 16_384.0;
 
 /// Builds the CELT low-overlap window for one long or short inverse MDCT.
 ///
@@ -133,7 +140,7 @@ fn inverse_mdct_windowed(spectrum: &[f32]) -> Result<Vec<f32>, RangeError> {
     Ok(output)
 }
 
-/// Stateful CELT inverse-MDCT synthesis with center-aligned weighted overlap-add.
+/// Stateful CELT inverse-MDCT synthesis with 120-sample weighted overlap-add.
 #[derive(Default)]
 pub(crate) struct CeltSynthesis {
     previous: Option<Vec<Vec<f32>>>,
@@ -174,30 +181,48 @@ impl CeltSynthesis {
             .try_reserve_exact(spectra.len())
             .map_err(|_| RangeError::CorruptFrame)?;
         for spectrum in spectra {
-            current.push(inverse_mdct_windowed(spectrum)?);
+            let bins = spectrum.len();
+            let windowed = inverse_mdct_windowed(spectrum)?;
+            let start = (bins - CELT_OVERLAP_SAMPLES) / 2;
+            let end = start + bins + CELT_OVERLAP_SAMPLES;
+            let mut frame = Vec::new();
+            frame
+                .try_reserve_exact(bins + CELT_OVERLAP_SAMPLES)
+                .map_err(|_| RangeError::CorruptFrame)?;
+            frame.extend_from_slice(&windowed[start..end]);
+            current.push(frame);
         }
 
         let Some(previous) = self.previous.as_ref() else {
-            self.previous = Some(current);
+            self.previous = Some(
+                current
+                    .into_iter()
+                    .map(|channel| {
+                        let bins = channel.len() - CELT_OVERLAP_SAMPLES;
+                        channel[bins..].to_vec()
+                    })
+                    .collect(),
+            );
             return Ok(None);
         };
-        let Some(previous_size) = previous.first().map(Vec::len) else {
+        let Some(previous_tail_size) = previous.first().map(Vec::len) else {
             return Err(RangeError::CorruptFrame);
         };
-        let current_size = current[0].len();
+        let current_size = current[0]
+            .len()
+            .checked_sub(CELT_OVERLAP_SAMPLES)
+            .ok_or(RangeError::CorruptFrame)?;
         if previous.len() != current.len()
             || previous
                 .iter()
-                .any(|channel| channel.len() != previous_size)
-            || current.iter().any(|channel| channel.len() != current_size)
+                .any(|channel| channel.len() != CELT_OVERLAP_SAMPLES)
+            || current
+                .iter()
+                .any(|channel| channel.len() != current_size + CELT_OVERLAP_SAMPLES)
+            || previous_tail_size != CELT_OVERLAP_SAMPLES
         {
             return Err(RangeError::InvalidCeltEnergyLayout);
         }
-        let output_frames = previous_size
-            .checked_add(current_size)
-            .ok_or(RangeError::InvalidCeltEnergyLayout)?
-            / 4;
-        let current_start = (previous_size as isize - current_size as isize) / 4;
         let mut output = Vec::new();
         output
             .try_reserve_exact(current.len())
@@ -205,16 +230,15 @@ impl CeltSynthesis {
         for (previous_channel, current_channel) in previous.iter().zip(&current) {
             let mut channel = Vec::new();
             channel
-                .try_reserve_exact(output_frames)
+                .try_reserve_exact(current_size)
                 .map_err(|_| RangeError::CorruptFrame)?;
-            for frame in 0..output_frames {
-                let previous_index = previous_size / 2 + frame;
-                let current_index = frame as isize - current_start;
-                let old = previous_channel.get(previous_index).copied().unwrap_or(0.0);
-                let new = usize::try_from(current_index)
-                    .ok()
-                    .and_then(|index| current_channel.get(index).copied())
-                    .unwrap_or(0.0);
+            for frame in 0..current_size {
+                let old = if frame < CELT_OVERLAP_SAMPLES {
+                    previous_channel[frame]
+                } else {
+                    0.0
+                };
+                let new = current_channel[frame];
                 let sample = old + new;
                 if !sample.is_finite() {
                     return Err(RangeError::CorruptFrame);
@@ -223,7 +247,12 @@ impl CeltSynthesis {
             }
             output.push(channel);
         }
-        self.previous = Some(current);
+        self.previous = Some(
+            current
+                .into_iter()
+                .map(|channel| channel[current_size..current_size + CELT_OVERLAP_SAMPLES].to_vec())
+                .collect(),
+        );
         Ok(Some(output))
     }
 
@@ -237,6 +266,9 @@ impl CeltSynthesis {
         if let Some(samples) = output.as_mut() {
             self.postfilter.process(samples, postfilter)?;
             self.deemphasis.process(samples)?;
+            for sample in samples.iter_mut().flatten() {
+                *sample *= CELT_FLOAT_OUTPUT_SCALE;
+            }
         }
         Ok(output)
     }
@@ -476,7 +508,7 @@ pub(crate) fn hadamard_tf_axis(
 /// Applies one decoded CELT TF adjustment to a block-major band vector.
 ///
 /// Positive adjustments transform across time blocks in natural order.
-/// Negative adjustments transform within each block in sequency order.
+/// Negative adjustments transform each time-ordered interleaved vector.
 fn apply_tf_adjustment(values: &mut [f32], adjustment: i8, blocks: u8) -> Result<(), RangeError> {
     if values.is_empty()
         || values.len() > 176
@@ -500,13 +532,27 @@ fn apply_tf_adjustment(values: &mut [f32], adjustment: i8, blocks: u8) -> Result
         return hadamard_tf_axis(values, axis_length, block_width, false);
     }
 
+    let complete = block_width / axis_length * axis_length;
+    let stride = complete / axis_length;
     for block in values.chunks_exact_mut(block_width) {
-        let complete = block.len() / axis_length * axis_length;
-        // Non-power-of-two band widths can leave a short suffix outside the
-        // Hadamard axis; preserve those bins unchanged.
-        for vector in block[..complete].chunks_exact_mut(axis_length) {
-            hadamard_tf_vector(vector, true)?;
+        let mut input = [0.0; 176];
+        let mut output = [0.0; 176];
+        input[..block_width].copy_from_slice(block);
+        output[..block_width].copy_from_slice(block);
+        for lane in 0..stride {
+            let mut axis_storage = [0.0; 128];
+            let axis = &mut axis_storage[..axis_length];
+            for (index, value) in axis.iter_mut().enumerate() {
+                let time_index = (index + axis_length - 1) % axis_length;
+                *value = input[time_index * stride + lane];
+            }
+            hadamard_tf_vector(axis, true)?;
+            for index in 0..axis_length {
+                let reversed = index.reverse_bits() >> (usize::BITS - axis_length.trailing_zeros());
+                output[lane * axis_length + index] = axis[reversed];
+            }
         }
+        block.copy_from_slice(&output[..block_width]);
     }
     Ok(())
 }
@@ -901,7 +947,8 @@ pub(crate) fn denormalize_mono_pvq_shapes(
             return Err(RangeError::InvalidPvqLayout);
         }
 
-        let log_gain = (energies_q15[index * 2] as f32 / 32_768.0).min(32.0);
+        let mean_log_gain = f32::from(BAND_ENERGY_MEAN_Q4[index]) / 16.0;
+        let log_gain = (energies_q15[index * 2] as f32 / 32_768.0 + mean_log_gain).min(32.0);
         let gain = log_gain.exp2();
         for (coefficient, &normalized) in spectrum[start..end].iter_mut().zip(shape) {
             *coefficient = normalized * gain;
@@ -1838,16 +1885,11 @@ mod tests {
             let previous = celt_low_overlap_window(previous_bins).unwrap();
             for current_bins in [120, 240, 480, 960] {
                 let current = celt_low_overlap_window(current_bins).unwrap();
-                let output_frames = (previous_bins + current_bins) / 2;
-                let current_start = (previous_bins as isize - current_bins as isize) / 2;
-                for frame in 0..output_frames {
-                    let previous_index = previous_bins + frame;
-                    let current_index = frame as isize - current_start;
-                    let old = previous.get(previous_index).copied().unwrap_or(0.0);
-                    let new = usize::try_from(current_index)
-                        .ok()
-                        .and_then(|index| current.get(index).copied())
-                        .unwrap_or(0.0);
+                let previous_start = (previous_bins - super::CELT_OVERLAP_SAMPLES) / 2;
+                let current_start = (current_bins - super::CELT_OVERLAP_SAMPLES) / 2;
+                for frame in 0..super::CELT_OVERLAP_SAMPLES {
+                    let old = previous[previous_start + previous_bins + frame];
+                    let new = current[current_start + frame];
                     let energy = old * old + new * new;
                     assert!(
                         (energy - 1.0).abs() < 1e-12,
@@ -1875,15 +1917,53 @@ mod tests {
                     .synthesize(&vec![vec![0.0; current_bins]; 2])
                     .unwrap()
                     .unwrap();
-                let expected_frames = (previous_bins + current_bins) / 2;
                 assert_eq!(output.len(), 2);
-                assert!(
-                    output
-                        .iter()
-                        .all(|channel| channel.len() == expected_frames)
-                );
+                assert!(output.iter().all(|channel| channel.len() == current_bins));
                 assert!(output.iter().flatten().all(|&sample| sample == 0.0));
             }
+        }
+    }
+
+    #[test]
+    fn celt_synthesis_blends_the_previous_tail_into_the_current_frame() {
+        use super::{CELT_OVERLAP_SAMPLES, CeltSynthesis, inverse_mdct_windowed};
+
+        let previous_bins = 480;
+        let current_bins = 960;
+        let previous_spectrum: Vec<_> = (0..previous_bins)
+            .map(|index| ((index * 7 % 31) as f32 - 15.0) / 13.0)
+            .collect();
+        let current_spectrum: Vec<_> = (0..current_bins)
+            .map(|index| ((index * 11 % 37) as f32 - 18.0) / 17.0)
+            .collect();
+        let previous = inverse_mdct_windowed(&previous_spectrum).unwrap();
+        let current = inverse_mdct_windowed(&current_spectrum).unwrap();
+        let previous_start = (previous_bins - CELT_OVERLAP_SAMPLES) / 2;
+        let current_start = (current_bins - CELT_OVERLAP_SAMPLES) / 2;
+        let previous_tail = &previous
+            [previous_start + previous_bins..previous_start + previous_bins + CELT_OVERLAP_SAMPLES];
+        let current_frame = &current[current_start..current_start + current_bins];
+
+        let mut synthesis = CeltSynthesis::default();
+        assert!(
+            synthesis
+                .synthesize(std::slice::from_ref(&previous_spectrum))
+                .unwrap()
+                .is_none()
+        );
+        let actual = synthesis
+            .synthesize(std::slice::from_ref(&current_spectrum))
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual[0].len(), current_bins);
+        for (index, &sample) in actual[0].iter().enumerate() {
+            let expected = current_frame[index]
+                + if index < CELT_OVERLAP_SAMPLES {
+                    previous_tail[index]
+                } else {
+                    0.0
+                };
+            assert!((sample - expected).abs() < 1e-6);
         }
     }
 
@@ -1926,7 +2006,11 @@ mod tests {
             .process(&mut expected, Some(params))
             .unwrap();
         CeltDeemphasis::default().process(&mut expected).unwrap();
+        for sample in expected.iter_mut().flatten() {
+            *sample *= super::CELT_FLOAT_OUTPUT_SCALE;
+        }
         assert_eq!(filtered, expected);
+        assert!(filtered.iter().flatten().all(|sample| sample.abs() <= 1.0));
     }
 
     #[test]
@@ -2121,7 +2205,7 @@ mod tests {
     }
 
     #[test]
-    fn mono_shape_denormalization_restores_q15_log_gain_and_caps_extremes() {
+    fn mono_shape_denormalization_adds_band_mean_to_q15_log_gain_and_caps_extremes() {
         let allocation = FineShapeAllocation {
             start_band: 8,
             coded_end_band: 9,
@@ -2141,7 +2225,9 @@ mod tests {
 
         let spectrum = denormalize_mono_pvq_shapes(120, allocation, &shapes, &energies).unwrap();
         assert_eq!(spectrum.len(), 120);
-        assert_eq!(spectrum[8..10], [1.2, 1.6]);
+        let expected_gain = 2.0_f32.powf(1.0 + f32::from(super::BAND_ENERGY_MEAN_Q4[8]) / 16.0);
+        assert!((spectrum[8] - 0.6 * expected_gain).abs() < 1e-5);
+        assert!((spectrum[9] - 0.8 * expected_gain).abs() < 1e-5);
         assert!(spectrum[..8].iter().all(|&value| value == 0.0));
         assert!(spectrum[10..].iter().all(|&value| value == 0.0));
 
@@ -2497,7 +2583,79 @@ mod tests {
     fn negative_tf_adjustment_transforms_each_block_in_sequency_order() {
         let mut values = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
         apply_tf_adjustment(&mut values, -2, 2).unwrap();
-        let expected = [5.0, -2.0, 0.0, -1.0, 13.0, -2.0, 0.0, -1.0];
+        let expected = [5.0, 2.0, 0.0, 1.0, 13.0, 2.0, 0.0, 1.0];
+        for (actual, expected) in values.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn negative_tf_adjustment_matches_vector07_band_four() {
+        let mut values = [
+            0.0,
+            0.0,
+            0.288_675_13,
+            0.0,
+            0.0,
+            0.288_675_13,
+            -0.866_025_4,
+            -0.288_675_13,
+        ];
+        apply_tf_adjustment(&mut values, -2, 1).unwrap();
+        let expected = [
+            -0.288_675_13,
+            -0.577_350_26,
+            -0.577_350_26,
+            -0.288_675_13,
+            0.0,
+            0.0,
+            -0.288_675_13,
+            -0.288_675_13,
+        ];
+        for (actual, expected) in values.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn negative_tf_adjustment_matches_vector07_band_eight() {
+        let mut values = [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            -0.000_988_072_6,
+            0.028_373_377,
+            -0.407_012_25,
+            -0.014_199_589,
+            -0.028_382,
+            0.406_765_97,
+            0.014_173_786,
+            0.408_495_13,
+            -0.377_907_63,
+            -0.463_009_95,
+            0.377_650_83,
+            0.013_688_195,
+        ];
+        apply_tf_adjustment(&mut values, -2, 1).unwrap();
+        let expected = [
+            -0.203_638_82,
+            -0.202_650_76,
+            -0.174_268_77,
+            -0.175_256_83,
+            -0.013_935_289,
+            -0.042_308_666,
+            -0.449_074_63,
+            -0.420_701_27,
+            -0.007_593_825,
+            0.399_418_4,
+            0.385_244_6,
+            -0.021_767_601,
+            0.203_991_87,
+            0.218_191_46,
+            -0.190_303_67,
+            -0.204_503_25,
+        ];
         for (actual, expected) in values.into_iter().zip(expected) {
             assert!((actual - expected).abs() < 1e-6);
         }
@@ -2508,7 +2666,7 @@ mod tests {
         let mut values = [1.0, 2.0, 3.0];
         apply_tf_adjustment(&mut values, -1, 1).unwrap();
         assert!((values[0] - 3.0 * std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
-        assert!((values[1] + std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
+        assert!((values[1] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
         assert_eq!(values[2], 3.0);
     }
 
