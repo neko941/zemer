@@ -575,6 +575,7 @@ mod tests {
         let packet = [0; 256];
         let mut synthesis = crate::celt::CeltSynthesis::default();
         let mut energy_history = MonoCeltEnergyHistory::default();
+        let mut first_final_energies = None;
 
         for frame_index in 0..2 {
             let mut range = RangeDecoder::new(&packet);
@@ -594,7 +595,14 @@ mod tests {
                 energy_history.previous_final_energies_q15,
                 frame.final_energy.energies_q15
             );
+            if frame_index == 0 {
+                first_final_energies = Some(frame.final_energy.energies_q15);
+            }
         }
+        assert_eq!(
+            energy_history.previous_previous_final_energies_q15,
+            first_final_energies.unwrap()
+        );
 
         let mut reset_history = energy_history;
         reset_history.reset();
