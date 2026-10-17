@@ -2,7 +2,7 @@ use crate::postfilter::PostFilter;
 use crate::pvq::{
     RecursivePvqAngleContext, SplitAngle, combine_mid_side_shapes, decode_codeword,
     decode_recursive_pvq_shape_for_allocation_bounded, normalize_pulses, pulses_for_allocation,
-    pulses_for_target_allocation, pvq_allocation_requires_split, split_stereo_shape_budget,
+    pulses_for_celt_target_allocation, pvq_allocation_requires_split, split_stereo_shape_budget,
     spread_shape,
 };
 use crate::range::{RangeDecoder, RangeError};
@@ -462,32 +462,42 @@ pub(crate) struct TfResolution {
 pub(crate) fn decode_tf_resolution(
     range: &mut RangeDecoder<'_>,
     frame_samples_48k: u16,
+    frame_bytes: usize,
     transient: bool,
     start_band: u8,
     end_band: u8,
 ) -> Result<TfResolution, RangeError> {
     let lm = frame_lm(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
-    if start_band >= end_band || end_band > 21 {
+    if frame_bytes == 0 || start_band >= end_band || end_band > 21 {
         return Err(RangeError::InvalidCeltEnergyLayout);
     }
 
-    let first_symbol = if transient {
-        range.decode_symbol(&[3, 1])?
-    } else {
-        range.decode_symbol(&[15, 1])?
-    };
-    let mut changes = Vec::with_capacity(usize::from(end_band - start_band));
-    changes.push(first_symbol == 1);
-    let logp = if transient { 4 } else { 5 };
-    while changes.len() < usize::from(end_band - start_band) {
-        let toggled = range.decode_bit_logp(logp)?;
-        changes.push(*changes.last().unwrap() ^ toggled);
+    let mut budget = frame_bytes.saturating_mul(8);
+    let mut tell = range.tell() as usize;
+    let mut logp = if transient { 2 } else { 4 };
+    let table_reserved = lm > 0 && tell.saturating_add(logp + 1) <= budget;
+    if table_reserved {
+        budget = budget.saturating_sub(1);
     }
 
-    let table_needed = changes.iter().copied().any(|change| {
-        tf_adjustment(lm, transient, false, change) != tf_adjustment(lm, transient, true, change)
-    });
-    let selected_table = table_needed && range.decode_bit_logp(1)?;
+    let mut current = false;
+    let mut any_change = false;
+    let mut changes = Vec::with_capacity(usize::from(end_band - start_band));
+    for _ in start_band..end_band {
+        if tell.saturating_add(logp) <= budget {
+            current ^= range.decode_bit_logp(logp as u8)?;
+            tell = range.tell() as usize;
+            any_change |= current;
+        }
+        changes.push(current);
+        logp = if transient { 4 } else { 5 };
+    }
+
+    let first_table = 4 * usize::from(transient);
+    let select_changes_results = TF_SELECT_TABLE[lm as usize]
+        [first_table + usize::from(any_change)]
+        != TF_SELECT_TABLE[lm as usize][first_table + 2 + usize::from(any_change)];
+    let selected_table = table_reserved && select_changes_results && range.decode_bit_logp(1)?;
     let adjustments = changes
         .iter()
         .map(|&change| tf_adjustment(lm, transient, selected_table, change))
@@ -672,19 +682,16 @@ pub(crate) fn candidate_recursive_pvq_angle_context(
     })
 }
 
+const TF_SELECT_TABLE: [[i8; 8]; 4] = [
+    [0, -1, 0, -1, 0, -1, 0, -1],
+    [0, -1, 0, -2, 1, 0, 1, -1],
+    [0, -2, 0, -3, 2, 0, 1, -1],
+    [0, -2, 0, -3, 3, 0, 1, -1],
+];
+
 fn tf_adjustment(lm: u32, transient: bool, select: bool, change: bool) -> i8 {
-    let table = if transient {
-        if select {
-            [[0, -1], [1, -1], [1, -1], [1, -1]]
-        } else {
-            [[0, -1], [1, 0], [2, 0], [3, 0]]
-        }
-    } else if select {
-        [[0, -1], [0, -2], [0, -3], [0, -3]]
-    } else {
-        [[0, -1], [0, -1], [0, -2], [0, -2]]
-    };
-    table[lm as usize][usize::from(change)]
+    let index = 4 * usize::from(transient) + 2 * usize::from(select) + usize::from(change);
+    TF_SELECT_TABLE[lm as usize][index]
 }
 
 pub(crate) fn decode_spread(range: &mut RangeDecoder<'_>) -> Result<u8, RangeError> {
@@ -830,7 +837,7 @@ pub(crate) fn decode_mono_pvq_shapes_bounded(
         let compensated =
             i64::from(allocation.shape_eighth_bits[index]) + balance / bands_remaining;
         let remaining = frame_eighth_bits.saturating_sub(range.tell_frac());
-        let budget = (compensated.clamp(0, 16_383) as u32).min(remaining);
+        let budget = (compensated.clamp(0, 16_383) as u32).min(remaining.saturating_add(1));
         let dimensions = usize::from(edges[index + 1] - edges[index]);
         let tf_change = tf_adjustments[index];
         let partition_blocks = if tf_change >= 0 {
@@ -861,7 +868,7 @@ pub(crate) fn decode_mono_pvq_shapes_bounded(
                     &mut |_, _, depth| {
                         let mut context =
                             candidate_recursive_pvq_angle_context(frame_samples_48k, band, depth)?;
-                        context.partition_blocks = partition_blocks >> depth;
+                        context.partition_blocks = (partition_blocks >> depth).max(1);
                         context.time_split = context.partition_blocks > 1;
                         Ok(context)
                     },
@@ -874,7 +881,8 @@ pub(crate) fn decode_mono_pvq_shapes_bounded(
                 }
                 shapes[index] = shape;
             } else {
-                let pulse_allocation = pulses_for_target_allocation(dimensions, budget, remaining)?;
+                let pulse_allocation =
+                    pulses_for_celt_target_allocation(dimensions, budget, remaining)?;
                 pulse_counts[index] = pulse_allocation.pulses;
                 let pulses = if pulse_allocation.pulses == 0 {
                     vec![0; dimensions]
@@ -1176,6 +1184,22 @@ fn trimmed_static_allocation(
     trim_offset: i32,
     dynamic_offset: u16,
 ) -> Result<u32, RangeError> {
+    if quality_q64 > 704 {
+        return Err(RangeError::InvalidCeltQuality);
+    }
+    if quality_q64 > 640 {
+        let lower = (i64::from(static_allocation(frame_samples_48k, band, channels, 640)?)
+            + i64::from(trim_offset))
+        .max(0) as u32
+            + u32::from(dynamic_offset);
+        let upper =
+            (i64::from(allocation_caps(frame_samples_48k, band + 1, channels)?[usize::from(band)])
+                + i64::from(trim_offset))
+            .max(0) as u32
+                + u32::from(dynamic_offset);
+        let fraction = u32::from(quality_q64 - 640);
+        return Ok(lower + ((fraction * upper.saturating_sub(lower)) >> 6));
+    }
     let column = (quality_q64 / 64).min(9);
     let fraction = if quality_q64 == 640 {
         64
@@ -1316,7 +1340,7 @@ pub(crate) fn select_band_allocation(
     let caps = allocation_caps(frame_samples_48k, end_band, channels)?;
     let mut best = None;
     let floor = 8 * u32::from(channels);
-    for quality_q64 in 0..=640 {
+    for quality_q64 in 0..=703 {
         let mut eighth_bits = [0; 21];
         let mut total_eighth_bits = 0_u32;
         let mut done = false;
@@ -1927,8 +1951,24 @@ pub(crate) struct FrameHeader {
     pub(crate) intra: bool,
 }
 
-pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader, RangeError> {
-    let silence = range.decode_symbol(&[32_767, 1])? == 1;
+pub(crate) fn decode_header(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    frame_bytes: usize,
+) -> Result<FrameHeader, RangeError> {
+    let lm = frame_lm(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    if frame_bytes == 0 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let total_bits = frame_bytes.saturating_mul(8);
+    let mut tell = range.tell() as usize;
+    let silence = if tell >= total_bits {
+        true
+    } else if tell == 1 {
+        range.decode_bit_logp(15)?
+    } else {
+        false
+    };
     if silence {
         return Ok(FrameHeader {
             silence,
@@ -1938,7 +1978,13 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
         });
     }
 
-    let postfilter = if range.decode_bit_logp(1)? {
+    let postfilter_available = tell.saturating_add(16) <= total_bits;
+    let postfilter_flag = if postfilter_available {
+        range.decode_bit_logp(1)?
+    } else {
+        false
+    };
+    let postfilter = if postfilter_flag {
         let octave = range.decode_uint(6)? as u8;
         let period = (16_u32 << octave) + range.read_raw_bits(4 + octave)? - 1;
         let gain = range.read_raw_bits(3)? as u8;
@@ -1951,8 +1997,21 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
     } else {
         None
     };
-    let transient = range.decode_symbol(&[7, 1])? == 1;
-    let intra = range.decode_symbol(&[7, 1])? == 1;
+    if postfilter_available {
+        tell = range.tell() as usize;
+    }
+    let transient = if lm > 0 && tell.saturating_add(3) <= total_bits {
+        let transient = range.decode_symbol(&[7, 1])? == 1;
+        tell = range.tell() as usize;
+        transient
+    } else {
+        false
+    };
+    let intra = if tell.saturating_add(3) <= total_bits {
+        range.decode_symbol(&[7, 1])? == 1
+    } else {
+        false
+    };
     Ok(FrameHeader {
         silence,
         postfilter,
@@ -2818,7 +2877,7 @@ mod tests {
     fn tf_resolution_decodes_relative_band_changes() {
         let bytes = [0; 64];
         let mut range = RangeDecoder::new(&bytes);
-        let decoded = decode_tf_resolution(&mut range, 480, true, 2, 7).unwrap();
+        let decoded = decode_tf_resolution(&mut range, 480, 64, true, 2, 7).unwrap();
         assert_eq!(decoded.changes, [false; 5]);
         assert_eq!(decoded.adjustments, [2; 5]);
         assert!(!decoded.selected_table);
@@ -3048,7 +3107,7 @@ mod tests {
     fn tf_select_is_omitted_when_the_frame_table_cannot_change_results() {
         let bytes = [0xa5; 64];
         let mut decoded_range = RangeDecoder::new(&bytes);
-        let decoded = decode_tf_resolution(&mut decoded_range, 120, false, 0, 1).unwrap();
+        let decoded = decode_tf_resolution(&mut decoded_range, 120, 64, false, 0, 1).unwrap();
         assert!(!decoded.selected_table);
         let next_after_decode = decode_spread(&mut decoded_range).unwrap();
 
@@ -3062,7 +3121,7 @@ mod tests {
     fn tf_select_is_consumed_when_the_frame_table_changes_results() {
         let bytes = [0; 64];
         let mut decoded_range = RangeDecoder::new(&bytes);
-        let decoded = decode_tf_resolution(&mut decoded_range, 480, true, 0, 1).unwrap();
+        let decoded = decode_tf_resolution(&mut decoded_range, 480, 64, true, 0, 1).unwrap();
         assert!(!decoded.selected_table);
         let next_after_decode = decode_spread(&mut decoded_range).unwrap();
 
@@ -3092,6 +3151,22 @@ mod tests {
         assert_eq!(
             super::trimmed_static_allocation(960, 16, 1, 238, -96, 0),
             Ok(77)
+        );
+    }
+
+    #[test]
+    fn trimmed_static_allocation_interpolates_the_top_prototype_to_band_caps() {
+        assert_eq!(
+            super::trimmed_static_allocation(240, 0, 1, 640, -9, 0),
+            Ok(91)
+        );
+        assert_eq!(
+            super::trimmed_static_allocation(240, 0, 1, 672, -9, 0),
+            Ok(97)
+        );
+        assert_eq!(
+            super::trimmed_static_allocation(240, 0, 1, 704, -9, 0),
+            Ok(103)
         );
     }
 
@@ -3501,7 +3576,7 @@ mod tests {
     fn zero_range_stream_decodes_regular_short_frame_header() {
         let mut range = RangeDecoder::new(&[0; 8]);
         assert_eq!(
-            decode_header(&mut range),
+            decode_header(&mut range, 120, 8),
             Ok(FrameHeader {
                 silence: false,
                 postfilter: None,
@@ -3515,7 +3590,7 @@ mod tests {
     fn high_range_stream_decodes_the_silent_frame_flag() {
         let mut range = RangeDecoder::new(&[0xff; 8]);
         assert_eq!(
-            decode_header(&mut range),
+            decode_header(&mut range, 120, 8),
             Ok(FrameHeader {
                 silence: true,
                 postfilter: None,
@@ -3537,7 +3612,7 @@ mod tests {
                 if let Ok(FrameHeader {
                     postfilter: Some(postfilter),
                     ..
-                }) = decode_header(&mut range)
+                }) = decode_header(&mut range, 120, 8)
                 {
                     assert!((15..=1022).contains(&postfilter.period));
                     assert!(postfilter.gain < 8);

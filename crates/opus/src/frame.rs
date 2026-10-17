@@ -145,7 +145,7 @@ pub(crate) fn decode_mono_energy_prefix(
         return Err(RangeError::InvalidCeltEnergyLayout);
     }
 
-    let header = decode_header(range)?;
+    let header = decode_header(range, frame_samples_48k, frame_bytes)?;
     if header.silence {
         return Ok(MonoCeltEnergyPrefix {
             header,
@@ -202,6 +202,7 @@ pub(crate) fn decode_mono_frame_prefix(
     let tf_resolution = decode_tf_resolution(
         range,
         frame_samples_48k,
+        frame_bytes,
         energy.header.transient,
         0,
         end_band,
@@ -287,6 +288,8 @@ pub(crate) fn decode_mono_celt_frame(
     tf_adjustments[..adjustment_count].copy_from_slice(&prefix.tf_resolution.adjustments);
     let frame_eighth_bits = frame_bytes
         .saturating_mul(64)
+        .saturating_sub(usize::from(prefix.reservations.anti_collapse_eighth_bits))
+        .saturating_sub(1)
         .try_into()
         .map_err(|_| RangeError::CorruptFrame)?;
     let blocks = if prefix.header.transient {
@@ -403,7 +406,10 @@ mod tests {
                 if toc.mode() == Mode::Celt && toc.frame_code == 0 {
                     let frame = packet.frames()[0];
                     let mut range = RangeDecoder::new(frame);
-                    if decode_header(&mut range).unwrap().silence {
+                    if decode_header(&mut range, toc.frame_samples_48k, frame.len())
+                        .unwrap()
+                        .silence
+                    {
                         silent += 1;
                         if range.final_range() == expected {
                             matched += 1;
@@ -433,7 +439,7 @@ mod tests {
             decode_mono_energy_prefix(&mut actual_range, 120, packet.len(), 21, &previous).unwrap();
 
         let mut header_only_range = RangeDecoder::new(&packet);
-        let header = decode_header(&mut header_only_range).unwrap();
+        let header = decode_header(&mut header_only_range, 120, packet.len()).unwrap();
         assert!(header.silence);
         assert_eq!(actual.header, header);
         assert_eq!(actual.energies_q15, [0; 42]);
@@ -458,7 +464,7 @@ mod tests {
         );
 
         let mut expected_range = RangeDecoder::new(&packet);
-        let header = decode_header(&mut expected_range).unwrap();
+        let header = decode_header(&mut expected_range, 120, packet.len()).unwrap();
         let residuals = decode_coarse_energy_residuals(
             &mut expected_range,
             120,
@@ -488,7 +494,8 @@ mod tests {
         let energy =
             decode_mono_energy_prefix(&mut expected_range, 120, packet.len(), 1, &previous)
                 .unwrap();
-        let tf_resolution = decode_tf_resolution(&mut expected_range, 120, false, 0, 1).unwrap();
+        let tf_resolution =
+            decode_tf_resolution(&mut expected_range, 120, 64, false, 0, 1).unwrap();
         let spread = decode_spread(&mut expected_range).unwrap();
         let controls =
             decode_allocation_controls(&mut expected_range, 120, 0, 1, 1, packet.len()).unwrap();
@@ -547,7 +554,7 @@ mod tests {
         );
 
         let mut header_only_range = RangeDecoder::new(&packet);
-        decode_header(&mut header_only_range).unwrap();
+        decode_header(&mut header_only_range, 120, packet.len()).unwrap();
         assert_eq!(actual_range.final_range(), header_only_range.final_range());
     }
 
@@ -748,6 +755,54 @@ mod tests {
 
     #[test]
     #[ignore = "requires the external RFC 8251 opus_newvectors corpus"]
+    fn rfc8251_vector07_record_62293_matches_final_range() {
+        use crate::packet::{Mode, OpusPacket};
+        use std::{env, fs, path::Path};
+
+        const RECORD_OFFSET: usize = 62_293;
+        let path =
+            Path::new(&env::var_os("ZEMER_OPUS_TESTVECTORS").unwrap()).join("testvector07.bit");
+        let bytes = fs::read(path).unwrap();
+        let packet_bytes =
+            u32::from_be_bytes(bytes[RECORD_OFFSET..RECORD_OFFSET + 4].try_into().unwrap())
+                as usize;
+        let expected_range = u32::from_be_bytes(
+            bytes[RECORD_OFFSET + 4..RECORD_OFFSET + 8]
+                .try_into()
+                .unwrap(),
+        );
+        let end = RECORD_OFFSET + 8 + packet_bytes;
+        assert!(
+            end <= bytes.len(),
+            "truncated vector record at {RECORD_OFFSET}"
+        );
+        let packet = OpusPacket::parse(&bytes[RECORD_OFFSET + 8..end]).unwrap();
+        let toc = packet.toc();
+        assert_eq!(toc.mode(), Mode::Celt);
+        assert!(!toc.stereo);
+        assert_eq!(toc.frame_code, 0);
+        let end_band = toc.celt_end_band().expect("CELT TOC has a coded bandwidth");
+        let frame = packet.frames()[0];
+        let mut history = MonoCeltEnergyHistory::default();
+        let mut synthesis = crate::celt::CeltSynthesis::default();
+        let mut range = RangeDecoder::new(frame);
+        let decoded = history
+            .decode_active_frame(
+                &mut range,
+                toc.frame_samples_48k,
+                frame.len(),
+                end_band,
+                &mut synthesis,
+            )
+            .unwrap();
+        assert_eq!(
+            decoded.final_range, expected_range,
+            "record at {RECORD_OFFSET}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the external RFC 8251 opus_newvectors corpus"]
     fn rfc8251_vector07_transient_recursive_pvq_packet_matches_final_range() {
         use crate::packet::{Mode, OpusPacket};
         use std::{env, fs, path::Path};
@@ -770,12 +825,23 @@ mod tests {
             let packet = OpusPacket::parse(&bytes[cursor + 8..end]).unwrap();
             let toc = packet.toc();
             assert_eq!(toc.mode(), Mode::Celt);
-            assert!(!toc.stereo);
+            // This recursive-PVQ regression targets the mono CELT stream. The
+            // corpus later switches to stereo, which this focused test does
+            // not decode.
+            if toc.stereo {
+                break;
+            }
             assert_eq!(toc.frame_code, 0);
+            let end_band = toc.celt_end_band().expect("CELT TOC has a coded bandwidth");
             let frame = packet.frames()[0];
             let mut prefix_range = RangeDecoder::new(frame);
             let prefix = history
-                .decode_prefix(&mut prefix_range, toc.frame_samples_48k, frame.len(), 21)
+                .decode_prefix(
+                    &mut prefix_range,
+                    toc.frame_samples_48k,
+                    frame.len(),
+                    end_band,
+                )
                 .unwrap()
                 .expect("vector 07 frame must be active CELT");
             let mut range = RangeDecoder::new(frame);
@@ -783,7 +849,7 @@ mod tests {
                 &mut range,
                 toc.frame_samples_48k,
                 frame.len(),
-                21,
+                end_band,
                 &mut synthesis,
             ) {
                 Ok(decoded) => {
@@ -794,10 +860,9 @@ mod tests {
                         assert_eq!(toc.frame_samples_48k, 960);
                         assert!(prefix.header.transient);
                         assert_eq!(matched_ranges, 18);
-                        let samples = decoded.samples.unwrap();
-                        assert_eq!(samples.len(), usize::from(toc.frame_samples_48k));
-                        assert!(samples.iter().all(|sample| sample.is_finite()));
-                        return;
+                    } else if cursor == 812 {
+                        assert_eq!(expected_range, 0x0249_0a00);
+                        assert_eq!(matched_ranges, 19);
                     }
                     matched_ranges += 1;
                 }

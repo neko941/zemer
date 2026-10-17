@@ -52,6 +52,19 @@ impl Toc {
         }
     }
 
+    pub const fn celt_end_band(self) -> Option<u8> {
+        if !matches!(self.mode(), Mode::Celt) {
+            return None;
+        }
+        Some(match self.bandwidth() {
+            Bandwidth::Narrow => 13,
+            Bandwidth::Medium => return None,
+            Bandwidth::Wide => 17,
+            Bandwidth::Superwide => 19,
+            Bandwidth::Full => 21,
+        })
+    }
+
     pub const fn bandwidth(self) -> Bandwidth {
         match self.configuration {
             0..=3 | 16..=19 => Bandwidth::Narrow,
@@ -450,6 +463,18 @@ mod tests {
             for configuration in configurations {
                 let toc = Toc::parse(configuration << 3);
                 assert_eq!((toc.mode(), toc.bandwidth()), (mode, bandwidth));
+                if mode == Mode::Celt {
+                    let expected_end = match bandwidth {
+                        Bandwidth::Narrow => 13,
+                        Bandwidth::Wide => 17,
+                        Bandwidth::Superwide => 19,
+                        Bandwidth::Full => 21,
+                        Bandwidth::Medium => unreachable!(),
+                    };
+                    assert_eq!(toc.celt_end_band(), Some(expected_end));
+                } else {
+                    assert_eq!(toc.celt_end_band(), None);
+                }
             }
         }
     }
