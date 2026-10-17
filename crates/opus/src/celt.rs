@@ -140,6 +140,37 @@ fn inverse_mdct_windowed(spectrum: &[f32]) -> Result<Vec<f32>, RangeError> {
     Ok(output)
 }
 
+/// Inverse-transforms CELT's interleaved 2.5 ms spectra for a transient frame.
+fn inverse_mdct_transient_windowed(
+    spectrum: &[f32],
+    blocks: usize,
+) -> Result<Vec<f32>, RangeError> {
+    if ![1, 2, 4, 8].contains(&blocks) || spectrum.len() != blocks * 120 {
+        return Err(RangeError::InvalidCeltEnergyLayout);
+    }
+    let mut output = vec![0.0; spectrum.len() + CELT_OVERLAP_SAMPLES];
+    let mut short_spectrum = Vec::new();
+    short_spectrum
+        .try_reserve_exact(120)
+        .map_err(|_| RangeError::CorruptFrame)?;
+    for block in 0..blocks {
+        short_spectrum.clear();
+        short_spectrum.extend((0..120).map(|bin| spectrum[bin * blocks + block]));
+        let transformed = inverse_mdct_windowed(&short_spectrum)?;
+        let start = block * 120;
+        for (sample, &value) in output[start..start + transformed.len()]
+            .iter_mut()
+            .zip(&transformed)
+        {
+            *sample += value;
+        }
+    }
+    if output.iter().any(|value| !value.is_finite()) {
+        return Err(RangeError::CorruptFrame);
+    }
+    Ok(output)
+}
+
 /// Stateful CELT inverse-MDCT synthesis with 120-sample weighted overlap-add.
 #[derive(Default)]
 pub(crate) struct CeltSynthesis {
@@ -173,6 +204,23 @@ impl CeltSynthesis {
         &mut self,
         spectra: &[Vec<f32>],
     ) -> Result<Option<Vec<Vec<f32>>>, RangeError> {
+        self.synthesize_with_blocks(spectra, None)
+    }
+
+    /// Synthesizes transient CELT spectra as interleaved short transforms.
+    pub(crate) fn synthesize_transient(
+        &mut self,
+        spectra: &[Vec<f32>],
+        blocks: usize,
+    ) -> Result<Option<Vec<Vec<f32>>>, RangeError> {
+        self.synthesize_with_blocks(spectra, Some(blocks))
+    }
+
+    fn synthesize_with_blocks(
+        &mut self,
+        spectra: &[Vec<f32>],
+        short_blocks: Option<usize>,
+    ) -> Result<Option<Vec<Vec<f32>>>, RangeError> {
         if spectra.is_empty() {
             return Err(RangeError::InvalidCeltEnergyLayout);
         }
@@ -182,8 +230,14 @@ impl CeltSynthesis {
             .map_err(|_| RangeError::CorruptFrame)?;
         for spectrum in spectra {
             let bins = spectrum.len();
-            let windowed = inverse_mdct_windowed(spectrum)?;
-            let start = (bins - CELT_OVERLAP_SAMPLES) / 2;
+            let (windowed, start) = if let Some(blocks) = short_blocks {
+                (inverse_mdct_transient_windowed(spectrum, blocks)?, 0)
+            } else {
+                (
+                    inverse_mdct_windowed(spectrum)?,
+                    (bins - CELT_OVERLAP_SAMPLES) / 2,
+                )
+            };
             let end = start + bins + CELT_OVERLAP_SAMPLES;
             let mut frame = Vec::new();
             frame
@@ -2160,6 +2214,59 @@ mod tests {
                 assert!((sample - expected).abs() < 1e-6);
             }
         }
+    }
+
+    #[test]
+    fn transient_synthesis_deinterleaves_short_mdcts_and_carries_frame_tail() {
+        use super::CeltSynthesis;
+
+        let spectrum: Vec<f32> = (0..960)
+            .map(|index| ((index * 17 % 43) as f32 - 21.0) / 37.0)
+            .collect();
+        let window = celt_low_overlap_window(120).unwrap();
+        let mut expected = vec![0.0_f32; 1080];
+        for block in 0..8 {
+            let short_spectrum: Vec<_> = (0..120)
+                .map(|bin| f64::from(spectrum[bin * 8 + block]))
+                .collect();
+            let transformed = zemer_core::transform::inverse_mdct(&short_spectrum).unwrap();
+            for sample in 0..240 {
+                expected[block * 120 + sample] +=
+                    (transformed[sample] * 0.5 * window[sample]) as f32;
+            }
+        }
+
+        let mut synthesis = CeltSynthesis::default();
+        assert!(synthesis.synthesize(&[vec![0.0; 960]]).unwrap().is_none());
+        let frame = synthesis
+            .synthesize_transient(std::slice::from_ref(&spectrum), 8)
+            .unwrap()
+            .unwrap();
+        assert_eq!(frame[0].len(), 960);
+        for (actual, expected) in frame[0].iter().zip(&expected[..960]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+
+        let next = synthesis
+            .synthesize_transient(&[vec![0.0; 960]], 8)
+            .unwrap()
+            .unwrap();
+        for (actual, expected) in next[0].iter().zip(&expected[960..]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        assert!(next[0][120..].iter().all(|&sample| sample == 0.0));
+    }
+
+    #[test]
+    fn transient_synthesis_rejects_wrong_short_block_geometry() {
+        use super::CeltSynthesis;
+
+        let mut synthesis = CeltSynthesis::default();
+        assert_eq!(
+            synthesis.synthesize_transient(&[vec![0.0; 960]], 4),
+            Err(RangeError::InvalidCeltEnergyLayout)
+        );
+        assert!(synthesis.synthesize(&[vec![0.0; 960]]).unwrap().is_none());
     }
 
     #[test]
