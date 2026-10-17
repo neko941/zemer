@@ -265,10 +265,9 @@ pub(crate) fn decode_mono_frame_prefix(
     }))
 }
 
-/// Decodes and synthesizes the unsplit mono CELT frame tail.
-///
-/// Recursive PVQ splitting remains unsupported. The caller retains synthesis
-/// and anti-collapse state across frames.
+/// Decodes and synthesizes the mono CELT frame tail, retaining synthesis and
+/// anti-collapse state across frames. Recursive split packet conformance is
+/// still being validated against the RFC corpus.
 pub(crate) fn decode_mono_celt_frame(
     range: &mut RangeDecoder<'_>,
     frame_samples_48k: u16,
@@ -749,7 +748,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires the external RFC 8251 opus_newvectors corpus"]
-    fn rfc8251_vector07_stops_at_a_transient_recursive_pvq_split() {
+    fn rfc8251_vector07_transient_recursive_pvq_packet_matches_final_range() {
         use crate::packet::{Mode, OpusPacket};
         use std::{env, fs, path::Path};
 
@@ -789,22 +788,27 @@ mod tests {
             ) {
                 Ok(decoded) => {
                     assert_eq!(decoded.final_range, expected_range, "record at {cursor}");
+                    if cursor == 756 {
+                        assert_eq!(expected_range, 0x1565_2100);
+                        assert_eq!(toc.configuration, 31);
+                        assert_eq!(toc.frame_samples_48k, 960);
+                        assert!(prefix.header.transient);
+                        assert_eq!(matched_ranges, 18);
+                        let samples = decoded.samples.unwrap();
+                        assert_eq!(samples.len(), usize::from(toc.frame_samples_48k));
+                        assert!(samples.iter().all(|sample| sample.is_finite()));
+                        return;
+                    }
                     matched_ranges += 1;
-                }
-                Err(RangeError::UnsupportedCeltMode) => {
-                    assert_eq!(cursor, 756);
-                    assert_eq!(expected_range, 0x1565_2100);
-                    assert_eq!(toc.configuration, 31);
-                    assert_eq!(toc.frame_samples_48k, 960);
-                    assert!(prefix.header.transient);
-                    assert_eq!(matched_ranges, 18);
-                    return;
                 }
                 Err(error) => panic!("unexpected frame error at {cursor}: {error:?}"),
             }
             cursor = end;
         }
 
-        panic!("vector 07 did not reach its known recursive-split packet");
+        assert!(
+            matched_ranges > 18,
+            "vector 07 did not reach its recursive-split packet"
+        );
     }
 }

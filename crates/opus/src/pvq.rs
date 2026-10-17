@@ -31,6 +31,7 @@ pub(crate) struct SplitAngle {
 pub(crate) struct RecursivePvqSplit {
     pub(crate) angle: SplitAngle,
     pub(crate) remaining_eighth_bits: u32,
+    pub(crate) child_budgets: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,6 +39,8 @@ pub(crate) struct RecursivePvqAngleContext {
     pub(crate) pulse_cap_eighth_bits: u32,
     pub(crate) offset_eighth_bits: i32,
     pub(crate) time_split: bool,
+    pub(crate) partition_blocks: u8,
+    pub(crate) lm: u32,
 }
 
 /// Decodes a PVQ shape, recursively applying caller-decoded split angles.
@@ -65,6 +68,7 @@ pub(crate) fn decode_recursive_pvq_shape(
         range,
         dimensions,
         budget_eighth_bits,
+        u32::MAX,
         max_split_levels,
         0,
         decode_split,
@@ -83,12 +87,32 @@ pub(crate) fn decode_recursive_pvq_shape_for_allocation(
     budget_eighth_bits: u32,
     angle_context: &mut impl FnMut(usize, u32, u8) -> Result<RecursivePvqAngleContext, RangeError>,
 ) -> Result<(Vec<f32>, u32), RangeError> {
-    let max_split_levels = pvq_split_level_limit(frame_samples_48k)?;
-    decode_recursive_pvq_shape(
+    decode_recursive_pvq_shape_for_allocation_bounded(
         range,
         frame_samples_48k,
         dimensions,
         budget_eighth_bits,
+        u32::MAX,
+        angle_context,
+    )
+}
+
+pub(crate) fn decode_recursive_pvq_shape_for_allocation_bounded(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    dimensions: usize,
+    budget_eighth_bits: u32,
+    frame_eighth_bits: u32,
+    angle_context: &mut impl FnMut(usize, u32, u8) -> Result<RecursivePvqAngleContext, RangeError>,
+) -> Result<(Vec<f32>, u32), RangeError> {
+    let max_split_levels = pvq_split_level_limit(frame_samples_48k)?;
+    decode_recursive_pvq_shape_at(
+        range,
+        dimensions,
+        budget_eighth_bits,
+        frame_eighth_bits,
+        max_split_levels,
+        0,
         &mut |range, dimensions, budget, depth| {
             if !pvq_allocation_requires_split(dimensions, budget)? {
                 return Ok(None);
@@ -97,15 +121,23 @@ pub(crate) fn decode_recursive_pvq_shape_for_allocation(
                 return Err(RangeError::InvalidPvqLayout);
             }
             let context = angle_context(dimensions, budget, depth)?;
-            decode_recursive_pvq_split(
+            let split = decode_recursive_pvq_split(
                 range,
-                dimensions,
+                dimensions / 2,
                 budget,
                 context.pulse_cap_eighth_bits,
                 context.offset_eighth_bits,
                 context.time_split,
-            )
-            .map(Some)
+            )?;
+            let mut split = split;
+            split.child_budgets = Some(celt_split_shape_budget(
+                split.remaining_eighth_bits,
+                dimensions / 2,
+                split.angle.angle_q14,
+                context.partition_blocks,
+                context.lm,
+            )?);
+            Ok(Some(split))
         },
     )
 }
@@ -124,6 +156,7 @@ fn decode_recursive_pvq_shape_at(
     range: &mut RangeDecoder<'_>,
     dimensions: usize,
     budget_eighth_bits: u32,
+    frame_eighth_bits: u32,
     max_split_levels: u8,
     depth: u8,
     decode_split: &mut impl FnMut(
@@ -138,7 +171,9 @@ fn decode_recursive_pvq_shape_at(
     }
 
     let Some(split) = decode_split(range, dimensions, budget_eighth_bits, depth)? else {
-        let allocation = pulses_for_allocation(dimensions, budget_eighth_bits)?;
+        let remaining_eighth_bits = frame_eighth_bits.saturating_sub(range.tell_frac());
+        let allocation =
+            pulses_for_target_allocation(dimensions, budget_eighth_bits, remaining_eighth_bits)?;
         if dimensions == 1 {
             let sign = if budget_eighth_bits >= 8 {
                 range.read_raw_bits(1)?
@@ -164,27 +199,65 @@ fn decode_recursive_pvq_shape_at(
     }
     validate_split_angle(split.angle)?;
     let child_dimensions = dimensions / 2;
-    let (left_budget, right_budget) = split_shape_budget(
-        split.remaining_eighth_bits,
-        child_dimensions,
-        split.angle.angle_q14,
-    )?;
-    let (left, left_pulses) = decode_recursive_pvq_shape_at(
-        range,
-        child_dimensions,
-        left_budget,
-        max_split_levels,
-        depth + 1,
-        decode_split,
-    )?;
-    let (right, right_pulses) = decode_recursive_pvq_shape_at(
-        range,
-        child_dimensions,
-        right_budget,
-        max_split_levels,
-        depth + 1,
-        decode_split,
-    )?;
+    let (mut left_budget, mut right_budget) = match split.child_budgets {
+        Some(budgets) => budgets,
+        None => split_shape_budget(
+            split.remaining_eighth_bits,
+            child_dimensions,
+            split.angle.angle_q14,
+        )?,
+    };
+    let (left, left_pulses, right, right_pulses) = if left_budget >= right_budget {
+        let before = range.tell_frac();
+        let (left, left_pulses) = decode_recursive_pvq_shape_at(
+            range,
+            child_dimensions,
+            left_budget,
+            frame_eighth_bits,
+            max_split_levels,
+            depth + 1,
+            decode_split,
+        )?;
+        let spare = i64::from(left_budget) - i64::from(range.tell_frac().saturating_sub(before));
+        if spare > 24 && split.angle.angle_q14 != 0 {
+            right_budget = right_budget.saturating_add((spare - 24) as u32);
+        }
+        let (right, right_pulses) = decode_recursive_pvq_shape_at(
+            range,
+            child_dimensions,
+            right_budget,
+            frame_eighth_bits,
+            max_split_levels,
+            depth + 1,
+            decode_split,
+        )?;
+        (left, left_pulses, right, right_pulses)
+    } else {
+        let before = range.tell_frac();
+        let (right, right_pulses) = decode_recursive_pvq_shape_at(
+            range,
+            child_dimensions,
+            right_budget,
+            frame_eighth_bits,
+            max_split_levels,
+            depth + 1,
+            decode_split,
+        )?;
+        let spare = i64::from(right_budget) - i64::from(range.tell_frac().saturating_sub(before));
+        if spare > 24 && split.angle.angle_q14 != 16_384 {
+            left_budget = left_budget.saturating_add((spare - 24) as u32);
+        }
+        let (left, left_pulses) = decode_recursive_pvq_shape_at(
+            range,
+            child_dimensions,
+            left_budget,
+            frame_eighth_bits,
+            max_split_levels,
+            depth + 1,
+            decode_split,
+        )?;
+        (left, left_pulses, right, right_pulses)
+    };
     let pulses = left_pulses
         .checked_add(right_pulses)
         .ok_or(RangeError::InvalidPvqLayout)?;
@@ -281,6 +354,7 @@ pub(crate) fn decode_recursive_pvq_split(
     Ok(RecursivePvqSplit {
         angle,
         remaining_eighth_bits,
+        child_budgets: None,
     })
 }
 
@@ -392,6 +466,41 @@ pub(crate) fn split_shape_budget(
         return Err(RangeError::InvalidPvqLayout);
     }
     split_energy_angle_budget(remaining_eighth_bits, child_dimensions, angle_q14)
+}
+
+pub(crate) fn celt_split_shape_budget(
+    remaining_eighth_bits: u32,
+    child_dimensions: usize,
+    angle_q14: u16,
+    partition_blocks: u8,
+    lm: u32,
+) -> Result<(u32, u32), RangeError> {
+    if !(1..=MAX_PVQ_DIMENSIONS / 2).contains(&child_dimensions)
+        || angle_q14 > 16_384
+        || partition_blocks == 0
+        || lm > 3
+    {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+    let mut delta = if angle_q14 == 0 {
+        -16_384_i64
+    } else if angle_q14 == 16_384 {
+        16_384_i64
+    } else {
+        let theta = f64::from(angle_q14) * (std::f64::consts::FRAC_PI_2 / 16_384.0);
+        (((child_dimensions - 1) as f64 * 8.0 * theta.tan().log2()).trunc()) as i64
+    };
+    if partition_blocks > 1 && angle_q14 != 0 && angle_q14 != 16_384 {
+        if angle_q14 > 8_192 {
+            delta -= delta >> (4 - lm);
+        } else {
+            delta = (delta + ((child_dimensions << 3) >> (5 - lm)) as i64).min(0);
+        }
+    }
+    let left = (i64::from(remaining_eighth_bits) - delta)
+        .div_euclid(2)
+        .clamp(0, i64::from(remaining_eighth_bits)) as u32;
+    Ok((left, remaining_eighth_bits - left))
 }
 
 /// Splits a stereo band budget between mid and side vectors of equal width.
@@ -941,12 +1050,12 @@ mod tests {
     use std::collections::HashSet;
 
     use super::{
-        RecursivePvqAngleContext, RecursivePvqSplit, SplitAngle, codebook_size,
-        combine_mid_side_shapes, combine_split_shapes, decode_codeword, decode_recursive_pvq_shape,
-        decode_recursive_pvq_shape_for_allocation, decode_recursive_pvq_split, decode_split_angle,
-        normalize_pulses, pulses_for_allocation, pulses_for_target_allocation,
-        pvq_allocation_requires_split, split_shape_budget, split_stereo_shape_budget, spread_shape,
-        unrank_codeword,
+        RecursivePvqAngleContext, RecursivePvqSplit, SplitAngle, celt_split_shape_budget,
+        codebook_size, combine_mid_side_shapes, combine_split_shapes, decode_codeword,
+        decode_recursive_pvq_shape, decode_recursive_pvq_shape_for_allocation,
+        decode_recursive_pvq_split, decode_split_angle, normalize_pulses, pulses_for_allocation,
+        pulses_for_target_allocation, pvq_allocation_requires_split, split_shape_budget,
+        split_stereo_shape_budget, spread_shape, unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1043,6 +1152,7 @@ mod tests {
                 Ok((depth == 0).then_some(RecursivePvqSplit {
                     angle,
                     remaining_eighth_bits: budget,
+                    child_budgets: None,
                 }))
             },
         )
@@ -1080,6 +1190,7 @@ mod tests {
                 Ok(Some(RecursivePvqSplit {
                     angle,
                     remaining_eighth_bits: budget,
+                    child_budgets: None,
                 }))
             },),
             Err(RangeError::InvalidPvqLayout)
@@ -1091,6 +1202,7 @@ mod tests {
                 Ok(Some(RecursivePvqSplit {
                     angle,
                     remaining_eighth_bits: budget,
+                    child_budgets: None,
                 }))
             },),
             Err(RangeError::InvalidPvqLayout)
@@ -1432,6 +1544,7 @@ mod tests {
         assert_eq!(split_shape_budget(160, 4, 4_096), Ok((95, 65)));
         assert_eq!(split_shape_budget(160, 4, 12_288), Ok((65, 95)));
         assert_eq!(split_shape_budget(101, 4, 8_192), Ok((51, 50)));
+        assert_eq!(celt_split_shape_budget(228, 16, 2_730, 8, 2), Ok((220, 8)));
     }
 
     #[test]
@@ -1536,6 +1649,8 @@ mod tests {
                     pulse_cap_eighth_bits: 256,
                     offset_eighth_bits: 0,
                     time_split: false,
+                    partition_blocks: 1,
+                    lm: 0,
                 })
             },
         )
@@ -1559,6 +1674,8 @@ mod tests {
                     pulse_cap_eighth_bits: 0,
                     offset_eighth_bits: 0,
                     time_split: false,
+                    partition_blocks: 1,
+                    lm: 0,
                 })
             },),
             Err(RangeError::InvalidPvqLayout)

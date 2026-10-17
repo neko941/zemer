@@ -1,8 +1,9 @@
 use crate::postfilter::PostFilter;
 use crate::pvq::{
     RecursivePvqAngleContext, SplitAngle, combine_mid_side_shapes, decode_codeword,
-    normalize_pulses, pulses_for_allocation, pulses_for_target_allocation,
-    pvq_allocation_requires_split, split_stereo_shape_budget, spread_shape,
+    decode_recursive_pvq_shape_for_allocation_bounded, normalize_pulses, pulses_for_allocation,
+    pulses_for_target_allocation, pvq_allocation_requires_split, split_stereo_shape_budget,
+    spread_shape,
 };
 use crate::range::{RangeDecoder, RangeError};
 
@@ -666,6 +667,8 @@ pub(crate) fn candidate_recursive_pvq_angle_context(
         pulse_cap_eighth_bits,
         offset_eighth_bits,
         time_split: false,
+        partition_blocks: 1,
+        lm: remaining_lm.max(0) as u32,
     })
 }
 
@@ -776,10 +779,8 @@ pub(crate) fn band_edges(frame_samples_48k: u16) -> Option<[u16; 22]> {
     Some(edges)
 }
 
-/// Decodes mono, unsplit PVQ shapes and applies spreading and TF adjustments.
-///
-/// Recursive splits, stereo, denormalization, and inverse-transform synthesis
-/// remain separate stages.
+/// Decodes mono PVQ shapes, including recursive splits, and applies spreading
+/// and TF adjustments. Stereo and synthesis remain separate stages.
 pub(crate) fn decode_mono_pvq_shapes(
     range: &mut RangeDecoder<'_>,
     frame_samples_48k: u16,
@@ -831,6 +832,15 @@ pub(crate) fn decode_mono_pvq_shapes_bounded(
         let remaining = frame_eighth_bits.saturating_sub(range.tell_frac());
         let budget = (compensated.clamp(0, 16_383) as u32).min(remaining);
         let dimensions = usize::from(edges[index + 1] - edges[index]);
+        let tf_change = tf_adjustments[index];
+        let partition_blocks = if tf_change >= 0 {
+            blocks >> tf_change as u32
+        } else {
+            blocks
+                .checked_shl(u32::from(tf_change.unsigned_abs()))
+                .unwrap_or(blocks)
+        }
+        .max(1);
         if dimensions == 1 {
             let sign = if budget >= 8 {
                 range.read_raw_bits(1)?
@@ -842,21 +852,42 @@ pub(crate) fn decode_mono_pvq_shapes_bounded(
             collapse_masks[index] = 1;
         } else {
             if pvq_allocation_requires_split(dimensions, budget)? {
-                return Err(RangeError::UnsupportedCeltMode);
-            }
-            let pulse_allocation = pulses_for_target_allocation(dimensions, budget, remaining)?;
-            pulse_counts[index] = pulse_allocation.pulses;
-            let pulses = if pulse_allocation.pulses == 0 {
-                vec![0; dimensions]
-            } else {
-                decode_codeword(range, dimensions, pulse_allocation.pulses as usize)?
-            };
-            for (dimension, &pulse) in pulses.iter().enumerate() {
-                if pulse != 0 {
-                    collapse_masks[index] |= 1 << (dimension % usize::from(blocks));
+                let (shape, pulses) = decode_recursive_pvq_shape_for_allocation_bounded(
+                    range,
+                    frame_samples_48k,
+                    dimensions,
+                    budget,
+                    frame_eighth_bits,
+                    &mut |_, _, depth| {
+                        let mut context =
+                            candidate_recursive_pvq_angle_context(frame_samples_48k, band, depth)?;
+                        context.partition_blocks = partition_blocks >> depth;
+                        context.time_split = context.partition_blocks > 1;
+                        Ok(context)
+                    },
+                )?;
+                pulse_counts[index] = pulses;
+                for (dimension, &value) in shape.iter().enumerate() {
+                    if value != 0.0 {
+                        collapse_masks[index] |= 1 << (dimension % usize::from(blocks));
+                    }
                 }
+                shapes[index] = shape;
+            } else {
+                let pulse_allocation = pulses_for_target_allocation(dimensions, budget, remaining)?;
+                pulse_counts[index] = pulse_allocation.pulses;
+                let pulses = if pulse_allocation.pulses == 0 {
+                    vec![0; dimensions]
+                } else {
+                    decode_codeword(range, dimensions, pulse_allocation.pulses as usize)?
+                };
+                for (dimension, &pulse) in pulses.iter().enumerate() {
+                    if pulse != 0 {
+                        collapse_masks[index] |= 1 << (dimension % usize::from(blocks));
+                    }
+                }
+                shapes[index] = normalize_pulses(&pulses)?;
             }
-            shapes[index] = normalize_pulses(&pulses)?;
         }
         spread_shape(&mut shapes[index], pulse_counts[index], spread, blocks)?;
         apply_tf_adjustment(&mut shapes[index], tf_adjustments[index], blocks)?;
@@ -2004,6 +2035,8 @@ mod tests {
                 pulse_cap_eighth_bits: 8,
                 offset_eighth_bits: 0,
                 time_split: false,
+                partition_blocks: 1,
+                lm: 0,
             })
         );
         for (depth, pulse_cap, offset) in [(0, 32, 12), (1, 24, 8), (2, 16, 4)] {
@@ -2013,6 +2046,8 @@ mod tests {
                     pulse_cap_eighth_bits: pulse_cap,
                     offset_eighth_bits: offset,
                     time_split: false,
+                    partition_blocks: 1,
+                    lm: 2 - u32::from(depth),
                 })
             );
         }
@@ -2476,7 +2511,7 @@ mod tests {
     }
 
     #[test]
-    fn mono_shape_decode_rejects_recursive_codebooks_before_consuming_residuals() {
+    fn mono_shape_decode_rejects_splits_beyond_the_frame_depth_limit() {
         let mut shape_eighth_bits = [0; 21];
         shape_eighth_bits[17] = 8_000;
         let allocation = FineShapeAllocation {
@@ -2488,12 +2523,10 @@ mod tests {
             balance_eighth_bits: 0,
         };
         let mut range = RangeDecoder::new(&[0x5a; 32]);
-        let before = range.final_range();
         assert_eq!(
             decode_mono_pvq_shapes(&mut range, 960, allocation, 0, 1, &[0; 21]),
-            Err(RangeError::UnsupportedCeltMode)
+            Err(RangeError::InvalidPvqLayout)
         );
-        assert_eq!(range.final_range(), before);
     }
 
     #[test]
