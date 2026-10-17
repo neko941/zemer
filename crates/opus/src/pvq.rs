@@ -707,6 +707,7 @@ pub(crate) fn pulses_for_allocation(
         codebook_eighth_bits: 0,
     };
     let mut best_distance = available_eighth_bits;
+    let mut best_codebook_size = 1;
     for pseudo in 1..=MAX_PVQ_PSEUDO_PULSES {
         let Some(pulses) = pseudo_pulse_count(pseudo) else {
             break;
@@ -720,12 +721,17 @@ pub(crate) fn pulses_for_allocation(
             continue;
         }
         let distance = available_eighth_bits - cost;
-        if distance < best_distance {
+        // When conservative eighth-bit costs tie, prefer the larger fitting
+        // codebook; its actual log2 size is closer to the allocation.
+        let is_better =
+            distance < best_distance || (distance == best_distance && size > best_codebook_size);
+        if is_better {
             best = PulseAllocation {
                 pulses: pulses as u32,
                 codebook_eighth_bits: cost as u16,
             };
             best_distance = distance;
+            best_codebook_size = size;
         }
     }
     Ok(best)
@@ -1117,6 +1123,13 @@ mod tests {
             Ok(super::PulseAllocation {
                 pulses: 4,
                 codebook_eighth_bits: 32,
+            })
+        );
+        assert_eq!(
+            pulses_for_allocation(2, 48),
+            Ok(super::PulseAllocation {
+                pulses: 16,
+                codebook_eighth_bits: 48,
             })
         );
         assert_eq!(
