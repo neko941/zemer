@@ -1,8 +1,8 @@
 use crate::postfilter::PostFilter;
 use crate::pvq::{
     RecursivePvqAngleContext, SplitAngle, combine_mid_side_shapes, decode_codeword,
-    normalize_pulses, pulses_for_allocation, pvq_allocation_requires_split,
-    split_stereo_shape_budget, spread_shape,
+    normalize_pulses, pulses_for_allocation, pulses_for_target_allocation,
+    pvq_allocation_requires_split, split_stereo_shape_budget, spread_shape,
 };
 use crate::range::{RangeDecoder, RangeError};
 
@@ -669,6 +669,26 @@ pub(crate) fn decode_mono_pvq_shapes(
     blocks: u8,
     tf_adjustments: &[i8; 21],
 ) -> Result<MonoPvqShapes, RangeError> {
+    decode_mono_pvq_shapes_bounded(
+        range,
+        frame_samples_48k,
+        allocation,
+        spread,
+        blocks,
+        tf_adjustments,
+        u32::MAX,
+    )
+}
+
+pub(crate) fn decode_mono_pvq_shapes_bounded(
+    range: &mut RangeDecoder<'_>,
+    frame_samples_48k: u16,
+    allocation: FineShapeAllocation,
+    spread: u8,
+    blocks: u8,
+    tf_adjustments: &[i8; 21],
+    frame_eighth_bits: u32,
+) -> Result<MonoPvqShapes, RangeError> {
     let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
     let start_band = allocation.start_band;
     let end_band = allocation.coded_end_band;
@@ -688,7 +708,8 @@ pub(crate) fn decode_mono_pvq_shapes(
         let bands_remaining = i64::from((end_band - band).min(3));
         let compensated =
             i64::from(allocation.shape_eighth_bits[index]) + balance / bands_remaining;
-        let budget = compensated.clamp(0, 16_383) as u32;
+        let remaining = frame_eighth_bits.saturating_sub(range.tell_frac());
+        let budget = (compensated.clamp(0, 16_383) as u32).min(remaining);
         let dimensions = usize::from(edges[index + 1] - edges[index]);
         if dimensions == 1 {
             let sign = if budget >= 8 {
@@ -702,7 +723,7 @@ pub(crate) fn decode_mono_pvq_shapes(
             if pvq_allocation_requires_split(dimensions, budget)? {
                 return Err(RangeError::UnsupportedCeltMode);
             }
-            let pulse_allocation = pulses_for_allocation(dimensions, budget)?;
+            let pulse_allocation = pulses_for_target_allocation(dimensions, budget, remaining)?;
             pulse_counts[index] = pulse_allocation.pulses;
             let pulses = if pulse_allocation.pulses == 0 {
                 vec![0; dimensions]
@@ -1075,7 +1096,7 @@ pub(crate) fn reallocate_skipped_bands(
     reservations: AllocationReservations,
     allocation: BandAllocation,
 ) -> Result<ReallocatedBands, RangeError> {
-    let edges = band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
+    band_edges(frame_samples_48k).ok_or(RangeError::InvalidCeltEnergyLayout)?;
     let start_band = allocation.start_band;
     let end_band = allocation.end_band;
     if start_band >= end_band || end_band > 21 || !(1..=2).contains(&channels) {
@@ -1112,12 +1133,18 @@ pub(crate) fn reallocate_skipped_bands(
             return Err(RangeError::CorruptFrame);
         }
 
-        let span = i64::from(edges[usize::from(coded_end_band)] - edges[usize::from(start_band)]);
+        let span = BAND_WIDTHS_2_5_MS[usize::from(start_band)..usize::from(coded_end_band)]
+            .iter()
+            .map(|&width| i64::from(width))
+            .sum::<i64>();
         let left = total - sum;
         let per_coefficient = left / span;
         let remainder = left - span * per_coefficient;
-        let width_before = i64::from(edges[usize::from(band)] - edges[usize::from(start_band)]);
-        let width = i64::from(edges[usize::from(coded_end_band)] - edges[usize::from(band)]);
+        let width_before = BAND_WIDTHS_2_5_MS[usize::from(start_band)..usize::from(band)]
+            .iter()
+            .map(|&width| i64::from(width))
+            .sum::<i64>();
+        let width = i64::from(BAND_WIDTHS_2_5_MS[usize::from(band)]);
         let mut band_bits = i64::from(bits[usize::from(band)])
             + per_coefficient * width
             + (remainder - width_before).max(0);
@@ -1160,8 +1187,10 @@ pub(crate) fn reallocate_skipped_bands(
         false
     };
 
-    let coded_width =
-        i64::from(edges[usize::from(coded_end_band)] - edges[usize::from(start_band)]);
+    let coded_width = BAND_WIDTHS_2_5_MS[usize::from(start_band)..usize::from(coded_end_band)]
+        .iter()
+        .map(|&width| i64::from(width))
+        .sum::<i64>();
     let mut left = total - sum;
     if left < 0 || coded_width == 0 {
         return Err(RangeError::CorruptFrame);
@@ -1170,12 +1199,12 @@ pub(crate) fn reallocate_skipped_bands(
     left -= coded_width * per_coefficient;
     for band in start_band..coded_end_band {
         let index = usize::from(band);
-        let width = i64::from(edges[index + 1] - edges[index]);
+        let width = i64::from(BAND_WIDTHS_2_5_MS[index]);
         bits[index] += (per_coefficient * width) as u32;
     }
     for band in start_band..coded_end_band {
         let index = usize::from(band);
-        let extra = left.min(i64::from(edges[index + 1] - edges[index]));
+        let extra = left.min(i64::from(BAND_WIDTHS_2_5_MS[index]));
         bits[index] += extra as u32;
         left -= extra;
     }
@@ -1213,7 +1242,9 @@ pub(crate) fn split_fine_shape_allocation(
     for band in start_band..end_band {
         let index = usize::from(band);
         let width = u32::from(edges[index + 1] - edges[index]);
-        let bins = width << lm;
+        // `band_edges` already returns frame-scaled bin widths. Applying LM
+        // here again double-scales the band dimensions in longer frames.
+        let bins = width;
         let mut bits = i64::from(shape[index]) + balance;
         let mut excess: i64;
 
@@ -1667,15 +1698,16 @@ pub(crate) fn decode_header(range: &mut RangeDecoder<'_>) -> Result<FrameHeader,
 mod tests {
     use super::{
         AllocationControls, CeltDeemphasis, DEEMPHASIS_ALPHA, ENERGY_LAPLACE_MODELS,
-        FineShapeAllocation, FrameHeader, MonoPvqShapes, PostFilter, allocation_caps,
-        allocation_thresholds, allocation_trim_offsets, apply_tf_adjustment, band_edges,
-        candidate_recursive_pvq_angle_context, celt_low_overlap_window, decode_allocation_controls,
-        decode_allocation_trim, decode_band_boosts, decode_coarse_energy_residuals,
-        decode_final_fine_energy, decode_fine_energies, decode_header, decode_mid_side_pvq_band,
-        decode_mono_pvq_shapes, decode_spread, decode_tf_resolution, denormalize_mono_pvq_shapes,
-        hadamard_tf_axis, hadamard_tf_vector, inverse_mdct_windowed, predict_coarse_energies,
-        reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
-        split_fine_shape_allocation, static_allocation, tf_adjustment,
+        FineShapeAllocation, FrameHeader, MonoPvqShapes, PostFilter, ReallocatedBands,
+        allocation_caps, allocation_thresholds, allocation_trim_offsets, apply_tf_adjustment,
+        band_edges, candidate_recursive_pvq_angle_context, celt_low_overlap_window,
+        decode_allocation_controls, decode_allocation_trim, decode_band_boosts,
+        decode_coarse_energy_residuals, decode_final_fine_energy, decode_fine_energies,
+        decode_header, decode_mid_side_pvq_band, decode_mono_pvq_shapes, decode_spread,
+        decode_tf_resolution, denormalize_mono_pvq_shapes, hadamard_tf_axis, hadamard_tf_vector,
+        inverse_mdct_windowed, predict_coarse_energies, reallocate_skipped_bands,
+        reserve_allocation_bits, select_band_allocation, split_fine_shape_allocation,
+        static_allocation, tf_adjustment,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -2193,8 +2225,8 @@ mod tests {
         };
         let mut range = RangeDecoder::new(&[0x21; 128]);
         let shapes = decode_mono_pvq_shapes(&mut range, 120, allocation, 0, 1, &[0; 21]).unwrap();
-        assert_eq!(shapes.pulses[12], 1);
-        assert_eq!(shapes.pulses[13], 2);
+        assert_eq!(shapes.pulses[12], 2);
+        assert_eq!(shapes.pulses[13], 1);
     }
 
     #[test]
@@ -2863,6 +2895,29 @@ mod tests {
         assert_eq!(split.fine_bits[8], 2);
         assert_eq!(split.shape_eighth_bits[8], 48);
         assert!(!split.fine_priority[8]);
+    }
+
+    #[test]
+    fn fine_shape_split_uses_frame_scaled_widths_once() {
+        let allocation = ReallocatedBands {
+            start_band: 0,
+            coded_end_band: 14,
+            eighth_bits: [
+                189, 173, 157, 144, 133, 122, 113, 102, 184, 164, 144, 122, 200, 147, 8, 8, 0, 0,
+                0, 0, 0,
+            ],
+            intensity_band: 0,
+            dual_stereo: false,
+        };
+
+        let split = split_fine_shape_allocation(960, 1, allocation).unwrap();
+
+        assert_eq!(
+            split.fine_bits,
+            [
+                3, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 1, 2, 2, 1, 1, 0, 0, 0, 0, 0
+            ]
+        );
     }
 
     #[test]

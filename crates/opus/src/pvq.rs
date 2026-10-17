@@ -737,6 +737,48 @@ pub(crate) fn pulses_for_allocation(
     Ok(best)
 }
 
+/// Selects the codebook whose cost is nearest the CELT band target, bounded by
+/// the bits that remain in the frame. CELT may spend slightly more than one
+/// band's target and repay the difference from accumulated frame balance.
+pub(crate) fn pulses_for_target_allocation(
+    dimensions: usize,
+    target_eighth_bits: u32,
+    remaining_eighth_bits: u32,
+) -> Result<PulseAllocation, RangeError> {
+    if dimensions == 0 || dimensions > MAX_PVQ_DIMENSIONS {
+        return Err(RangeError::InvalidPvqLayout);
+    }
+
+    let mut best = PulseAllocation {
+        pulses: 0,
+        codebook_eighth_bits: 0,
+    };
+    let mut best_distance = target_eighth_bits;
+    for pseudo in 1..=MAX_PVQ_PSEUDO_PULSES {
+        let Some(pulses) = pseudo_pulse_count(pseudo) else {
+            break;
+        };
+        let size = match codebook_size(dimensions, pulses) {
+            Ok(size) => size,
+            Err(RangeError::PvqCodebookTooLarge) => break,
+            Err(error) => return Err(error),
+        };
+        let cost = u32::from(conservative_log2_eighths(size));
+        if cost > remaining_eighth_bits {
+            continue;
+        }
+        let distance = target_eighth_bits.abs_diff(cost);
+        if distance < best_distance {
+            best = PulseAllocation {
+                pulses: pulses as u32,
+                codebook_eighth_bits: cost as u16,
+            };
+            best_distance = distance;
+        }
+    }
+    Ok(best)
+}
+
 /// Reports whether a fitting pseudo-pulse codebook crosses the 32-bit limit.
 ///
 /// A candidate only triggers a split when its conservative codebook cost is
@@ -900,8 +942,9 @@ mod tests {
         RecursivePvqAngleContext, RecursivePvqSplit, SplitAngle, codebook_size,
         combine_mid_side_shapes, combine_split_shapes, decode_codeword, decode_recursive_pvq_shape,
         decode_recursive_pvq_shape_for_allocation, decode_recursive_pvq_split, decode_split_angle,
-        normalize_pulses, pulses_for_allocation, pvq_allocation_requires_split, split_shape_budget,
-        split_stereo_shape_budget, spread_shape, unrank_codeword,
+        normalize_pulses, pulses_for_allocation, pulses_for_target_allocation,
+        pvq_allocation_requires_split, split_shape_budget, split_stereo_shape_budget, spread_shape,
+        unrank_codeword,
     };
     use crate::range::{RangeDecoder, RangeError};
 
@@ -1139,6 +1182,16 @@ mod tests {
                 codebook_eighth_bits: 8,
             })
         );
+    }
+
+    #[test]
+    fn celt_target_allocation_can_use_balance_for_the_nearest_codebook() {
+        let allocation = pulses_for_target_allocation(16, 120, 1_000).unwrap();
+        let tie = pulses_for_target_allocation(8, 143, 1_000).unwrap();
+
+        assert_eq!(allocation.pulses, 4);
+        assert!(allocation.codebook_eighth_bits > 120);
+        assert_eq!(tie.pulses, 8);
     }
 
     #[test]

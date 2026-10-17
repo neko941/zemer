@@ -4,7 +4,7 @@ use crate::celt::{
     AllocationControls, AllocationReservations, BandAllocation, CeltSynthesis, FinalFineEnergy,
     FineShapeAllocation, FrameHeader, MonoPvqShapes, ReallocatedBands, TfResolution,
     decode_allocation_controls, decode_coarse_energy_residuals, decode_final_fine_energy,
-    decode_fine_energies, decode_header, decode_mono_pvq_shapes, decode_spread,
+    decode_fine_energies, decode_header, decode_mono_pvq_shapes_bounded, decode_spread,
     decode_tf_resolution, denormalize_mono_pvq_shapes, predict_coarse_energies,
     reallocate_skipped_bands, reserve_allocation_bits, select_band_allocation,
     split_fine_shape_allocation,
@@ -268,13 +268,18 @@ pub(crate) fn decode_mono_celt_frame(
     let mut tf_adjustments = [0; 21];
     let adjustment_count = prefix.tf_resolution.adjustments.len();
     tf_adjustments[..adjustment_count].copy_from_slice(&prefix.tf_resolution.adjustments);
-    let shapes = decode_mono_pvq_shapes(
+    let frame_eighth_bits = frame_bytes
+        .saturating_mul(64)
+        .try_into()
+        .map_err(|_| RangeError::CorruptFrame)?;
+    let shapes = decode_mono_pvq_shapes_bounded(
         range,
         frame_samples_48k,
         allocation,
         prefix.spread,
         1,
         &tf_adjustments,
+        frame_eighth_bits,
     )?;
     let remaining_bits = frame_bytes
         .saturating_mul(8)
@@ -567,5 +572,38 @@ mod tests {
             );
             assert_eq!(range.final_range(), before);
         }
+    }
+
+    #[test]
+    #[ignore = "requires the external RFC 8251 opus_newvectors corpus"]
+    fn rfc8251_active_celt_vector07_matches_final_range() {
+        use crate::packet::OpusPacket;
+        use std::{env, fs, path::Path};
+        let root =
+            Path::new(&env::var_os("ZEMER_OPUS_TESTVECTORS").unwrap()).join("testvector07.bit");
+        let bytes = fs::read(root).unwrap();
+        let cursor = 263;
+        let length = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().unwrap()) as usize;
+        let expected = u32::from_be_bytes(bytes[cursor + 4..cursor + 8].try_into().unwrap());
+        let packet = OpusPacket::parse(&bytes[cursor + 8..cursor + 8 + length]).unwrap();
+        assert_eq!(packet.toc().configuration, 31);
+        let frame = packet.frames()[0];
+        let mut range = RangeDecoder::new(frame);
+        let prefix = decode_mono_frame_prefix(&mut range, 960, frame.len(), 21, &[0; 42])
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            prefix.fine_shape.unwrap().fine_bits,
+            [
+                3, 2, 2, 2, 2, 2, 1, 1, 2, 2, 2, 1, 2, 2, 1, 1, 0, 0, 0, 0, 0
+            ]
+        );
+        assert_eq!(range.tell_frac(), 801);
+        let mut synthesis = crate::celt::CeltSynthesis::default();
+        let decoded =
+            super::decode_mono_celt_frame(&mut range, 960, frame.len(), &prefix, &mut synthesis)
+                .unwrap();
+        assert_eq!(decoded.final_range, expected);
     }
 }
