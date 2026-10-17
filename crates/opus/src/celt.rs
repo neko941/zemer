@@ -2319,44 +2319,47 @@ mod tests {
     }
 
     #[test]
-    fn transient_synthesis_deinterleaves_short_mdcts_and_carries_frame_tail() {
+    fn transient_synthesis_handles_each_celt_frame_duration_and_carries_frame_tail() {
         use super::CeltSynthesis;
 
-        let spectrum: Vec<f32> = (0..960)
-            .map(|index| ((index * 17 % 43) as f32 - 21.0) / 37.0)
-            .collect();
-        let window = celt_low_overlap_window(120).unwrap();
-        let mut expected = vec![0.0_f32; 1080];
-        for block in 0..8 {
-            let short_spectrum: Vec<_> = (0..120)
-                .map(|bin| f64::from(spectrum[bin * 8 + block]))
+        for blocks in [1, 2, 4, 8] {
+            let bins = blocks * 120;
+            let spectrum: Vec<f32> = (0..bins)
+                .map(|index| ((index * 17 % 43) as f32 - 21.0) / 37.0)
                 .collect();
-            let transformed = zemer_core::transform::inverse_mdct(&short_spectrum).unwrap();
-            for sample in 0..240 {
-                expected[block * 120 + sample] +=
-                    (transformed[sample] * 0.5 * window[sample]) as f32;
+            let window = celt_low_overlap_window(120).unwrap();
+            let mut expected = vec![0.0_f32; bins + 120];
+            for block in 0..blocks {
+                let short_spectrum: Vec<_> = (0..120)
+                    .map(|bin| f64::from(spectrum[bin * blocks + block]))
+                    .collect();
+                let transformed = zemer_core::transform::inverse_mdct(&short_spectrum).unwrap();
+                for sample in 0..240 {
+                    expected[block * 120 + sample] +=
+                        (transformed[sample] * 0.5 * window[sample]) as f32;
+                }
             }
-        }
 
-        let mut synthesis = CeltSynthesis::default();
-        assert!(synthesis.synthesize(&[vec![0.0; 960]]).unwrap().is_none());
-        let frame = synthesis
-            .synthesize_transient(std::slice::from_ref(&spectrum), 8)
-            .unwrap()
-            .unwrap();
-        assert_eq!(frame[0].len(), 960);
-        for (actual, expected) in frame[0].iter().zip(&expected[..960]) {
-            assert!((actual - expected).abs() < 1e-6);
-        }
+            let mut synthesis = CeltSynthesis::default();
+            assert!(synthesis.synthesize(&[vec![0.0; bins]]).unwrap().is_none());
+            let frame = synthesis
+                .synthesize_transient(std::slice::from_ref(&spectrum), blocks)
+                .unwrap()
+                .unwrap();
+            assert_eq!(frame[0].len(), bins);
+            for (actual, expected) in frame[0].iter().zip(&expected[..bins]) {
+                assert!((actual - expected).abs() < 1e-6);
+            }
 
-        let next = synthesis
-            .synthesize_transient(&[vec![0.0; 960]], 8)
-            .unwrap()
-            .unwrap();
-        for (actual, expected) in next[0].iter().zip(&expected[960..]) {
-            assert!((actual - expected).abs() < 1e-6);
+            let next = synthesis
+                .synthesize_transient(&[vec![0.0; bins]], blocks)
+                .unwrap()
+                .unwrap();
+            for (actual, expected) in next[0].iter().zip(&expected[bins..]) {
+                assert!((actual - expected).abs() < 1e-6);
+            }
+            assert!(next[0][120..].iter().all(|&sample| sample == 0.0));
         }
-        assert!(next[0][120..].iter().all(|&sample| sample == 0.0));
     }
 
     #[test]
